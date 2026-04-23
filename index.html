@@ -710,15 +710,18 @@
 
           // Gate frame — extruded arch along the silhouette with inner/outer
           // lips and evenly-spaced bosses. Sits on top of everything at the
-          // rim so the logo reads as framed by an architectural gate. The
-          // bottom horizontal bar is clipped off so the frame reads as an
-          // open arch, not a closed ring.
+          // rim so the logo reads as framed by an architectural gate. Open
+          // arch with no bottom horizontal bar — legs extend all the way down
+          // to the silhouette's lowest hull point. We offset bottomCutY by a
+          // tiny epsilon above hullMinY so the clip logic reliably detects
+          // the flat-bottom edge (it compares strictly, so a cut AT minY
+          // degenerates to a zero-height opening).
           let hullMinY = Infinity, hullMaxY = -Infinity;
           for (const p of clipPolygon) {
             if (p.y < hullMinY) hullMinY = p.y;
             if (p.y > hullMaxY) hullMaxY = p.y;
           }
-          const gateBottomCutY = hullMinY + (hullMaxY - hullMinY) * 0.02;
+          const gateBottomCutY = hullMinY + (hullMaxY - hullMinY) * 0.03;
           const gate = createGateFrame({
             hull: clipPolygon,
             frameWidth: gateFrameWidth,
