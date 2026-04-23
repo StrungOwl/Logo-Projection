@@ -1,6 +1,0 @@
-[     431ms] [ERROR] TypeError: Cannot read properties of undefined (reading 'x1')
-    at sampleStarOutline (http://localhost:8090/index.html?v=13:436:19)
-    at http://localhost:8090/index.html?v=13:441:26
-    at https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/loaders/GLTFLoader.js:247:6
-    at https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/loaders/GLTFLoader.js:2686:5 @ https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/loaders/GLTFLoader.js:224
-[     432ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:8090/favicon.ico:0

@@ -1,0 +1,11 @@
+# Playwright MCP debug artifacts (console logs + auto-screenshots)
+.playwright-mcp/
+
+# Local screenshot captures
+*.png
+!patterns/**/*.png
+!3DModels/**/*.png
+
+# OS / editor
+.DS_Store
+Thumbs.db
