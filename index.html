@@ -408,17 +408,25 @@
           // Islamic tile panel: flat grid of rosettes + straps + knots, clipped
           // to the logo's front-face hull so the motif sits only on the star.
           const clipPolygon = hull.map(h => ({ x: h.x - cx, y: h.y - cy }));
+          const tileStep = 6.5;
           const panelSpan = maxR * 1.9;
-          const tileStep = 3.6;
           const cols = Math.max(3, Math.ceil(panelSpan / tileStep) | 1);
+          const mainTileSize = 2.4;
           const panel = createIslamicPanel({
             cols,
             rows: cols,
             tileStep,
+            mainTileSize,
+            secondaryScale: 0.55,
+            reliefDepth: 0.35,
+            strapHalfWidth: 0.3,
+            knotSize: 0.7,
+            goldColor: 0xD9B77C,
             clipPolygon,
+            clipMargin: mainTileSize * 0.9,
           });
           panel.name = 'islamic-panel';
-          panel.position.set(cx, cy, maxZ + 0.02);
+          panel.position.set(cx, cy, maxZ + 0.05);
           __logoMesh.add(panel);
         }
       }
@@ -536,28 +544,44 @@
         return [s.x1 + (s.x2 - s.x1) * frac, s.y1 + (s.y2 - s.y1) * frac];
       }
 
+      const bottomY = bbox.min.y;
+
+      // Shared distant attractor — deep into the galaxy backdrop behind the
+      // logo. Particles are pulled in this direction with a cone of spread
+      // so they drift toward the distance without converging on one point.
+      // If a particle's path intersects the logo mesh, the depth test below
+      // will occlude it, giving a "collision" read against the model.
+      const attractor = {
+        x: 0,
+        y: halfExtent * 3.5,
+        z: frontZ - halfExtent * 6.0,
+      };
+      const attractorSpread = halfExtent * 2.2;
+
       for (let i = 0; i < particleCount; i++) {
-        // Origin: at the entry way of the arch — sampled inside the cutout
-        // on the front-face plane so embers appear from the opening itself.
-        const [ix, iy] = sampleStarInterior();
-        origins[i * 3]     = ix;
-        origins[i * 3 + 1] = iy;
+        // Origin: on the inner star outline, with a trailing bias that
+        // stretches downward toward the bottom of the model — most
+        // particles hug the outline, some tail all the way to bbox.min.y.
+        const [ox, oy] = sampleStarOutline();
+        const jitter = halfExtent * 0.008;
+        const dropT = Math.pow(Math.random(), 1.6); // bias toward outline, tail down
+        const maxDrop = Math.max(0, oy - bottomY);
+        origins[i * 3]     = ox + (Math.random() - 0.5) * jitter;
+        origins[i * 3 + 1] = oy - dropT * maxDrop + (Math.random() - 0.5) * jitter;
         origins[i * 3 + 2] = frontZ;
 
-        // Passage: just forward of the arch rim, keeping the outline shape
+        // Passage: still tracing the outline, nudged forward so embers peel
+        // off the rim rather than collapsing inward.
         const [px, py] = sampleStarOutline();
-        const passInset = 0.75 + Math.random() * 0.25;
-        passages[i * 3]     = px * passInset;
-        passages[i * 3 + 1] = py * passInset;
-        passages[i * 3 + 2] = frontZ + halfExtent * 0.08;
+        passages[i * 3]     = px;
+        passages[i * 3 + 1] = py;
+        passages[i * 3 + 2] = frontZ + halfExtent * 0.06;
 
-        // Target: out front of the logo, drifting outward and upward like rising embers
-        const angle = Math.atan2(py, px) + (Math.random() - 0.5) * 0.8;  // bias outward in same direction
-        const outward = 6 + Math.random() * 18;
-        const upBias = 2 + Math.random() * 10;            // embers rise
-        targets[i * 3]     = Math.cos(angle) * outward;
-        targets[i * 3 + 1] = Math.sin(angle) * outward * 0.55 + upBias;
-        targets[i * 3 + 2] = 18 + Math.random() * 14;     // toward the camera
+        // Target: soft cloud around the shared attractor — particles drift
+        // toward the distant point rather than converging on it.
+        targets[i * 3]     = attractor.x + (Math.random() - 0.5) * attractorSpread;
+        targets[i * 3 + 1] = attractor.y + (Math.random() - 0.5) * attractorSpread;
+        targets[i * 3 + 2] = attractor.z + (Math.random() - 0.5) * attractorSpread * 0.8;
 
         randoms[i] = Math.random();
         speeds[i] = 0.25 + Math.random() * 0.7;   // slow, floaty
@@ -599,8 +623,9 @@
             float cycleDuration = 7.0 / aSpeed;
             float t = mod(uTime + aRandom * cycleDuration, cycleDuration) / cycleDuration;
 
-            // Smooth ease — emerges from inside, accelerates through the opening, drifts out
-            float eased = t * t * (3.0 - 2.0 * t);
+            // Cubic ease-in — particles linger dense near the origin and
+            // accelerate as they're pulled toward the distant attractor.
+            float eased = t * t * t;
 
             // Quadratic Bezier: deep inside -> star passage -> outward & forward
             vec3 p0 = position;
@@ -659,6 +684,7 @@
           }
         `,
         transparent: true,
+        depthTest: true,   // let the logo mesh depth-cull particles it blocks
         depthWrite: false,
         blending: THREE.AdditiveBlending,
       });

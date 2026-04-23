@@ -97,6 +97,29 @@ function pointInPolygon(x, y, poly) {
   return inside;
 }
 
+// Perpendicular distance from (px, py) to the line segment a→b.
+function distToSegment(px, py, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay;
+  const len2 = dx * dx + dy * dy || 1e-9;
+  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2));
+  const qx = ax + t * dx, qy = ay + t * dy;
+  return Math.hypot(px - qx, py - qy);
+}
+
+// Inside polygon AND at least `margin` away from every edge — lets us treat
+// each tile as a disc of radius `margin` and reject any disc that would
+// overhang the polygon boundary.
+function insideWithMargin(x, y, poly, margin) {
+  if (!pointInPolygon(x, y, poly)) return false;
+  if (margin <= 0) return true;
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i];
+    const b = poly[(i + 1) % poly.length];
+    if (distToSegment(x, y, a.x, a.y, b.x, b.y) < margin) return false;
+  }
+  return true;
+}
+
 // Build a flat tileable panel of the Islamic pattern, laid out in the XY plane
 // with extrusion along +Z. Returns a THREE.Group suitable for adding as a
 // child of any mesh (or the scene directly).
@@ -104,6 +127,8 @@ function pointInPolygon(x, y, poly) {
 // `clipPolygon` (optional): array of { x, y } points in panel-local coordinates.
 // When provided, any tile whose centre falls outside the polygon is skipped,
 // so the pattern follows a custom silhouette (e.g. the logo's outline).
+// `clipMargin` (optional): tiles must also sit this far INSIDE each polygon
+// edge — set to roughly `mainTileSize` to keep whole rosettes within bounds.
 export function createIslamicPanel({
   cols = 9,
   rows = 9,
@@ -118,6 +143,7 @@ export function createIslamicPanel({
   goldColor = 0xE5A400,
   material = null,
   clipPolygon = null,
+  clipMargin = 0,
 } = {}) {
   const group = new THREE.Group();
 
@@ -158,7 +184,7 @@ export function createIslamicPanel({
   const startX = -(cols - 1) * tileStep * 0.5;
   const startY = -(rows - 1) * tileStep * 0.5;
   const inClip = clipPolygon
-    ? (x, y) => pointInPolygon(x, y, clipPolygon)
+    ? (x, y, r) => insideWithMargin(x, y, clipPolygon, Math.max(clipMargin, r))
     : () => true;
 
   // --- Rosettes on a checkerboard ---
@@ -166,8 +192,9 @@ export function createIslamicPanel({
     for (let c = 0; c < cols; c++) {
       const x = startX + c * tileStep;
       const y = startY + r * tileStep;
-      if (!inClip(x, y)) continue;
       const isMain = (c + r) % 2 === 0;
+      const radius = isMain ? mainTileSize : secondarySize;
+      if (!inClip(x, y, radius)) continue;
       const mesh = new THREE.Mesh(isMain ? mainGeo : secondaryGeo, goldMat);
       mesh.position.set(x, y, 0);
       group.add(mesh);
@@ -179,7 +206,7 @@ export function createIslamicPanel({
     for (let c = 0; c < cols - 1; c++) {
       const x = startX + (c + 0.5) * tileStep;
       const y = startY + r * tileStep;
-      if (!inClip(x, y)) continue;
+      if (!inClip(x, y, hStrapLen * 0.5)) continue;
       const mesh = new THREE.Mesh(hStrapGeo, goldMat);
       mesh.position.set(x, y, 0);
       group.add(mesh);
@@ -191,7 +218,7 @@ export function createIslamicPanel({
     for (let c = 0; c < cols; c++) {
       const x = startX + c * tileStep;
       const y = startY + (r + 0.5) * tileStep;
-      if (!inClip(x, y)) continue;
+      if (!inClip(x, y, vStrapLen * 0.5)) continue;
       const mesh = new THREE.Mesh(vStrapGeo, goldMat);
       mesh.position.set(x, y, 0);
       mesh.rotation.z = Math.PI * 0.5;
@@ -204,7 +231,7 @@ export function createIslamicPanel({
     for (let c = 0; c < cols - 1; c++) {
       const x = startX + (c + 0.5) * tileStep;
       const y = startY + (r + 0.5) * tileStep;
-      if (!inClip(x, y)) continue;
+      if (!inClip(x, y, knotSize)) continue;
       const mesh = new THREE.Mesh(knotGeo, goldMat);
       mesh.position.set(x, y, 0);
       group.add(mesh);
