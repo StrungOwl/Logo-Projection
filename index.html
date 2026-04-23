@@ -169,14 +169,14 @@
       whiteParticles: { cycleDuration: 7.0,
                         bodyColor: [0.88, 0.92, 1.0], coreColor: [1.0, 1.0, 1.0],
                         brightness: 1.7 },
-      panelSparks:   { count: 50, gravity: 8, maxSpeed: 7, damping: 1.6,
+      panelSparks:   { count: 120, gravity: 8, maxSpeed: 7, damping: 1.6,
                        snapStrength: 4,
-                       tangentialFactor: 0.8, speedVariance: 0.55, sizeVariance: 0.7,
-                       color: 0xffd9a0, pointSize: 0.45 },
-      latticeSparks: { count: 32, gravity: 7, maxSpeed: 6, damping: 1.5,
+                       tangentialFactor: 0.8, speedVariance: 0.55, sizeVariance: 0.75,
+                       color: 0xffd9a0, pointSize: 0.26 },
+      latticeSparks: { count: 80, gravity: 7, maxSpeed: 6, damping: 1.5,
                        snapStrength: 3.5,
-                       tangentialFactor: 0.8, speedVariance: 0.55, sizeVariance: 0.7,
-                       color: 0xffe8c0, pointSize: 0.4 },
+                       tangentialFactor: 0.8, speedVariance: 0.55, sizeVariance: 0.75,
+                       color: 0xffe8c0, pointSize: 0.22 },
     };
     window.ANIM = ANIM;
 
@@ -721,7 +721,7 @@
             if (p.y < hullMinY) hullMinY = p.y;
             if (p.y > hullMaxY) hullMaxY = p.y;
           }
-          const gateBottomCutY = hullMinY + (hullMaxY - hullMinY) * 0.03;
+          const gateBottomCutY = hullMinY + (hullMaxY - hullMinY) * 0.025;
           const gate = createGateFrame({
             hull: clipPolygon,
             frameWidth: gateFrameWidth,

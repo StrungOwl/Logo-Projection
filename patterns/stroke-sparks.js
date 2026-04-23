@@ -188,6 +188,7 @@ export function createSparkSystem({
   maxSpeed = 9,              // panel-units/s — keeps sparks from flinging past centre
   damping = 1.4,             // velocity damping per second (higher = slower drift)
   snapStrength = 6,          // strength of the pull toward the nearest stroke vertex
+  sizeVariance = 0,          // ±fraction around base pointSize (0.7 → ~0.3x..1.7x)
   color = 0xffd9a0,
   pointSize = 0.45,
   trailSize = 5,
@@ -207,6 +208,7 @@ export function createSparkSystem({
   const vy = new Float32Array(count);
   const life = new Float32Array(count);
   const lifeSpeed = new Float32Array(count);
+  const sizeScale = new Float32Array(count);
   const reached = new Uint8Array(count);
 
   // Trail ring-buffer: trailSize positions per spark. Only the head slot gets
@@ -234,6 +236,7 @@ export function createSparkSystem({
     vy[i] = Math.sin(a) * v0;
     life[i] = 0;
     lifeSpeed[i] = 0.35 + Math.random() * 0.35;   // ~1.8-3 s fade-in
+    sizeScale[i] = Math.max(0.15, 1 + (Math.random() * 2 - 1) * sizeVariance);
     reached[i] = 0;
     // Seed every trail slot with the spawn position so stale positions from
     // the spark's previous life don't flash as a ghost trail.
@@ -381,7 +384,7 @@ export function createSparkSystem({
         const age = ((trailHead[i] - k + trailSize) % trailSize) / trailSize;
         const trail = 1 - age;
         alphas[slot] = intensity * trail * trail;
-        sizes[slot]  = pointSize * (0.55 + 0.45 * trail);
+        sizes[slot]  = pointSize * sizeScale[i] * (0.55 + 0.45 * trail);
       }
     }
 
