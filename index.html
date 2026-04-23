@@ -238,6 +238,7 @@
     // Particle material (created once, updated in animate loop)
     let particleMat = null;
     let galaxyMat = null;
+    const strokeTimeUniforms = [];
 
     // Galaxy / deep-space shader — stars + nebula, masked automatically by the logo mesh shape
     function createGalaxyMaterial() {
@@ -499,6 +500,23 @@
           const panelSpan = maxR * 1.9;
           const cols = Math.max(3, Math.ceil(panelSpan / tileStep) | 1);
           const mainTileSize = 2.4;
+          // Gate frame width drives both pattern clip margins so their outer
+          // rings extend to the frame's inner edge (slipping under the frame).
+          const gateFrameWidth = 1.6;
+
+          // Pattern-only clip polygon (the gate frame still uses `clipPolygon`).
+          // Top and sides are both pushed outward past the hull so grid
+          // cells nearer the edges pass placement — the hard `hullClip`
+          // shader then slices any hex/rosette that pokes beyond the
+          // frame silhouette, so the visible edge stays flush with the
+          // gate frame.
+          const topPushOut  = 0.7;
+          const sidePushOut = 0.7;
+          const patternClipPolygon = clipPolygon.map(p => ({
+            x: p.x + (p.x > 0 ?  sidePushOut : -sidePushOut),
+            y: p.y > 0 ? p.y + topPushOut : p.y,
+          }));
+
           const panel = createIslamicPanel({
             cols,
             rows: cols,
@@ -509,31 +527,41 @@
             strapHalfWidth: 0.3,
             knotSize: 0.7,
             goldColor: 0xB08552,
-            clipPolygon,
-            clipMargin: mainTileSize * 0.9,
+            clipPolygon: patternClipPolygon,
+            // Margin < mainTileSize so outer rosettes overhang the clip
+            // polygon and slip under the gate frame — the visible edge
+            // then meets the frame's inner lip cleanly instead of
+            // stopping short.
+            clipMargin: gateFrameWidth,
+            // Hard fragment-shader clip to the original hull — slices any
+            // rosette/strap/knot that overhangs the frame's outer silhouette.
+            hullClip: clipPolygon,
             fadeInnerR: maxR * 0.12,
             fadeOuterR: maxR * 0.55,
             fadeCenter: patternFadeCenter,
-            fadeDownStretch: 1.9,
-            fadeBottomTaper: 0.9,
+            fadeDownStretch: 2.3,
+            fadeBottomTaper: 0.75,
             maxOpacity: 0.92,
             gradientMinY: -maxR * 1.1,
             gradientMaxY:  maxR * 1.1,
             gradientDark:   [0.68, 0.55, 0.40],
             gradientBright: [1.02, 1.0, 0.95],
+            strokeColor: 0xE06A3A,
+            strokeOpacity: 0.9,
           });
           panel.name = 'islamic-panel';
           panel.position.set(cx, cy, maxZ + 0.05);
           __logoMesh.add(panel);
+          if (panel.userData.strokeTimeUniform) strokeTimeUniforms.push(panel.userData.strokeTimeUniform);
 
           // Lattice underlay — solid-fill hexagons on the same grid as the
           // Islamic panel so each hex frames one rosette. Clip margin =
-          // hexRadius so hex corners can reach the hull edge; the outer
-          // portion slips under the gate frame (which sits in front), so
-          // the visible hex surface meets the frame's inner edge cleanly.
+          // gateFrameWidth so outermost hexes sit at the frame's inner
+          // edge and the rest of each hex slips under the gate frame
+          // (which sits in front in Z), ensuring the visible perimeter
+          // meets the frame without a gap.
           // Also fades to transparent toward center so the inner glow is
           // not stifled by the rear layer.
-          const gateFrameWidth = 1.6;
           const hexRadius = mainTileSize * 1.4;
           const underlay = createLatticeUnderlay({
             cols: cols + 2,
@@ -542,26 +570,41 @@
             hexRadius,
             depth: 0.035,
             color: 0x6B4A22,
-            clipPolygon,
-            clipMargin: hexRadius,
+            clipPolygon: patternClipPolygon,
+            clipMargin: gateFrameWidth,
+            // Hard fragment-shader clip to the original hull — slices any
+            // hex that overhangs the frame's outer silhouette so the lattice
+            // edge matches the gate-frame outline cleanly on all sides.
+            hullClip: clipPolygon,
             fadeInnerR: maxR * 0.16,
             fadeOuterR: maxR * 0.65,
             fadeCenter: patternFadeCenter,
-            fadeDownStretch: 1.9,
-            fadeBottomTaper: 0.9,
+            fadeDownStretch: 2.5,
+            fadeBottomTaper: 0.75,
             maxOpacity: 0.82,
             gradientMinY: -maxR * 1.1,
             gradientMaxY:  maxR * 1.1,
             gradientDark:   [0.60, 0.48, 0.35],
             gradientBright: [1.0, 1.0, 0.95],
+            strokeColor: 0xFFC968,
+            strokeOpacity: 1.0,
           });
           underlay.name = 'lattice-underlay';
           underlay.position.set(cx, cy, maxZ + 0.005);
           __logoMesh.add(underlay);
+          if (underlay.userData.strokeTimeUniform) strokeTimeUniforms.push(underlay.userData.strokeTimeUniform);
 
-          // Gate frame — extruded ring along the silhouette with inner/outer
+          // Gate frame — extruded arch along the silhouette with inner/outer
           // lips and evenly-spaced bosses. Sits on top of everything at the
-          // rim so the logo reads as framed by an architectural gate.
+          // rim so the logo reads as framed by an architectural gate. The
+          // bottom horizontal bar is clipped off so the frame reads as an
+          // open arch, not a closed ring.
+          let hullMinY = Infinity, hullMaxY = -Infinity;
+          for (const p of clipPolygon) {
+            if (p.y < hullMinY) hullMinY = p.y;
+            if (p.y > hullMaxY) hullMaxY = p.y;
+          }
+          const gateBottomCutY = hullMinY + (hullMaxY - hullMinY) * 0.08;
           const gate = createGateFrame({
             hull: clipPolygon,
             frameWidth: gateFrameWidth,
@@ -574,8 +617,9 @@
             color: 0xB8915A,
             gradientMinY: -maxR * 1.1,
             gradientMaxY:  maxR * 1.1,
-            gradientDark:   [0.7, 0.58, 0.42],
+            gradientDark:   [0.35, 0.28, 0.20],
             gradientBright: [1.02, 1.0, 0.95],
+            bottomCutY: gateBottomCutY,
           });
           gate.name = 'gate-frame';
           gate.position.set(cx, cy, maxZ + 0.45);
@@ -632,10 +676,12 @@
       const halfH = (bbox.max.y - bbox.min.y) * 0.5;
       const halfExtent = Math.max(halfW, halfH);
       const zTol = Math.max(halfExtent * 0.02, 0.1);
-      // Inner-star filter — spans the full inner motif (histogram valley
-      // sits around dist 0.58*halfExtent before the outer lamp silhouette
-      // explodes), so this catches the whole outline, not just its tips.
+      // Inner-cutout filter. Circular at/above centre (unchanged — prior
+      // value caught the full upper motif), but stretched downward so the
+      // inner edge keeps being traced past halfExtent*0.58 on its way to
+      // the two bottom corners of the cutout.
       const innerRadius = halfExtent * 0.58;
+      const innerRadiusDown = halfExtent * 0.98;
 
       // Collect inner-star outline edge segments on the front face
       const starSegments = [];
@@ -643,8 +689,13 @@
         const x1 = edgePos.getX(i), y1 = edgePos.getY(i), z1 = edgePos.getZ(i);
         const x2 = edgePos.getX(i+1), y2 = edgePos.getY(i+1), z2 = edgePos.getZ(i+1);
         const mx = (x1+x2)/2, my = (y1+y2)/2;
-        const dist = Math.sqrt(mx*mx + my*my);
-        if (dist < innerRadius && Math.abs(z1 - frontZ) < zTol && Math.abs(z2 - frontZ) < zTol) {
+        // Elliptical radius: vertical axis grows as my goes negative so the
+        // filter region extends down to the cutout's bottom corners without
+        // widening sideways (which would start catching the outer silhouette).
+        const vNorm = my >= 0 ? my / innerRadius : my / innerRadiusDown;
+        const hNorm = mx / innerRadius;
+        const inside = (hNorm * hNorm + vNorm * vNorm) < 1;
+        if (inside && Math.abs(z1 - frontZ) < zTol && Math.abs(z2 - frontZ) < zTol) {
           starSegments.push({x1, y1, x2, y2});
         }
       }
@@ -880,6 +931,7 @@
       const t = clock.getElapsedTime();
       if (particleMat) particleMat.uniforms.uTime.value = t;
       if (galaxyMat) galaxyMat.uniforms.uTime.value = t;
+      for (let i = 0; i < strokeTimeUniforms.length; i++) strokeTimeUniforms[i].value = t;
       // Directional-light breathing: key sweeps hard, rim drifts on offset phase
       // so you can actually see shading shift across the logo. ~6s cycle.
       keyLight.intensity = 2.5 + 2.0 * Math.sin(t * 1.0);

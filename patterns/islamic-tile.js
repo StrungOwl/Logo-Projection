@@ -148,6 +148,12 @@ export function createIslamicPanel({
   material = null,
   clipPolygon = null,
   clipMargin = 0,
+  // Convex CCW polygon (panel-local). When provided, the fragment shader
+  // hard-clips every rosette/strap/knot/stroke fragment to the polygon's
+  // interior — tiles that overhang get sliced along the polygon edge
+  // instead of poking past it. Separate from `clipPolygon` so placement
+  // can still allow overhang while the rendered edge stays clean.
+  hullClip = null,
   fadeInnerR = 0,
   fadeOuterR = 0,
   fadeCenter = [0, 0],
@@ -161,6 +167,8 @@ export function createIslamicPanel({
   gradientMaxY = 5,
   gradientDark = [0.7, 0.58, 0.42],
   gradientBright = [1.0, 1.0, 1.0],
+  strokeColor = null,
+  strokeOpacity = 1.0,
 } = {}) {
   const group = new THREE.Group();
 
@@ -169,6 +177,13 @@ export function createIslamicPanel({
     metalness: 0.55,
     roughness: 0.45,
   });
+
+  // Push the fill slightly back so edge lines sit cleanly on top
+  if (strokeColor !== null) {
+    goldMat.polygonOffset = true;
+    goldMat.polygonOffsetFactor = 1;
+    goldMat.polygonOffsetUnits = 1;
+  }
 
   const panelMatrixInv = new THREE.Matrix4();
   const fadeGradUniforms = {
@@ -190,8 +205,45 @@ export function createIslamicPanel({
     goldMat.transparent = true;
   }
 
+  // Precompute half-plane equations for the hard hull clip. Each edge a→b
+  // of a CCW convex polygon has an inward normal; a point p is inside iff
+  // n·p + d >= 0 for every edge. Packed as vec3(nx, ny, d).
+  let hullPlanes = null;
+  let hullPlaneCount = 0;
+  if (hullClip && hullClip.length >= 3) {
+    hullPlaneCount = hullClip.length;
+    hullPlanes = new Float32Array(hullPlaneCount * 3);
+    for (let i = 0; i < hullPlaneCount; i++) {
+      const a = hullClip[i];
+      const b = hullClip[(i + 1) % hullPlaneCount];
+      const ex = b.x - a.x, ey = b.y - a.y;
+      const len = Math.hypot(ex, ey) || 1;
+      const nx = -ey / len, ny = ex / len;
+      const d = -(nx * a.x + ny * a.y);
+      hullPlanes[i * 3] = nx;
+      hullPlanes[i * 3 + 1] = ny;
+      hullPlanes[i * 3 + 2] = d;
+    }
+  }
+  const hullClipUniforms = hullPlanes
+    ? { uHullPlanes: { value: hullPlanes } }
+    : null;
+  const hullClipCommon = hullPlanes
+    ? `
+      #define HULL_CLIP_COUNT ${hullPlaneCount}
+      uniform vec3 uHullPlanes[HULL_CLIP_COUNT];`
+    : '';
+  const hullClipCall = hullPlanes
+    ? `
+      for (int _hi = 0; _hi < HULL_CLIP_COUNT; _hi++) {
+        vec3 _pl = uHullPlanes[_hi];
+        if (_pl.x * vPanelXY.x + _pl.y * vPanelXY.y + _pl.z < 0.0) discard;
+      }`
+    : '';
+
   goldMat.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, fadeGradUniforms);
+    if (hullClipUniforms) Object.assign(shader.uniforms, hullClipUniforms);
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>',
         '#include <common>\nvarying vec3 vGradWP;\nvarying vec2 vPanelXY;\nuniform mat4 uPanelInv;')
@@ -214,18 +266,18 @@ export function createIslamicPanel({
          uniform float uFadeBottomTaper;
          uniform float uMaxOpacity;
          varying vec3  vGradWP;
-         varying vec2  vPanelXY;`)
+         varying vec2  vPanelXY;
+         ${hullClipCommon}`)
       .replace('#include <color_fragment>',
         `#include <color_fragment>
+         ${hullClipCall}
          float _gt = clamp((vGradWP.y - uGradMinY) / max(uGradMaxY - uGradMinY, 1e-4), 0.0, 1.0);
          diffuseColor.rgb *= mix(uGradDark, uGradBright, _gt);`)
       .replace('#include <dithering_fragment>',
         `#include <dithering_fragment>
          vec2  _delta = vPanelXY - uFadeCenter;
-         // Stretch only downward (panel-local -Y is down) — top stays round.
-         if (_delta.y < 0.0) _delta.y /= max(uFadeDownStretch, 1e-4);
-         // Pinch horizontal reach the further down we travel — teardrop shape.
-         float _downN = clamp(-_delta.y / max(uFadeOuter, 1e-4), 0.0, 2.0);
+         _delta.y /= max(uFadeDownStretch, 1e-4);
+         float _downN = clamp(abs(_delta.y) / max(uFadeOuter, 1e-4), 0.0, 2.0);
          _delta.x *= 1.0 + uFadeBottomTaper * _downN;
          float _d = length(_delta);
          float _a = (uFadeOuter > uFadeInner)
@@ -268,10 +320,93 @@ export function createIslamicPanel({
   const vStrapGeo = buildStrapGeometry(vStrapLen, strapHalfWidth, reliefDepth * 0.75);
   const knotGeo = buildKnotGeometry(knotSize, reliefDepth * 0.9);
 
+  // Optional stroke: real edge lines per tile, faded to match the fill
+  let mainEdges = null, secondaryEdges = null, hStrapEdges = null,
+      vStrapEdges = null, knotEdges = null, lineMat = null;
+  const strokeUniforms = {
+    uTime:        { value: 0 },
+    uTwinkleSeed: { value: 0 },
+  };
+  if (strokeColor !== null) {
+    const crease = 30;
+    mainEdges      = new THREE.EdgesGeometry(mainGeo, crease);
+    secondaryEdges = new THREE.EdgesGeometry(secondaryGeo, crease);
+    hStrapEdges    = new THREE.EdgesGeometry(hStrapGeo, crease);
+    vStrapEdges    = new THREE.EdgesGeometry(vStrapGeo, crease);
+    knotEdges      = new THREE.EdgesGeometry(knotGeo, crease);
+
+    lineMat = new THREE.LineBasicMaterial({
+      color: strokeColor,
+      transparent: true,
+      opacity: strokeOpacity,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    lineMat.onBeforeCompile = (shader) => {
+      Object.assign(shader.uniforms, fadeGradUniforms, strokeUniforms);
+      if (hullClipUniforms) Object.assign(shader.uniforms, hullClipUniforms);
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>',
+          '#include <common>\nvarying vec2 vPanelXY;\nuniform mat4 uPanelInv;')
+        .replace('#include <project_vertex>',
+          `#include <project_vertex>
+           vec4 _wp = modelMatrix * vec4(position, 1.0);
+           vPanelXY = (uPanelInv * _wp).xy;`);
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>',
+          `#include <common>
+           uniform float uFadeInner;
+           uniform float uFadeOuter;
+           uniform vec2  uFadeCenter;
+           uniform float uFadeDownStretch;
+           uniform float uFadeBottomTaper;
+           uniform float uMaxOpacity;
+           uniform float uTime;
+           uniform float uTwinkleSeed;
+           varying vec2  vPanelXY;
+           ${hullClipCommon}`)
+        .replace('#include <dithering_fragment>',
+          `#include <dithering_fragment>
+           ${hullClipCall}
+           vec2  _delta = vPanelXY - uFadeCenter;
+           if (_delta.y < 0.0) _delta.y /= max(uFadeDownStretch, 1e-4);
+           float _downN = clamp(-_delta.y / max(uFadeOuter, 1e-4), 0.0, 2.0);
+           _delta.x *= 1.0 + uFadeBottomTaper * _downN;
+           float _d = length(_delta);
+           float _a = (uFadeOuter > uFadeInner)
+              ? smoothstep(uFadeInner, uFadeOuter, _d)
+              : 1.0;
+           // Per-instance twinkle: two sine waves offset by a random seed
+           // give a non-periodic-feeling flicker from 0 to full brightness.
+           float _t1 = sin(uTime * 1.2 + uTwinkleSeed);
+           float _t2 = sin(uTime * 0.7 + uTwinkleSeed * 2.3);
+           float _twinkle = clamp(0.5 + 0.65 * (_t1 * 0.6 + _t2 * 0.4), 0.0, 1.0);
+           gl_FragColor.a *= _a * uMaxOpacity * _twinkle;`);
+    };
+  }
+
+  // Make a stroke LineSegments with a random twinkle phase. onBeforeRender
+  // writes that phase into the shared uniform just before this instance's
+  // draw call, so all strokes share one shader/material but flicker out of sync.
+  function makeStroke(edges) {
+    const ls = new THREE.LineSegments(edges, lineMat);
+    ls.userData.twinkleSeed = Math.random() * Math.PI * 2;
+    ls.onBeforeRender = function () {
+      strokeUniforms.uTwinkleSeed.value = this.userData.twinkleSeed;
+    };
+    return ls;
+  }
+
+  group.userData.strokeTimeUniform = strokeUniforms.uTime;
+
   const startX = -(cols - 1) * tileStep * 0.5;
   const startY = -(rows - 1) * tileStep * 0.5;
+  // When clipMargin is explicitly set (> 0) it fully controls the clip —
+  // smaller than a tile's own radius, tiles overhang the polygon. Callers
+  // use this to let the outer ring of tiles slip under a surrounding frame
+  // instead of stopping short at inset = r.
   const inClip = clipPolygon
-    ? (x, y, r) => insideWithMargin(x, y, clipPolygon, Math.max(clipMargin, r))
+    ? (x, y, r) => insideWithMargin(x, y, clipPolygon, clipMargin > 0 ? clipMargin : r)
     : () => true;
 
   // --- Rosettes on a checkerboard ---
@@ -284,6 +419,9 @@ export function createIslamicPanel({
       if (!inClip(x, y, radius)) continue;
       const mesh = new THREE.Mesh(isMain ? mainGeo : secondaryGeo, goldMat);
       mesh.position.set(x, y, 0);
+      if (lineMat) {
+        mesh.add(makeStroke(isMain ? mainEdges : secondaryEdges));
+      }
       group.add(mesh);
     }
   }
@@ -296,6 +434,7 @@ export function createIslamicPanel({
       if (!inClip(x, y, hStrapLen * 0.5)) continue;
       const mesh = new THREE.Mesh(hStrapGeo, goldMat);
       mesh.position.set(x, y, 0);
+      if (lineMat) mesh.add(makeStroke(hStrapEdges));
       group.add(mesh);
     }
   }
@@ -309,6 +448,7 @@ export function createIslamicPanel({
       const mesh = new THREE.Mesh(vStrapGeo, goldMat);
       mesh.position.set(x, y, 0);
       mesh.rotation.z = Math.PI * 0.5;
+      if (lineMat) mesh.add(makeStroke(vStrapEdges));
       group.add(mesh);
     }
   }
@@ -321,6 +461,7 @@ export function createIslamicPanel({
       if (!inClip(x, y, knotSize)) continue;
       const mesh = new THREE.Mesh(knotGeo, goldMat);
       mesh.position.set(x, y, 0);
+      if (lineMat) mesh.add(makeStroke(knotEdges));
       group.add(mesh);
     }
   }
