@@ -79,6 +79,14 @@ export function createLatticeUnderlay({
   gradientBright = [1.0, 1.0, 1.0],
   strokeColor = null,
   strokeOpacity = 1.0,
+  pulseSpeed = 0.0,
+  pulseSpeedVariance = 0.0,
+  pulseBrightMin = 1.0,
+  pulseBrightMax = 1.0,
+  pulseEmissiveMin = 0.0,
+  pulseEmissiveMax = 0.0,
+  pulseColorA = [1.0, 1.0, 1.0],
+  pulseColorB = [1.0, 1.0, 1.0],
 } = {}) {
   const group = new THREE.Group();
 
@@ -108,6 +116,21 @@ export function createLatticeUnderlay({
     uGradMaxY:    { value: gradientMaxY },
     uGradDark:    { value: new THREE.Vector3(...gradientDark) },
     uGradBright:  { value: new THREE.Vector3(...gradientBright) },
+  };
+  // Per-hex pulse uniforms. uPulseSeed + uPulseSpeedFactor are swapped
+  // per draw by each mesh's onBeforeRender so every hex cycles at a
+  // different phase AND period while sharing one material.
+  const pulseUniforms = {
+    uPulseTime:        { value: 0 },
+    uPulseSpeed:       { value: pulseSpeed },
+    uPulseSeed:        { value: 0 },
+    uPulseSpeedFactor: { value: 1 },
+    uPulseBrightMin:   { value: pulseBrightMin },
+    uPulseBrightMax:   { value: pulseBrightMax },
+    uPulseEmissiveMin: { value: pulseEmissiveMin },
+    uPulseEmissiveMax: { value: pulseEmissiveMax },
+    uPulseColorA:      { value: new THREE.Vector3(...pulseColorA) },
+    uPulseColorB:      { value: new THREE.Vector3(...pulseColorB) },
   };
 
   if (fadeOuterR > 0 || maxOpacity < 1) {
@@ -155,7 +178,7 @@ export function createLatticeUnderlay({
     : '';
 
   mat.onBeforeCompile = (shader) => {
-    Object.assign(shader.uniforms, fadeGradUniforms);
+    Object.assign(shader.uniforms, fadeGradUniforms, pulseUniforms);
     if (hullClipUniforms) Object.assign(shader.uniforms, hullClipUniforms);
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>',
@@ -178,6 +201,16 @@ export function createLatticeUnderlay({
          uniform float uFadeDownStretch;
          uniform float uFadeBottomTaper;
          uniform float uMaxOpacity;
+         uniform float uPulseTime;
+         uniform float uPulseSpeed;
+         uniform float uPulseSeed;
+         uniform float uPulseSpeedFactor;
+         uniform float uPulseBrightMin;
+         uniform float uPulseBrightMax;
+         uniform float uPulseEmissiveMin;
+         uniform float uPulseEmissiveMax;
+         uniform vec3  uPulseColorA;
+         uniform vec3  uPulseColorB;
          varying vec3  vGradWP;
          varying vec2  vPanelXY;
          ${hullClipCommon}`)
@@ -185,7 +218,19 @@ export function createLatticeUnderlay({
         `#include <color_fragment>
          ${hullClipCall}
          float _gt = clamp((vGradWP.y - uGradMinY) / max(uGradMaxY - uGradMinY, 1e-4), 0.0, 1.0);
-         diffuseColor.rgb *= mix(uGradDark, uGradBright, _gt);`)
+         float _raw = 0.5 + 0.5 * sin(uPulseTime * uPulseSpeed * uPulseSpeedFactor + uPulseSeed);
+         // smoothstep applied twice = quintic-ish ease-in-out: each hex
+         // sits longer at its dim and bright extremes with a snappier glide
+         // through the middle, so the pulse reads as a slow held breath
+         // rather than constant sweeping motion.
+         float _pk = smoothstep(0.0, 1.0, smoothstep(0.0, 1.0, _raw));
+         float _pBright = mix(uPulseBrightMin, uPulseBrightMax, _pk);
+         float _pEmiss  = mix(uPulseEmissiveMin, uPulseEmissiveMax, _pk);
+         vec3  _pColor  = mix(uPulseColorA, uPulseColorB, _pk);
+         diffuseColor.rgb = _pColor * mix(uGradDark, uGradBright, _gt) * _pBright;`)
+      .replace('#include <emissivemap_fragment>',
+        `#include <emissivemap_fragment>
+         totalEmissiveRadiance += _pColor * _pEmiss;`)
       .replace('#include <dithering_fragment>',
         `#include <dithering_fragment>
          vec2  _delta = vPanelXY - uFadeCenter;
@@ -266,6 +311,7 @@ export function createLatticeUnderlay({
     };
   }
   group.userData.strokeTimeUniform = strokeUniforms.uTime;
+  group.userData.pulseTimeUniform  = pulseUniforms.uPulseTime;
 
   const startX = -(cols - 1) * tileStep * 0.5;
   const startY = -(rows - 1) * tileStep * 0.5;
@@ -281,7 +327,14 @@ export function createLatticeUnderlay({
       const mesh = new THREE.Mesh(hexGeo, mat);
       mesh.position.set(x, y, 0);
       mesh.userData.rowIndex = r;
+      mesh.userData.baseX = x;
       mesh.userData.baseY = y;
+      mesh.userData.pulseSeed = Math.random() * Math.PI * 2;
+      mesh.userData.pulseSpeedFactor = 1 + (Math.random() - 0.5) * 2 * pulseSpeedVariance;
+      mesh.onBeforeRender = function () {
+        pulseUniforms.uPulseSeed.value        = this.userData.pulseSeed;
+        pulseUniforms.uPulseSpeedFactor.value = this.userData.pulseSpeedFactor;
+      };
       if (edgesGeo) {
         const stroke = new THREE.LineSegments(edgesGeo, lineMat);
         stroke.userData.twinkleSeed = Math.random() * Math.PI * 2;

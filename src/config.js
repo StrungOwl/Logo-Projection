@@ -46,6 +46,16 @@ export const ANIM = {
   // Logo base material breathes between near-black and full brightness.
   logoBase: { brightnessMin: 0.2, brightnessMax: 1.0, period: 20.0 },
 
+  // Over-exaggerated per-hex pulse on the lattice underlay. Each hex gets
+  // a random phase seed + random speed factor at load time so neighbours
+  // drift out of sync in both phase and period. `brightness*` modulates
+  // diffuse, `emissive*` drives a self-lit pop that cuts past the scene
+  // lighting. `colorAt{Min,Max}` are the dim/bright colour endpoints.
+  latticeHex: { brightnessMin: 0.25, brightnessMax: 1.6,
+                emissiveMin:   0.0,  emissiveMax: 2.8,
+                pulseSpeed:    0.55, speedVariance: 0.6,
+                colorAtMin: '#1A0800', colorAtMax: '#FFB040' },
+
   emberParticles: { cycleDuration: 7.0,
                     bodyColor: '#FF851A', coreColor: '#FFE08C',
                     brightness: 1.7 },
@@ -68,22 +78,26 @@ export const ANIM = {
                    color: '#FFE8C0', hueVariance: 0.08,
                    pointSize: 0.15, trailSize: 25 },
 
-  // Row cascade — pattern grid sits still for `idlePeriod` seconds, then the
-  // rows slide downward out of the gate in a top-first stagger, pause for
-  // `gap` seconds, then slide back in from above (also top-first). Both the
-  // islamic panel and the lattice underlay are driven by the same schedule
-  // keyed off each mesh's panel-local Y so they stay visually locked.
-  // During motion, spark snap is released so the embers drift freely instead
-  // of clinging to now-stale stroke positions (sparks' stroke-cloud is a
-  // static snapshot from load time — it does not follow moving rows).
-  // `slideDistance` must exceed the top-row-to-bottom-hull distance so the
-  // topmost row is fully below the hull clip at max exit.
+  // Radial cascade — pattern grid sits still for `idlePeriod` seconds, then
+  // every tile is pulled inward toward the pattern's fade center (exit),
+  // parked invisibly under the radial opacity fade during `gap`, then
+  // slides back inward from just outside the hull (entry). Stagger is
+  // outer-first: the outermost ring of tiles leaves first and also
+  // arrives first on re-entry, so the pattern empties and refills from
+  // the outside in.  Both the islamic panel and the lattice underlay
+  // share one schedule so they move as one.  During motion, spark snap
+  // is released (see main.js) so the embers drift freely instead of
+  // clinging to stroke positions that no longer match the tile layout.
+  // `outerMargin` is how far past the hull's maximum radius each tile
+  // starts its entry ray (a few units is enough for the hull-clip shader
+  // to hide it; bigger values make the inward slide read as a longer,
+  // faster glide).
   rowCascade: { idlePeriod:    8.0,
-                rowStagger:    0.10,
-                exitDuration:  1.2,
-                gap:           0.5,
-                entryDuration: 1.2,
-                slideDistance: 22.0 },
+                rowStagger:    0.25,
+                exitDuration:  2.5,
+                gap:           1.5,
+                entryDuration: 2.5,
+                outerMargin:   5.0 },
 };
 
 // -----------------------------------------------------------------------

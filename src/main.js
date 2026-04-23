@@ -21,6 +21,8 @@ let logoMaterials = null;
 const strokeTimeUniforms = [];
 const sparkSystems = [];
 const baseColorScratch = new THREE.Color();
+let updateRowCascade = null;
+let cascadeState = null;
 
 loadLogo().then((logo) => {
   galaxyMat = logo.galaxyMat;
@@ -29,6 +31,8 @@ loadLogo().then((logo) => {
   const patternResult = addPatternLayers(logo.logoMesh, logo.meta);
   strokeTimeUniforms.push(...patternResult.strokeTimeUniforms);
   sparkSystems.push(...patternResult.sparkSystems);
+  updateRowCascade = patternResult.updateRowCascade;
+  cascadeState     = patternResult.cascadeState;
 
   scene.add(logo.model);
 
@@ -69,7 +73,16 @@ function animate() {
   }
 
   for (let i = 0; i < strokeTimeUniforms.length; i++) strokeTimeUniforms[i].value = t;
-  for (let i = 0; i < sparkSystems.length; i++)       sparkSystems[i].update(dt);
+
+  // Row cascade runs BEFORE sparks so the cascade state gates this frame's
+  // spark snap: sparks drift freely while rows are moving (their stroke
+  // cloud is a load-time snapshot that doesn't follow row motion).
+  if (updateRowCascade) updateRowCascade(t);
+  const snapScale = cascadeState ? cascadeState.active : 1;
+  for (let i = 0; i < sparkSystems.length; i++) {
+    sparkSystems[i].snapScale = snapScale;
+    sparkSystems[i].update(dt);
+  }
 
   updateLights(lights, t);
 

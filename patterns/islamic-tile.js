@@ -420,6 +420,7 @@ export function createIslamicPanel({
       const mesh = new THREE.Mesh(isMain ? mainGeo : secondaryGeo, goldMat);
       mesh.position.set(x, y, 0);
       mesh.userData.rowIndex = r;
+      mesh.userData.baseX = x;
       mesh.userData.baseY = y;
       if (lineMat) {
         mesh.add(makeStroke(isMain ? mainEdges : secondaryEdges));
@@ -437,6 +438,7 @@ export function createIslamicPanel({
       const mesh = new THREE.Mesh(hStrapGeo, goldMat);
       mesh.position.set(x, y, 0);
       mesh.userData.rowIndex = r;
+      mesh.userData.baseX = x;
       mesh.userData.baseY = y;
       if (lineMat) mesh.add(makeStroke(hStrapEdges));
       group.add(mesh);
@@ -456,6 +458,7 @@ export function createIslamicPanel({
       // cascade wave between their neighbours, not at the same instant as the
       // row above them.
       mesh.userData.rowIndex = r + 0.5;
+      mesh.userData.baseX = x;
       mesh.userData.baseY = y;
       if (lineMat) mesh.add(makeStroke(vStrapEdges));
       group.add(mesh);
@@ -471,6 +474,7 @@ export function createIslamicPanel({
       const mesh = new THREE.Mesh(knotGeo, goldMat);
       mesh.position.set(x, y, 0);
       mesh.userData.rowIndex = r + 0.5;
+      mesh.userData.baseX = x;
       mesh.userData.baseY = y;
       if (lineMat) mesh.add(makeStroke(knotEdges));
       group.add(mesh);

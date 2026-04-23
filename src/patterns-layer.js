@@ -107,11 +107,20 @@ export function addPatternLayers(logoMesh, meta) {
     gradientBright: hexToRgb(COLORS.latticeUnderlay.gradientBright),
     strokeColor: COLORS.latticeUnderlay.stroke,
     strokeOpacity: 1.0,
+    pulseSpeed:         ANIM.latticeHex.pulseSpeed,
+    pulseSpeedVariance: ANIM.latticeHex.speedVariance,
+    pulseBrightMin:     ANIM.latticeHex.brightnessMin,
+    pulseBrightMax:     ANIM.latticeHex.brightnessMax,
+    pulseEmissiveMin:   ANIM.latticeHex.emissiveMin,
+    pulseEmissiveMax:   ANIM.latticeHex.emissiveMax,
+    pulseColorA:        hexToRgb(ANIM.latticeHex.colorAtMin),
+    pulseColorB:        hexToRgb(ANIM.latticeHex.colorAtMax),
   });
   underlay.name = 'lattice-underlay';
   underlay.position.set(cx, cy, maxZ + 0.005);
   logoMesh.add(underlay);
   if (underlay.userData.strokeTimeUniform) strokeTimeUniforms.push(underlay.userData.strokeTimeUniform);
+  if (underlay.userData.pulseTimeUniform)  strokeTimeUniforms.push(underlay.userData.pulseTimeUniform);
   patternsToRefresh.push(underlay);
 
   // Gate frame — extruded arch along the silhouette. Legs extend to the
@@ -189,30 +198,45 @@ export function addPatternLayers(logoMesh, meta) {
   sparkSystems.push(panelSparks, latticeSparks);
 
   // ---------------------------------------------------------------------
-  // Row cascade driver — drives a staggered downward slide across both
-  // patterns. Each tagged mesh (see islamic-tile.js + lattice-underlay.js,
-  // userData.baseY) gets a time-varying Y offset keyed off its baseY, so
-  // the islamic panel and the larger lattice underlay move as one wave
-  // even though their row indexing starts at different Y coordinates.
+  // Radial cascade driver. Each tagged mesh has a rest position (baseX,
+  // baseY) and an outward ray through the pattern's fade center.
+  //   Exit  — every tile is pulled along its ray toward the fade center.
+  //           The pattern's radial opacity fade already drops tiles to
+  //           transparent at the center, so convergence reads as tiles
+  //           dissolving inward rather than piling up.
+  //   Entry — every tile re-enters from just outside the hull on its own
+  //           ray, sliding inward along the ray to its rest position. The
+  //           hull-clip shader discards any fragment past the hull, so
+  //           tiles only become visible as they cross the silhouette.
+  // Outer-first stagger: tiles farther from the fade center begin motion
+  // first on exit and reach rest first on entry, so the pattern empties
+  // from the outside in and refills from the outside in.
   // ---------------------------------------------------------------------
   const cascadeMeshes = [];
-  panel   .traverse(o => { if (o.userData.baseY !== undefined) cascadeMeshes.push(o); });
-  underlay.traverse(o => { if (o.userData.baseY !== undefined) cascadeMeshes.push(o); });
+  panel   .traverse(o => { if (o.userData.baseX !== undefined) cascadeMeshes.push(o); });
+  underlay.traverse(o => { if (o.userData.baseX !== undefined) cascadeMeshes.push(o); });
 
-  let maxBaseY = -Infinity, minBaseY = Infinity;
+  const fcx = patternFadeCenter[0];
+  const fcy = patternFadeCenter[1];
+  let maxRadius = 0;
   for (const m of cascadeMeshes) {
-    if (m.userData.baseY > maxBaseY) maxBaseY = m.userData.baseY;
-    if (m.userData.baseY < minBaseY) minBaseY = m.userData.baseY;
+    const dx = m.userData.baseX - fcx;
+    const dy = m.userData.baseY - fcy;
+    const r  = Math.hypot(dx, dy);
+    m.userData.radius = r;
+    // Unit ray away from the fade center. Tiles exactly at the center
+    // fall back to a neutral direction; they're inside the fade zone
+    // (fully transparent) at that radius anyway.
+    m.userData.rayX = r > 1e-4 ? dx / r : 0;
+    m.userData.rayY = r > 1e-4 ? dy / r : 1;
+    if (r > maxRadius) maxRadius = r;
   }
-  // staggerIdx: 0 for topmost mesh, increasing downward in units of tileStep.
-  // Fractional for between-row straps/knots so they trigger between their
-  // neighbours rather than alongside them.
   for (const m of cascadeMeshes) {
-    m.userData.staggerIdx = (maxBaseY - m.userData.baseY) / tileStep;
+    m.userData.staggerIdx = (maxRadius - m.userData.radius) / tileStep;
   }
-  const maxStaggerIdx = (maxBaseY - minBaseY) / tileStep;
+  const maxStaggerIdx = maxRadius / tileStep;
 
-  const cascadeState = { active: 1 };   // 1 = pattern is still, 0 = rows moving
+  const cascadeState = { active: 1 };
   let lastWasIdle = false;
 
   function updateRowCascade(t) {
@@ -226,11 +250,10 @@ export function addPatternLayers(logoMesh, meta) {
     const phase           = ((t % cycleLen) + cycleLen) % cycleLen;
 
     if (phase < cfg.idlePeriod) {
-      // Idle — reset once on idle entry, then skip the per-mesh loop
-      // so the common case costs almost nothing per frame.
       if (!lastWasIdle) {
         for (let i = 0; i < cascadeMeshes.length; i++) {
           const m = cascadeMeshes[i];
+          m.position.x = m.userData.baseX;
           m.position.y = m.userData.baseY;
         }
         lastWasIdle = true;
@@ -241,32 +264,49 @@ export function addPatternLayers(logoMesh, meta) {
     lastWasIdle = false;
     cascadeState.active = 0;
 
-    const localT = phase - cfg.idlePeriod;
-    const slide  = cfg.slideDistance;
-    const exDur  = cfg.exitDuration;
-    const enDur  = cfg.entryDuration;
-    const stag   = cfg.rowStagger;
+    const localT     = phase - cfg.idlePeriod;
+    const exDur      = cfg.exitDuration;
+    const enDur      = cfg.entryDuration;
+    const stag       = cfg.rowStagger;
+    const outerRing  = maxRadius + cfg.outerMargin;
 
     for (let i = 0; i < cascadeMeshes.length; i++) {
-      const m       = cascadeMeshes[i];
-      const sIdx    = m.userData.staggerIdx;
+      const m    = cascadeMeshes[i];
+      const sIdx = m.userData.staggerIdx;
+      const bx   = m.userData.baseX;
+      const by   = m.userData.baseY;
+      const rayX = m.userData.rayX;
+      const rayY = m.userData.rayY;
+
       const exStart = sIdx * stag;
       const enStart = entryPhaseStart + sIdx * stag;
-      let offset;
+
+      let posX, posY;
       if (localT < exStart) {
-        offset = 0;
+        posX = bx; posY = by;
       } else if (localT < exStart + exDur) {
+        // Exit: rest → fade-center, ease-in cubic (accelerating suction).
         const u = (localT - exStart) / exDur;
-        offset = -slide * u * u * u;                  // ease-in cubic
+        const e = u * u * u;
+        posX = bx + (fcx - bx) * e;
+        posY = by + (fcy - by) * e;
       } else if (localT < enStart) {
-        offset = -slide;
+        // Gap: parked at the fade center (invisible under radial fade).
+        posX = fcx; posY = fcy;
       } else if (localT < enStart + enDur) {
-        const v = 1 - (localT - enStart) / enDur;
-        offset = -slide * v * v * v;                  // ease-out cubic (mirror)
+        // Entry: outer-ring → rest, ease-in-out cubic. Tiles stay beyond
+        // the hull at entry start (clipped) and settle smoothly into place.
+        const u = (localT - enStart) / enDur;
+        const e = u < 0.5 ? 4 * u * u * u : 1 - Math.pow(-2 * u + 2, 3) / 2;
+        const outerX = fcx + outerRing * rayX;
+        const outerY = fcy + outerRing * rayY;
+        posX = outerX + (bx - outerX) * e;
+        posY = outerY + (by - outerY) * e;
       } else {
-        offset = 0;
+        posX = bx; posY = by;
       }
-      m.position.y = m.userData.baseY + offset;
+      m.position.x = posX;
+      m.position.y = posY;
     }
   }
 
