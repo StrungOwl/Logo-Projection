@@ -128,7 +128,7 @@
     import * as THREE from 'three';
     import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
     import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-    import { createIslamicDome } from './patterns/islamic-tile.js';
+    import { createIslamicPanel } from './patterns/islamic-tile.js';
 
     // Scene
     const scene = new THREE.Scene();
@@ -176,11 +176,6 @@
     const innerGlow = new THREE.PointLight(0xff6a18, 80, 40, 1.6);
     innerGlow.position.set(0, -1.0, -2.0);
     scene.add(innerGlow);
-
-    // Islamic tile dome wrapping the scene
-    const dome = createIslamicDome();
-    dome.name = 'islamic-dome';
-    scene.add(dome);
 
     // Controls
     const controls = new OrbitControls(camera, renderer.domElement);
@@ -254,27 +249,46 @@
           void main() {
             vec2 p = vLocalPos.xy * 0.08;
 
-            vec2 flow = vec2(uTime * 0.010, uTime * 0.008);
-            float n1 = fbm(p * 0.6 + flow);
-            float n2 = fbm(p * 1.4 - flow * 0.5 + vec2(5.0, -3.0));
-            float nebulaDensity = pow(clamp(n1 * n2 * 2.6, 0.0, 1.5), 1.6);
+            // Domain-warped FBM — q and r feed p back into itself on a slow
+            // time offset so the clouds churn and morph in place instead of
+            // just scrolling past.
+            float tw = uTime * 0.05;
+            vec2 q = vec2(
+              fbm(p + vec2(tw * 0.6, -tw * 0.4)),
+              fbm(p + vec2(5.2, 1.3) - vec2(tw * 0.3, tw * 0.5))
+            );
+            vec2 r = vec2(
+              fbm(p + 3.0 * q + vec2(1.7, 9.2) + vec2(tw * 0.8, 0.0)),
+              fbm(p + 3.0 * q + vec2(8.3, 2.8) - vec2(0.0, tw * 0.7))
+            );
+            float n1 = fbm(p * 0.6 + 2.2 * r);
+            float n2 = fbm(p * 1.3 + 1.8 * r + vec2(5.0, -3.0));
+            float nebulaDensity = pow(clamp(n1 * n2 * 2.4, 0.0, 1.3), 2.4);
+            // Threshold so most of the field falls to pure black void,
+            // leaving only brighter tendrils. Lots of empty sky for stars.
+            nebulaDensity = smoothstep(0.18, 0.85, nebulaDensity);
 
-            vec3 deepSpace = vec3(0.010, 0.006, 0.035);
-            vec3 nebPurple = vec3(0.45, 0.15, 0.80);
-            vec3 nebBlue   = vec3(0.08, 0.30, 0.95);
-            vec3 nebPink   = vec3(0.95, 0.25, 0.55);
-            vec3 nebula = mix(nebPurple, nebBlue, n1);
-            nebula = mix(nebula, nebPink, smoothstep(0.45, 0.9, n2));
+            // Desaturated amber/rust palette — warm dust, not technicolor nebula.
+            vec3 deepSpace = vec3(0.012, 0.009, 0.018);
+            vec3 nebDark   = vec3(0.10, 0.06, 0.04);
+            vec3 nebAmber  = vec3(0.60, 0.38, 0.14);
+            vec3 nebRust   = vec3(0.40, 0.18, 0.09);
+            vec3 nebula = mix(nebDark, nebAmber, n1);
+            nebula = mix(nebula, nebRust, smoothstep(0.55, 0.95, n2));
 
+            // Denser starfield — extra layers and lower thresholds so more
+            // cells seed a star.
             float stars = 0.0;
-            stars += starLayer(vLocalPos.xy, 0.55, 0.88, 14.0) * 1.2;
-            stars += starLayer(vLocalPos.xy, 1.10, 0.92, 18.0) * 0.9;
-            stars += starLayer(vLocalPos.xy, 2.60, 0.95, 22.0) * 0.6;
-            stars += starLayer(vLocalPos.xy, 5.20, 0.97, 28.0) * 0.35;
+            stars += starLayer(vLocalPos.xy, 0.55, 0.78, 14.0) * 1.2;
+            stars += starLayer(vLocalPos.xy, 1.10, 0.84, 18.0) * 1.0;
+            stars += starLayer(vLocalPos.xy, 2.20, 0.88, 22.0) * 0.8;
+            stars += starLayer(vLocalPos.xy, 4.20, 0.92, 26.0) * 0.55;
+            stars += starLayer(vLocalPos.xy, 7.50, 0.95, 30.0) * 0.4;
+            stars += starLayer(vLocalPos.xy, 12.0, 0.97, 34.0) * 0.28;
 
             vec3 color = deepSpace;
-            color += nebula * nebulaDensity * 0.6;   // dim the cool nebula so warmth dominates
-            color += vec3(1.0, 0.96, 0.92) * stars * 2.4;
+            color += nebula * nebulaDensity * 0.55;
+            color += vec3(1.0, 0.92, 0.78) * stars * 2.4;
 
             // Vibrant orange back glow — radial gradient brightest at center, fades to rim
             float dCenter = length(vLocalPos.xy - uCenter) / max(uRadius, 0.0001);
@@ -375,11 +389,37 @@
           }
           shape.closePath();
 
+          // Max distance from centroid -> use as radius for the orange glow falloff
+          let maxR = 0;
+          for (const h of hull) {
+            const dx = h.x - cx, dy = h.y - cy;
+            const r = Math.sqrt(dx * dx + dy * dy);
+            if (r > maxR) maxR = r;
+          }
+          galaxyMat.uniforms.uCenter.value.set(cx, cy);
+          galaxyMat.uniforms.uRadius.value = maxR;
+
           const silhouetteGeo = new THREE.ShapeGeometry(shape);
           const galaxyMesh = new THREE.Mesh(silhouetteGeo, galaxyMat);
           galaxyMesh.position.set(0, 0, maxZ - 0.5); // just behind amber front face, in logo's local space
           galaxyMesh.renderOrder = -1;
           __logoMesh.add(galaxyMesh);
+
+          // Islamic tile panel: flat grid of rosettes + straps + knots, clipped
+          // to the logo's front-face hull so the motif sits only on the star.
+          const clipPolygon = hull.map(h => ({ x: h.x - cx, y: h.y - cy }));
+          const panelSpan = maxR * 1.9;
+          const tileStep = 3.6;
+          const cols = Math.max(3, Math.ceil(panelSpan / tileStep) | 1);
+          const panel = createIslamicPanel({
+            cols,
+            rows: cols,
+            tileStep,
+            clipPolygon,
+          });
+          panel.name = 'islamic-panel';
+          panel.position.set(cx, cy, maxZ + 0.02);
+          __logoMesh.add(panel);
         }
       }
 
@@ -410,26 +450,55 @@
       const edgesGeo = new THREE.EdgesGeometry(targetMesh.geometry, 30);
       const edgePos = edgesGeo.attributes.position;
 
-      // Collect star outline edge segments on front face (z ~ 12)
+      // Derive front-face z and inner-cutout cutoff from the mesh bbox so
+      // detection survives model rescales — hardcoded thresholds (z≈12,
+      // dist<25) silently dropped all segments when the geometry changed.
+      targetMesh.geometry.computeBoundingBox();
+      const bbox = targetMesh.geometry.boundingBox;
+      const frontZ = bbox.max.z;
+      const halfW = (bbox.max.x - bbox.min.x) * 0.5;
+      const halfH = (bbox.max.y - bbox.min.y) * 0.5;
+      const halfExtent = Math.max(halfW, halfH);
+      const zTol = Math.max(halfExtent * 0.02, 0.1);
+      const innerRadius = halfExtent * 0.55;
+
+      // Collect arch-outline edge segments on the front face
       const starSegments = [];
       for (let i = 0; i < edgePos.count; i += 2) {
         const x1 = edgePos.getX(i), y1 = edgePos.getY(i), z1 = edgePos.getZ(i);
         const x2 = edgePos.getX(i+1), y2 = edgePos.getY(i+1), z2 = edgePos.getZ(i+1);
         const mx = (x1+x2)/2, my = (y1+y2)/2;
         const dist = Math.sqrt(mx*mx + my*my);
-        if (dist < 25 && Math.abs(z1 - 12) < 0.1 && Math.abs(z2 - 12) < 0.1) {
+        if (dist < innerRadius && Math.abs(z1 - frontZ) < zTol && Math.abs(z2 - frontZ) < zTol) {
           starSegments.push({x1, y1, x2, y2});
         }
       }
 
-      // Floating ember particles: start in front of logo, curve through the star
-      // opening toward a central vanishing point, collide with the logo surface.
-      const particleCount = 10000;
-      const origins = new Float32Array(particleCount * 3);       // front entry points
-      const passages = new Float32Array(particleCount * 3);      // passage points inside star opening
-      const randoms = new Float32Array(particleCount);
-      const speeds = new Float32Array(particleCount);
-      const sizes = new Float32Array(particleCount);
+      // Fallback: if no inner cutout was detected, synthesise a circular arch
+      // outline at the front face so particles still have something to emerge from.
+      if (starSegments.length === 0) {
+        const R = innerRadius * 0.7;
+        const N = 48;
+        for (let i = 0; i < N; i++) {
+          const a1 = (i / N) * Math.PI * 2;
+          const a2 = ((i + 1) / N) * Math.PI * 2;
+          starSegments.push({
+            x1: Math.cos(a1) * R, y1: Math.sin(a1) * R,
+            x2: Math.cos(a2) * R, y2: Math.sin(a2) * R,
+          });
+        }
+      }
+
+      // Floating ember particles: emerge from deep inside the model (the orange
+      // back-glow), pour through the star opening, then drift out toward the
+      // camera and disperse outward + upward — matching the portal reference.
+      const particleCount = 22000;
+      const origins  = new Float32Array(particleCount * 3);   // deep inside the model
+      const passages = new Float32Array(particleCount * 3);   // through the star opening
+      const targets  = new Float32Array(particleCount * 3);   // out front + outward + upward
+      const randoms  = new Float32Array(particleCount);
+      const speeds   = new Float32Array(particleCount);
+      const sizes    = new Float32Array(particleCount);
 
       let totalLength = 0;
       const lengths = starSegments.map(s => {
@@ -468,23 +537,32 @@
       }
 
       for (let i = 0; i < particleCount; i++) {
-        // Origin: EXACTLY on the star outline (front edge of the negative space)
-        const [ox, oy] = sampleStarOutline();
-        origins[i * 3]     = ox;
-        origins[i * 3 + 1] = oy;
-        origins[i * 3 + 2] = 13.0;  // right at the front face plane
+        // Origin: at the entry way of the arch — sampled inside the cutout
+        // on the front-face plane so embers appear from the opening itself.
+        const [ix, iy] = sampleStarInterior();
+        origins[i * 3]     = ix;
+        origins[i * 3 + 1] = iy;
+        origins[i * 3 + 2] = frontZ;
 
-        // Passage: slightly inset from outline and pulled back a bit, so flow curves inward
-        // before continuing to the distant center
-        const insetFactor = 0.35 + Math.random() * 0.25;
-        passages[i * 3]     = ox * insetFactor;
-        passages[i * 3 + 1] = oy * insetFactor;
-        passages[i * 3 + 2] = -5 - Math.random() * 10;
+        // Passage: just forward of the arch rim, keeping the outline shape
+        const [px, py] = sampleStarOutline();
+        const passInset = 0.75 + Math.random() * 0.25;
+        passages[i * 3]     = px * passInset;
+        passages[i * 3 + 1] = py * passInset;
+        passages[i * 3 + 2] = frontZ + halfExtent * 0.08;
+
+        // Target: out front of the logo, drifting outward and upward like rising embers
+        const angle = Math.atan2(py, px) + (Math.random() - 0.5) * 0.8;  // bias outward in same direction
+        const outward = 6 + Math.random() * 18;
+        const upBias = 2 + Math.random() * 10;            // embers rise
+        targets[i * 3]     = Math.cos(angle) * outward;
+        targets[i * 3 + 1] = Math.sin(angle) * outward * 0.55 + upBias;
+        targets[i * 3 + 2] = 18 + Math.random() * 14;     // toward the camera
 
         randoms[i] = Math.random();
-        speeds[i] = 0.25 + Math.random() * 0.7;   // slower, more floaty
+        speeds[i] = 0.25 + Math.random() * 0.7;   // slow, floaty
 
-        // Ember-style size distribution: mostly fine dust + occasional bright heroes
+        // Ember-style size distribution: lots of fine dust + occasional bright heroes
         const r = Math.random();
         if (r < 0.08) sizes[i] = 3.2 + Math.random() * 2.5;       // bright hero embers
         else if (r < 0.3) sizes[i] = 1.4 + Math.random() * 1.2;   // medium
@@ -494,6 +572,7 @@
       const particleGeo = new THREE.BufferGeometry();
       particleGeo.setAttribute('position', new THREE.BufferAttribute(origins, 3));
       particleGeo.setAttribute('aPassage', new THREE.BufferAttribute(passages, 3));
+      particleGeo.setAttribute('aTarget', new THREE.BufferAttribute(targets, 3));
       particleGeo.setAttribute('aRandom', new THREE.BufferAttribute(randoms, 1));
       particleGeo.setAttribute('aSpeed', new THREE.BufferAttribute(speeds, 1));
       particleGeo.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1));
@@ -502,13 +581,12 @@
         uniforms: {
           uTime: { value: 0 },
           uPixelRatio: { value: renderer.getPixelRatio() },
-          uAttractor: { value: new THREE.Vector3(0, 0, -600) },
         },
         vertexShader: `
           uniform float uTime;
           uniform float uPixelRatio;
-          uniform vec3 uAttractor;
           attribute vec3 aPassage;
+          attribute vec3 aTarget;
           attribute float aRandom;
           attribute float aSpeed;
           attribute float aSize;
@@ -516,31 +594,26 @@
           varying float vProgress;
           varying float vSize;
 
-          // 4-pointed star radius approximation (cardinal points, concave between)
-          float starRadius(float theta) {
-            float c = abs(cos(2.0 * theta));
-            return 4.0 + 22.0 * pow(c, 3.0);
-          }
-
           void main() {
             // Each particle loops independently
             float cycleDuration = 7.0 / aSpeed;
             float t = mod(uTime + aRandom * cycleDuration, cycleDuration) / cycleDuration;
 
-            // Smooth ease (slow start, gentle pull through opening, continue to center)
+            // Smooth ease — emerges from inside, accelerates through the opening, drifts out
             float eased = t * t * (3.0 - 2.0 * t);
 
-            // Quadratic Bezier: front origin -> star passage -> central vanishing point
+            // Quadratic Bezier: deep inside -> star passage -> outward & forward
             vec3 p0 = position;
             vec3 p1 = aPassage;
-            vec3 p2 = uAttractor;
+            vec3 p2 = aTarget;
             float mt = 1.0 - eased;
             vec3 pos = mt*mt*p0 + 2.0*mt*eased*p1 + eased*eased*p2;
 
-            // Subtle wobble so the flow feels organic but not floaty
-            float wobble = (1.0 - eased) * 0.5;  // only early in journey
-            pos.x += sin(uTime * 0.9 + aRandom * 50.0) * 0.6 * wobble;
-            pos.y += cos(uTime * 0.7 + aRandom * 50.0) * 0.6 * wobble;
+            // Wobble grows as embers leave the portal — feels like rising heat
+            float wobble = eased * 0.9 + 0.15;
+            pos.x += sin(uTime * 0.9 + aRandom * 50.0) * 0.7 * wobble;
+            pos.y += cos(uTime * 0.7 + aRandom * 50.0) * 0.7 * wobble;
+            pos.y += eased * eased * 1.2;  // extra gentle lift as they fly out
 
             vec4 mvPos = modelViewMatrix * vec4(pos, 1.0);
             gl_Position = projectionMatrix * mvPos;
@@ -550,10 +623,10 @@
             float sizeCurve = 0.6 + 0.4 * sin(t * 3.14159);
             gl_PointSize = max(aSize * (10.0 + sizeCurve * 9.0) * flicker * uPixelRatio * (1.0 / -mvPos.z), 1.0);
 
-            // Born bright at the outline, dim gradually as particle recedes
-            float fadeIn = smoothstep(0.0, 0.03, t);
-            float fadeOut = 1.0 - smoothstep(0.15, 1.0, t);   // stays bright early, linear fade
-            vAlpha = fadeIn * fadeOut * 1.6;
+            // Brightest as they pass through the opening, fade as they drift away
+            float fadeIn  = smoothstep(0.0, 0.18, t);
+            float fadeOut = 1.0 - smoothstep(0.55, 1.0, t);
+            vAlpha = fadeIn * fadeOut * 1.7;
             vProgress = t;
             vSize = aSize;
           }
