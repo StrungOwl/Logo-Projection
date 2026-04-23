@@ -179,6 +179,55 @@
     innerGlow.position.set(0, -1.0, -2.0);
     scene.add(innerGlow);
 
+    // Subtle rim accents on the pattern layers. Warm ember kissing the front
+    // pattern edges, cooler dim behind the rear pattern — tight falloff so
+    // they graze the reliefs without lifting the ambient brightness.
+    const frontPatternLight = new THREE.PointLight(0xffb070, 1.8, 5, 2);
+    frontPatternLight.position.set(-2.8, 1.8, 2.6);
+    scene.add(frontPatternLight);
+
+    const rearPatternLight = new THREE.PointLight(0x7a96c8, 1.2, 6, 2);
+    rearPatternLight.position.set(2.8, 1.2, -1.2);
+    scene.add(rearPatternLight);
+
+    // Helper: inject a simple world-Y gradient tint into any MeshStandardMaterial
+    // via onBeforeCompile. Darkens/warms toward the bottom, brightens neutral at
+    // the top — subtle depth cue without overriding the existing lighting model.
+    function applyGradientTint(mat, {
+      minY = -5,
+      maxY = 5,
+      darkTint = [0.72, 0.6, 0.44],
+      brightTint = [1.02, 1.0, 0.95],
+    } = {}) {
+      const uniforms = {
+        uGradMinY:   { value: minY },
+        uGradMaxY:   { value: maxY },
+        uGradDark:   { value: new THREE.Vector3(...darkTint) },
+        uGradBright: { value: new THREE.Vector3(...brightTint) },
+      };
+      mat.onBeforeCompile = (shader) => {
+        Object.assign(shader.uniforms, uniforms);
+        shader.vertexShader = shader.vertexShader
+          .replace('#include <common>',
+            '#include <common>\nvarying vec3 vGradWP;')
+          .replace('#include <project_vertex>',
+            '#include <project_vertex>\nvGradWP = (modelMatrix * vec4(position, 1.0)).xyz;');
+        shader.fragmentShader = shader.fragmentShader
+          .replace('#include <common>',
+            `#include <common>
+             uniform float uGradMinY;
+             uniform float uGradMaxY;
+             uniform vec3  uGradDark;
+             uniform vec3  uGradBright;
+             varying vec3  vGradWP;`)
+          .replace('#include <color_fragment>',
+            `#include <color_fragment>
+             float _gt = clamp((vGradWP.y - uGradMinY) / max(uGradMaxY - uGradMinY, 1e-4), 0.0, 1.0);
+             diffuseColor.rgb *= mix(uGradDark, uGradBright, _gt);`);
+      };
+      mat.userData.gradUniforms = uniforms;
+    }
+
     // Controls
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
@@ -317,7 +366,7 @@
 
     // Load model
     const loader = new GLTFLoader();
-    loader.load('./3DModels/fixed.glb', (gltf) => {
+    loader.load('./3DModels/SDG_logo_3d.glb', (gltf) => {
       const model = gltf.scene;
 
       // Center the model
@@ -336,6 +385,13 @@
             flatShading: true,
           });
           child.geometry.computeVertexNormals();
+          // Vertical gradient: deeper/warmer at the base, neutral at the top.
+          applyGradientTint(child.material, {
+            minY: -5.5,
+            maxY: 3.5,
+            darkTint:   [0.72, 0.58, 0.40],
+            brightTint: [1.05, 1.02, 0.95],
+          });
         }
       });
 
@@ -407,8 +463,37 @@
           galaxyMesh.renderOrder = -1;
           __logoMesh.add(galaxyMesh);
 
+          // Inner-star centroid: average of the front-face edge midpoints that
+          // fall inside the inner cutout. This is where the galaxy glow reads
+          // brightest — we anchor the pattern fade here so the dissolve hugs
+          // the visible hot-spot rather than the geometric hull centroid.
+          __logoMesh.geometry.computeBoundingBox();
+          const _bb = __logoMesh.geometry.boundingBox;
+          const _halfExtent = Math.max((_bb.max.x - _bb.min.x) * 0.5, (_bb.max.y - _bb.min.y) * 0.5);
+          const _zTol = Math.max(_halfExtent * 0.02, 0.1);
+          const _innerR = _halfExtent * 0.58;
+          const _edgesGeo = new THREE.EdgesGeometry(__logoMesh.geometry, 30);
+          const _ep = _edgesGeo.attributes.position;
+          let _ix = 0, _iy = 0, _ic = 0;
+          for (let i = 0; i < _ep.count; i += 2) {
+            const x1 = _ep.getX(i), y1 = _ep.getY(i), z1 = _ep.getZ(i);
+            const x2 = _ep.getX(i + 1), y2 = _ep.getY(i + 1), z2 = _ep.getZ(i + 1);
+            const mx = (x1 + x2) * 0.5, my = (y1 + y2) * 0.5;
+            const d = Math.sqrt(mx * mx + my * my);
+            if (d < _innerR && Math.abs(z1 - maxZ) < _zTol && Math.abs(z2 - maxZ) < _zTol) {
+              _ix += mx; _iy += my; _ic++;
+            }
+          }
+          const innerCenterX = _ic ? _ix / _ic : cx;
+          const innerCenterY = _ic ? _iy / _ic : cy;
+          // Panel is positioned at (cx, cy), so panel-local = mesh-local - (cx, cy).
+          const patternFadeCenter = [innerCenterX - cx, innerCenterY - cy];
+
           // Islamic tile panel: flat grid of rosettes + straps + knots, clipped
           // to the logo's front-face hull so the motif sits only on the star.
+          // Center of the panel fades to transparent so the galaxy core glow
+          // bleeds through — outer rim stays opaque (less than fully, for
+          // subtlety).
           const clipPolygon = hull.map(h => ({ x: h.x - cx, y: h.y - cy }));
           const tileStep = 6.5;
           const panelSpan = maxR * 1.9;
@@ -423,9 +508,19 @@
             reliefDepth: 0.35,
             strapHalfWidth: 0.3,
             knotSize: 0.7,
-            goldColor: 0xD9B77C,
+            goldColor: 0xB08552,
             clipPolygon,
             clipMargin: mainTileSize * 0.9,
+            fadeInnerR: maxR * 0.12,
+            fadeOuterR: maxR * 0.55,
+            fadeCenter: patternFadeCenter,
+            fadeDownStretch: 1.9,
+            fadeBottomTaper: 0.9,
+            maxOpacity: 0.92,
+            gradientMinY: -maxR * 1.1,
+            gradientMaxY:  maxR * 1.1,
+            gradientDark:   [0.68, 0.55, 0.40],
+            gradientBright: [1.02, 1.0, 0.95],
           });
           panel.name = 'islamic-panel';
           panel.position.set(cx, cy, maxZ + 0.05);
@@ -436,6 +531,8 @@
           // hexRadius so hex corners can reach the hull edge; the outer
           // portion slips under the gate frame (which sits in front), so
           // the visible hex surface meets the frame's inner edge cleanly.
+          // Also fades to transparent toward center so the inner glow is
+          // not stifled by the rear layer.
           const gateFrameWidth = 1.6;
           const hexRadius = mainTileSize * 1.4;
           const underlay = createLatticeUnderlay({
@@ -444,9 +541,19 @@
             tileStep,
             hexRadius,
             depth: 0.035,
-            color: 0x6B4A1E,
+            color: 0x4A3216,
             clipPolygon,
             clipMargin: hexRadius,
+            fadeInnerR: maxR * 0.16,
+            fadeOuterR: maxR * 0.65,
+            fadeCenter: patternFadeCenter,
+            fadeDownStretch: 1.9,
+            fadeBottomTaper: 0.9,
+            maxOpacity: 0.82,
+            gradientMinY: -maxR * 1.1,
+            gradientMaxY:  maxR * 1.1,
+            gradientDark:   [0.60, 0.48, 0.35],
+            gradientBright: [1.0, 1.0, 0.95],
           });
           underlay.name = 'lattice-underlay';
           underlay.position.set(cx, cy, maxZ + 0.005);
@@ -464,11 +571,19 @@
             bossCount: 56,
             bossRadius: 0.24,
             bossDepth: 0.26,
-            color: 0xE5B56A,
+            color: 0xB8915A,
+            gradientMinY: -maxR * 1.1,
+            gradientMaxY:  maxR * 1.1,
+            gradientDark:   [0.7, 0.58, 0.42],
+            gradientBright: [1.02, 1.0, 0.95],
           });
           gate.name = 'gate-frame';
           gate.position.set(cx, cy, maxZ + 0.45);
           __logoMesh.add(gate);
+
+          // Stash on model so we can refresh fade matrices after scene.add()
+          // has computed each group's world transform.
+          model.userData.patternsToRefresh = [panel, underlay];
         }
       }
 
@@ -484,6 +599,14 @@
       model.position.y -= 1.0;
 
       scene.add(model);
+
+      // Compute each pattern group's inverse world matrix so the fade shader
+      // can convert world positions back into panel-local coords. Must run
+      // after scene.add so world matrices reflect the final scale/position.
+      scene.updateMatrixWorld(true);
+      (model.userData.patternsToRefresh || []).forEach(g => {
+        if (g.userData.refreshFade) g.userData.refreshFade();
+      });
 
       // --- Star Particle Effect with Gravitational Flow ---
       // Pick the original logo mesh (highest vertex count), not any silhouette child
@@ -544,7 +667,7 @@
       // Floating ember particles: emerge from deep inside the model (the orange
       // back-glow), pour through the star opening, then drift out toward the
       // camera and disperse outward + upward — matching the portal reference.
-      const particleCount = 8000;
+      const particleCount = 20000; //was 8000
       const origins  = new Float32Array(particleCount * 3);   // deep inside the model
       const passages = new Float32Array(particleCount * 3);   // through the star opening
       const targets  = new Float32Array(particleCount * 3);   // out front + outward + upward
@@ -757,6 +880,10 @@
       const t = clock.getElapsedTime();
       if (particleMat) particleMat.uniforms.uTime.value = t;
       if (galaxyMat) galaxyMat.uniforms.uTime.value = t;
+      // Directional-light breathing: key sweeps hard, rim drifts on offset phase
+      // so you can actually see shading shift across the logo. ~6s cycle.
+      keyLight.intensity = 2.5 + 2.0 * Math.sin(t * 1.0);
+      rimLight.intensity = 1.5 + 1.0 * Math.sin(t * 1.0 + Math.PI * 0.5);
       renderer.render(scene, camera);
     }
     animate();

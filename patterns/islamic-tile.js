@@ -129,6 +129,10 @@ function insideWithMargin(x, y, poly, margin) {
 // so the pattern follows a custom silhouette (e.g. the logo's outline).
 // `clipMargin` (optional): tiles must also sit this far INSIDE each polygon
 // edge — set to roughly `mainTileSize` to keep whole rosettes within bounds.
+// `fadeInnerR`/`fadeOuterR`: opacity smoothly ramps from 0 at inner radius
+// to `maxOpacity` at outer — measured in panel-local units from the panel
+// centre — so the pattern dissolves around the middle and the galaxy core
+// glows through.
 export function createIslamicPanel({
   cols = 9,
   rows = 9,
@@ -144,14 +148,97 @@ export function createIslamicPanel({
   material = null,
   clipPolygon = null,
   clipMargin = 0,
+  fadeInnerR = 0,
+  fadeOuterR = 0,
+  fadeCenter = [0, 0],
+  // Stretch the fade downward only (values > 1 extend it below uFadeCenter).
+  fadeDownStretch = 1.0,
+  // Pinch horizontal reach as the fade descends — 0 = no taper (rounded
+  // bottom), 1 = width halves at the fade's bottom edge (teardrop point).
+  fadeBottomTaper = 0.0,
+  maxOpacity = 1.0,
+  gradientMinY = -5,
+  gradientMaxY = 5,
+  gradientDark = [0.7, 0.58, 0.42],
+  gradientBright = [1.0, 1.0, 1.0],
 } = {}) {
   const group = new THREE.Group();
 
   const goldMat = material || new THREE.MeshStandardMaterial({
     color: goldColor,
-    metalness: 0.9,
-    roughness: 0.15,
+    metalness: 0.55,
+    roughness: 0.45,
   });
+
+  const panelMatrixInv = new THREE.Matrix4();
+  const fadeGradUniforms = {
+    uPanelInv:    { value: panelMatrixInv },
+    uFadeInner:   { value: fadeInnerR },
+    uFadeOuter:   { value: fadeOuterR },
+    uFadeCenter:  { value: new THREE.Vector2(fadeCenter[0], fadeCenter[1]) },
+    uFadeDownStretch: { value: fadeDownStretch },
+    uFadeBottomTaper: { value: fadeBottomTaper },
+    uMaxOpacity:  { value: maxOpacity },
+    uGradMinY:    { value: gradientMinY },
+    uGradMaxY:    { value: gradientMaxY },
+    uGradDark:    { value: new THREE.Vector3(...gradientDark) },
+    uGradBright:  { value: new THREE.Vector3(...gradientBright) },
+  };
+
+  // Enable transparency so the center fade can dissolve into the galaxy.
+  if (fadeOuterR > 0 || maxOpacity < 1) {
+    goldMat.transparent = true;
+  }
+
+  goldMat.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, fadeGradUniforms);
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>',
+        '#include <common>\nvarying vec3 vGradWP;\nvarying vec2 vPanelXY;\nuniform mat4 uPanelInv;')
+      .replace('#include <project_vertex>',
+        `#include <project_vertex>
+         vec4 _wp = modelMatrix * vec4(position, 1.0);
+         vGradWP = _wp.xyz;
+         vPanelXY = (uPanelInv * _wp).xy;`);
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>',
+        `#include <common>
+         uniform float uGradMinY;
+         uniform float uGradMaxY;
+         uniform vec3  uGradDark;
+         uniform vec3  uGradBright;
+         uniform float uFadeInner;
+         uniform float uFadeOuter;
+         uniform vec2  uFadeCenter;
+         uniform float uFadeDownStretch;
+         uniform float uFadeBottomTaper;
+         uniform float uMaxOpacity;
+         varying vec3  vGradWP;
+         varying vec2  vPanelXY;`)
+      .replace('#include <color_fragment>',
+        `#include <color_fragment>
+         float _gt = clamp((vGradWP.y - uGradMinY) / max(uGradMaxY - uGradMinY, 1e-4), 0.0, 1.0);
+         diffuseColor.rgb *= mix(uGradDark, uGradBright, _gt);`)
+      .replace('#include <dithering_fragment>',
+        `#include <dithering_fragment>
+         vec2  _delta = vPanelXY - uFadeCenter;
+         // Stretch only downward (panel-local -Y is down) — top stays round.
+         if (_delta.y < 0.0) _delta.y /= max(uFadeDownStretch, 1e-4);
+         // Pinch horizontal reach the further down we travel — teardrop shape.
+         float _downN = clamp(-_delta.y / max(uFadeOuter, 1e-4), 0.0, 2.0);
+         _delta.x *= 1.0 + uFadeBottomTaper * _downN;
+         float _d = length(_delta);
+         float _a = (uFadeOuter > uFadeInner)
+            ? smoothstep(uFadeInner, uFadeOuter, _d)
+            : 1.0;
+         gl_FragColor.a *= _a * uMaxOpacity;`);
+  };
+
+  group.userData.refreshFade = () => {
+    group.updateMatrixWorld(true);
+    panelMatrixInv.copy(group.matrixWorld).invert();
+  };
+  group.userData.fadeGradUniforms = fadeGradUniforms;
 
   const mainGeo = buildRosetteGeometry({
     symmetry: mainSymmetry,

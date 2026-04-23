@@ -83,14 +83,46 @@ export function createGateFrame({
   bossDepth = 0.22,
   color = 0xD9B77C,
   material = null,
+  gradientMinY = -5,
+  gradientMaxY = 5,
+  gradientDark = [0.7, 0.58, 0.42],
+  gradientBright = [1.0, 1.0, 1.0],
 } = {}) {
   const group = new THREE.Group();
 
   const mat = material || new THREE.MeshStandardMaterial({
     color,
-    metalness: 0.95,
-    roughness: 0.12,
+    metalness: 0.7,
+    roughness: 0.3,
   });
+
+  const gradUniforms = {
+    uGradMinY:    { value: gradientMinY },
+    uGradMaxY:    { value: gradientMaxY },
+    uGradDark:    { value: new THREE.Vector3(...gradientDark) },
+    uGradBright:  { value: new THREE.Vector3(...gradientBright) },
+  };
+  mat.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, gradUniforms);
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>',
+        '#include <common>\nvarying vec3 vGradWP;')
+      .replace('#include <project_vertex>',
+        '#include <project_vertex>\nvGradWP = (modelMatrix * vec4(position, 1.0)).xyz;');
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>',
+        `#include <common>
+         uniform float uGradMinY;
+         uniform float uGradMaxY;
+         uniform vec3  uGradDark;
+         uniform vec3  uGradBright;
+         varying vec3  vGradWP;`)
+      .replace('#include <color_fragment>',
+        `#include <color_fragment>
+         float _gt = clamp((vGradWP.y - uGradMinY) / max(uGradMaxY - uGradMinY, 1e-4), 0.0, 1.0);
+         diffuseColor.rgb *= mix(uGradDark, uGradBright, _gt);`);
+  };
+  group.userData.gradUniforms = gradUniforms;
 
   const inner = insetConvex(hull, frameWidth);
   const bodyShape = buildRingShape(hull, inner);

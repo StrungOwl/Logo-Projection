@@ -57,18 +57,95 @@ export function createLatticeUnderlay({
   tileStep = 6.5,
   hexRadius = 3.0,
   depth = 0.035,
-  color = 0x6B4A1E,
+  color = 0xb88700,
   material = null,
   clipPolygon = null,
   clipMargin = 0,
+  fadeInnerR = 0,
+  fadeOuterR = 0,
+  fadeCenter = [0, 0],
+  fadeDownStretch = 1.0,
+  fadeBottomTaper = 0.0,
+  maxOpacity = 1.0,
+  gradientMinY = -5,
+  gradientMaxY = 5,
+  gradientDark = [0.65, 0.55, 0.42],
+  gradientBright = [1.0, 1.0, 1.0],
 } = {}) {
   const group = new THREE.Group();
 
   const mat = material || new THREE.MeshStandardMaterial({
     color,
-    metalness: 0.85,
-    roughness: 0.35,
+    metalness: 0.55,
+    roughness: 0.55,
   });
+
+  const panelMatrixInv = new THREE.Matrix4();
+  const fadeGradUniforms = {
+    uPanelInv:    { value: panelMatrixInv },
+    uFadeInner:   { value: fadeInnerR },
+    uFadeOuter:   { value: fadeOuterR },
+    uFadeCenter:  { value: new THREE.Vector2(fadeCenter[0], fadeCenter[1]) },
+    uFadeDownStretch: { value: fadeDownStretch },
+    uFadeBottomTaper: { value: fadeBottomTaper },
+    uMaxOpacity:  { value: maxOpacity },
+    uGradMinY:    { value: gradientMinY },
+    uGradMaxY:    { value: gradientMaxY },
+    uGradDark:    { value: new THREE.Vector3(...gradientDark) },
+    uGradBright:  { value: new THREE.Vector3(...gradientBright) },
+  };
+
+  if (fadeOuterR > 0 || maxOpacity < 1) {
+    mat.transparent = true;
+  }
+
+  mat.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, fadeGradUniforms);
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>',
+        '#include <common>\nvarying vec3 vGradWP;\nvarying vec2 vPanelXY;\nuniform mat4 uPanelInv;')
+      .replace('#include <project_vertex>',
+        `#include <project_vertex>
+         vec4 _wp = modelMatrix * vec4(position, 1.0);
+         vGradWP = _wp.xyz;
+         vPanelXY = (uPanelInv * _wp).xy;`);
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>',
+        `#include <common>
+         uniform float uGradMinY;
+         uniform float uGradMaxY;
+         uniform vec3  uGradDark;
+         uniform vec3  uGradBright;
+         uniform float uFadeInner;
+         uniform float uFadeOuter;
+         uniform vec2  uFadeCenter;
+         uniform float uFadeDownStretch;
+         uniform float uFadeBottomTaper;
+         uniform float uMaxOpacity;
+         varying vec3  vGradWP;
+         varying vec2  vPanelXY;`)
+      .replace('#include <color_fragment>',
+        `#include <color_fragment>
+         float _gt = clamp((vGradWP.y - uGradMinY) / max(uGradMaxY - uGradMinY, 1e-4), 0.0, 1.0);
+         diffuseColor.rgb *= mix(uGradDark, uGradBright, _gt);`)
+      .replace('#include <dithering_fragment>',
+        `#include <dithering_fragment>
+         vec2  _delta = vPanelXY - uFadeCenter;
+         if (_delta.y < 0.0) _delta.y /= max(uFadeDownStretch, 1e-4);
+         float _downN = clamp(-_delta.y / max(uFadeOuter, 1e-4), 0.0, 2.0);
+         _delta.x *= 1.0 + uFadeBottomTaper * _downN;
+         float _d = length(_delta);
+         float _a = (uFadeOuter > uFadeInner)
+            ? smoothstep(uFadeInner, uFadeOuter, _d)
+            : 1.0;
+         gl_FragColor.a *= _a * uMaxOpacity;`);
+  };
+
+  group.userData.refreshFade = () => {
+    group.updateMatrixWorld(true);
+    panelMatrixInv.copy(group.matrixWorld).invert();
+  };
+  group.userData.fadeGradUniforms = fadeGradUniforms;
 
   const hexGeo = buildSolidHexGeometry(hexRadius, depth);
 
