@@ -280,6 +280,8 @@ export function createLatticeUnderlay({
       if (!inClip(x, y)) continue;
       const mesh = new THREE.Mesh(hexGeo, mat);
       mesh.position.set(x, y, 0);
+      mesh.userData.rowIndex = r;
+      mesh.userData.baseY = y;
       if (edgesGeo) {
         const stroke = new THREE.LineSegments(edgesGeo, lineMat);
         stroke.userData.twinkleSeed = Math.random() * Math.PI * 2;
@@ -292,5 +294,6 @@ export function createLatticeUnderlay({
     }
   }
 
+  group.userData.rowCount = rows;
   return group;
 }

@@ -43,6 +43,9 @@ export const ANIM = {
 
   galaxy: { timeScale: 1.0, brightness: 1.0 },
 
+  // Logo base material breathes between near-black and full brightness.
+  logoBase: { brightnessMin: 0.2, brightnessMax: 1.0, period: 20.0 },
+
   emberParticles: { cycleDuration: 7.0,
                     bodyColor: '#FF851A', coreColor: '#FFE08C',
                     brightness: 1.7 },
@@ -50,14 +53,37 @@ export const ANIM = {
                     bodyColor: '#E0EBFF', coreColor: '#FFFFFF',
                     brightness: 1.7 },
 
-  panelSparks:   { count: 120, gravity: 8, maxSpeed: 7, damping: 1.6,
-                   snapStrength: 4,
+  // `hueVariance` shifts each spark's hue by ±that fraction of the colour
+  // wheel from `color` at spawn time (0 = monochrome, 0.1 ≈ ±36°).
+  // `trailSize` is the ring-buffer length of past positions drawn behind each
+  // spark (load-only; reload after editing). Higher = longer tracer.
+  panelSparks:   { count: 220, gravity: 8, maxSpeed: 7, damping: 1.6,
+                   snapStrength: 10,
                    tangentialFactor: 0.8, speedVariance: 0.55, sizeVariance: 0.75,
-                   color: '#FFD9A0', pointSize: 0.26 },
-  latticeSparks: { count: 80, gravity: 7, maxSpeed: 6, damping: 1.5,
+                   color: '#FFD9A0', hueVariance: 0.08,
+                   pointSize: 0.1, trailSize: 35 },
+  latticeSparks: { count: 150, gravity: 7, maxSpeed: 6, damping: 1.5,
                    snapStrength: 3.5,
                    tangentialFactor: 0.8, speedVariance: 0.55, sizeVariance: 0.75,
-                   color: '#FFE8C0', pointSize: 0.22 },
+                   color: '#FFE8C0', hueVariance: 0.08,
+                   pointSize: 0.15, trailSize: 25 },
+
+  // Row cascade — pattern grid sits still for `idlePeriod` seconds, then the
+  // rows slide downward out of the gate in a top-first stagger, pause for
+  // `gap` seconds, then slide back in from above (also top-first). Both the
+  // islamic panel and the lattice underlay are driven by the same schedule
+  // keyed off each mesh's panel-local Y so they stay visually locked.
+  // During motion, spark snap is released so the embers drift freely instead
+  // of clinging to now-stale stroke positions (sparks' stroke-cloud is a
+  // static snapshot from load time — it does not follow moving rows).
+  // `slideDistance` must exceed the top-row-to-bottom-hull distance so the
+  // topmost row is fully below the hull clip at max exit.
+  rowCascade: { idlePeriod:    8.0,
+                rowStagger:    0.10,
+                exitDuration:  1.2,
+                gap:           0.5,
+                entryDuration: 1.2,
+                slideDistance: 22.0 },
 };
 
 // -----------------------------------------------------------------------

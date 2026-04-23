@@ -61,6 +61,8 @@ export function loadLogo() {
       model.position.sub(box.getCenter(new THREE.Vector3()));
 
       // Apply amber metallic + vertical gradient tint to every mesh.
+      // Collect materials so the animate loop can breathe their base color.
+      const logoMaterials = [];
       model.traverse((child) => {
         if (child.isMesh) {
           child.material = new THREE.MeshStandardMaterial({
@@ -76,6 +78,7 @@ export function loadLogo() {
             darkTint:   hexToRgb(COLORS.logo.gradientDark),
             brightTint: hexToRgb(COLORS.logo.gradientBright),
           });
+          logoMaterials.push(child.material);
         }
       });
 
@@ -104,7 +107,7 @@ export function loadLogo() {
       model.rotation.set(0, 0, 0);
       model.position.y += MODEL.positionOffsetY;
 
-      resolve({ model, logoMesh, galaxyMat, meta });
+      resolve({ model, logoMesh, galaxyMat, meta, logoMaterials });
     }, reject);
   });
 }

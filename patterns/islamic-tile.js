@@ -419,6 +419,8 @@ export function createIslamicPanel({
       if (!inClip(x, y, radius)) continue;
       const mesh = new THREE.Mesh(isMain ? mainGeo : secondaryGeo, goldMat);
       mesh.position.set(x, y, 0);
+      mesh.userData.rowIndex = r;
+      mesh.userData.baseY = y;
       if (lineMat) {
         mesh.add(makeStroke(isMain ? mainEdges : secondaryEdges));
       }
@@ -434,6 +436,8 @@ export function createIslamicPanel({
       if (!inClip(x, y, hStrapLen * 0.5)) continue;
       const mesh = new THREE.Mesh(hStrapGeo, goldMat);
       mesh.position.set(x, y, 0);
+      mesh.userData.rowIndex = r;
+      mesh.userData.baseY = y;
       if (lineMat) mesh.add(makeStroke(hStrapEdges));
       group.add(mesh);
     }
@@ -448,6 +452,11 @@ export function createIslamicPanel({
       const mesh = new THREE.Mesh(vStrapGeo, goldMat);
       mesh.position.set(x, y, 0);
       mesh.rotation.z = Math.PI * 0.5;
+      // Between-row elements get a fractional rowIndex so they trigger in the
+      // cascade wave between their neighbours, not at the same instant as the
+      // row above them.
+      mesh.userData.rowIndex = r + 0.5;
+      mesh.userData.baseY = y;
       if (lineMat) mesh.add(makeStroke(vStrapEdges));
       group.add(mesh);
     }
@@ -461,10 +470,13 @@ export function createIslamicPanel({
       if (!inClip(x, y, knotSize)) continue;
       const mesh = new THREE.Mesh(knotGeo, goldMat);
       mesh.position.set(x, y, 0);
+      mesh.userData.rowIndex = r + 0.5;
+      mesh.userData.baseY = y;
       if (lineMat) mesh.add(makeStroke(knotEdges));
       group.add(mesh);
     }
   }
 
+  group.userData.rowCount = rows;
   return group;
 }

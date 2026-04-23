@@ -159,7 +159,9 @@ export function addPatternLayers(logoMesh, meta) {
     speedVariance:    ANIM.panelSparks.speedVariance,
     sizeVariance:     ANIM.panelSparks.sizeVariance,
     color:            ANIM.panelSparks.color,
+    hueVariance:      ANIM.panelSparks.hueVariance,
     pointSize:        ANIM.panelSparks.pointSize,
+    trailSize:        ANIM.panelSparks.trailSize,
     z: 0.12,
   });
   panel.add(panelSparks.points);
@@ -177,12 +179,97 @@ export function addPatternLayers(logoMesh, meta) {
     speedVariance:    ANIM.latticeSparks.speedVariance,
     sizeVariance:     ANIM.latticeSparks.sizeVariance,
     color:            ANIM.latticeSparks.color,
+    hueVariance:      ANIM.latticeSparks.hueVariance,
     pointSize:        ANIM.latticeSparks.pointSize,
+    trailSize:        ANIM.latticeSparks.trailSize,
     z: 0.12,
   });
   underlay.add(latticeSparks.points);
 
   sparkSystems.push(panelSparks, latticeSparks);
 
-  return { strokeTimeUniforms, sparkSystems, patternsToRefresh };
+  // ---------------------------------------------------------------------
+  // Row cascade driver — drives a staggered downward slide across both
+  // patterns. Each tagged mesh (see islamic-tile.js + lattice-underlay.js,
+  // userData.baseY) gets a time-varying Y offset keyed off its baseY, so
+  // the islamic panel and the larger lattice underlay move as one wave
+  // even though their row indexing starts at different Y coordinates.
+  // ---------------------------------------------------------------------
+  const cascadeMeshes = [];
+  panel   .traverse(o => { if (o.userData.baseY !== undefined) cascadeMeshes.push(o); });
+  underlay.traverse(o => { if (o.userData.baseY !== undefined) cascadeMeshes.push(o); });
+
+  let maxBaseY = -Infinity, minBaseY = Infinity;
+  for (const m of cascadeMeshes) {
+    if (m.userData.baseY > maxBaseY) maxBaseY = m.userData.baseY;
+    if (m.userData.baseY < minBaseY) minBaseY = m.userData.baseY;
+  }
+  // staggerIdx: 0 for topmost mesh, increasing downward in units of tileStep.
+  // Fractional for between-row straps/knots so they trigger between their
+  // neighbours rather than alongside them.
+  for (const m of cascadeMeshes) {
+    m.userData.staggerIdx = (maxBaseY - m.userData.baseY) / tileStep;
+  }
+  const maxStaggerIdx = (maxBaseY - minBaseY) / tileStep;
+
+  const cascadeState = { active: 1 };   // 1 = pattern is still, 0 = rows moving
+  let lastWasIdle = false;
+
+  function updateRowCascade(t) {
+    const cfg = ANIM.rowCascade;
+    if (!cfg) return;
+    const maxStaggerTime  = maxStaggerIdx * cfg.rowStagger;
+    const exitPhaseLen    = maxStaggerTime + cfg.exitDuration;
+    const entryPhaseStart = exitPhaseLen + cfg.gap;
+    const entryPhaseLen   = maxStaggerTime + cfg.entryDuration;
+    const cycleLen        = cfg.idlePeriod + exitPhaseLen + cfg.gap + entryPhaseLen;
+    const phase           = ((t % cycleLen) + cycleLen) % cycleLen;
+
+    if (phase < cfg.idlePeriod) {
+      // Idle — reset once on idle entry, then skip the per-mesh loop
+      // so the common case costs almost nothing per frame.
+      if (!lastWasIdle) {
+        for (let i = 0; i < cascadeMeshes.length; i++) {
+          const m = cascadeMeshes[i];
+          m.position.y = m.userData.baseY;
+        }
+        lastWasIdle = true;
+      }
+      cascadeState.active = 1;
+      return;
+    }
+    lastWasIdle = false;
+    cascadeState.active = 0;
+
+    const localT = phase - cfg.idlePeriod;
+    const slide  = cfg.slideDistance;
+    const exDur  = cfg.exitDuration;
+    const enDur  = cfg.entryDuration;
+    const stag   = cfg.rowStagger;
+
+    for (let i = 0; i < cascadeMeshes.length; i++) {
+      const m       = cascadeMeshes[i];
+      const sIdx    = m.userData.staggerIdx;
+      const exStart = sIdx * stag;
+      const enStart = entryPhaseStart + sIdx * stag;
+      let offset;
+      if (localT < exStart) {
+        offset = 0;
+      } else if (localT < exStart + exDur) {
+        const u = (localT - exStart) / exDur;
+        offset = -slide * u * u * u;                  // ease-in cubic
+      } else if (localT < enStart) {
+        offset = -slide;
+      } else if (localT < enStart + enDur) {
+        const v = 1 - (localT - enStart) / enDur;
+        offset = -slide * v * v * v;                  // ease-out cubic (mirror)
+      } else {
+        offset = 0;
+      }
+      m.position.y = m.userData.baseY + offset;
+    }
+  }
+
+  return { strokeTimeUniforms, sparkSystems, patternsToRefresh,
+           updateRowCascade, cascadeState };
 }

@@ -190,6 +190,7 @@ export function createSparkSystem({
   snapStrength = 6,          // strength of the pull toward the nearest stroke vertex
   sizeVariance = 0,          // ±fraction around base pointSize (0.7 → ~0.3x..1.7x)
   color = 0xffd9a0,
+  hueVariance = 0,           // ±fraction of hue wheel per spark (0.1 ≈ ±36°)
   pointSize = 0.45,
   trailSize = 5,
   z = 0.12,
@@ -218,7 +219,13 @@ export function createSparkSystem({
   const positions = new Float32Array(totalPoints * 3);
   const alphas = new Float32Array(totalPoints);
   const sizes = new Float32Array(totalPoints);
+  const colors = new Float32Array(totalPoints * 3);
   const trailHead = new Int32Array(count);
+
+  const baseColor = new THREE.Color(color);
+  const baseHsl = { h: 0, s: 0, l: 0 };
+  baseColor.getHSL(baseHsl);
+  const _scratchColor = new THREE.Color();
 
   function pickSeed() {
     return cloud.outerSeedIds[(Math.random() * cloud.outerSeedIds.length) | 0];
@@ -238,6 +245,13 @@ export function createSparkSystem({
     lifeSpeed[i] = 0.35 + Math.random() * 0.35;   // ~1.8-3 s fade-in
     sizeScale[i] = Math.max(0.15, 1 + (Math.random() * 2 - 1) * sizeVariance);
     reached[i] = 0;
+    // Pick a per-spark colour — base hue shifted by ±hueVariance.
+    if (hueVariance > 0) {
+      const h = (baseHsl.h + (Math.random() * 2 - 1) * hueVariance + 1) % 1;
+      _scratchColor.setHSL(h, baseHsl.s, baseHsl.l);
+    } else {
+      _scratchColor.copy(baseColor);
+    }
     // Seed every trail slot with the spawn position so stale positions from
     // the spark's previous life don't flash as a ghost trail.
     const base = i * trailSize;
@@ -247,6 +261,9 @@ export function createSparkSystem({
       positions[(base + k) * 3 + 2] = z;
       alphas[base + k] = 0;
       sizes[base + k]  = 0;
+      colors[(base + k) * 3 + 0] = _scratchColor.r;
+      colors[(base + k) * 3 + 1] = _scratchColor.g;
+      colors[(base + k) * 3 + 2] = _scratchColor.b;
     }
     trailHead[i] = 0;
   }
@@ -257,6 +274,7 @@ export function createSparkSystem({
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   geometry.setAttribute('aAlpha', new THREE.BufferAttribute(alphas, 1));
   geometry.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1));
+  geometry.setAttribute('aColor', new THREE.BufferAttribute(colors, 3));
 
   const material = new THREE.ShaderMaterial({
     transparent: true,
@@ -264,30 +282,32 @@ export function createSparkSystem({
     depthTest: false,
     blending: THREE.AdditiveBlending,
     uniforms: {
-      uColor: { value: new THREE.Color(color) },
       uMap:   { value: getSparkSprite() },
       uPixelRatio: { value: Math.min(window.devicePixelRatio || 1, 2) },
     },
     vertexShader: `
       attribute float aAlpha;
       attribute float aSize;
+      attribute vec3 aColor;
       varying float vAlpha;
+      varying vec3 vColor;
       uniform float uPixelRatio;
       void main() {
         vAlpha = aAlpha;
+        vColor = aColor;
         vec4 mv = modelViewMatrix * vec4(position, 1.0);
         gl_Position = projectionMatrix * mv;
         gl_PointSize = aSize * uPixelRatio * (300.0 / -mv.z);
       }
     `,
     fragmentShader: `
-      uniform vec3 uColor;
       uniform sampler2D uMap;
       varying float vAlpha;
+      varying vec3 vColor;
       void main() {
         vec4 tex = texture2D(uMap, gl_PointCoord);
         if (tex.a < 0.01) discard;
-        gl_FragColor = vec4(uColor, tex.a * vAlpha);
+        gl_FragColor = vec4(vColor, tex.a * vAlpha);
       }
     `,
   });
@@ -302,12 +322,18 @@ export function createSparkSystem({
   const innerFadeStart = fadeOuter * 0.45;
   const innerFadeEnd   = fadeOuter * 0.20;
 
+  const api = { points, update: null, snapScale: 1 };
+
   function update(dt) {
     // Frame-rate-independent damping: vel *= exp(-damping * dt)
     const dampFactor = Math.exp(-damping * dt);
     // Position-blend snap rate. snapStrength is in "1/s" — over one second a
     // spark moves ~(1 - e^(-snapStrength)) of the way to the nearest vertex.
-    const snapBlend = 1 - Math.exp(-snapStrength * dt);
+    // `snapScale` is a runtime multiplier (see api.snapScale) so callers can
+    // temporarily release sparks from stroke-snapping (used during the row
+    // cascade so sparks drift freely instead of snapping to a moving row's
+    // original, now-stale vertex positions).
+    const snapBlend = 1 - Math.exp(-snapStrength * api.snapScale * dt);
 
     for (let i = 0; i < count; i++) {
       const x = px[i], y = py[i];
@@ -393,5 +419,6 @@ export function createSparkSystem({
     geometry.attributes.aSize.needsUpdate = true;
   }
 
-  return { points, update };
+  api.update = update;
+  return api;
 }

@@ -4,7 +4,7 @@
 // `window.ANIM.*` edits in the devtools console take effect immediately.
 
 import * as THREE from 'three';
-import { ANIM } from './config.js';
+import { ANIM, COLORS } from './config.js';
 import { createScene, frameLogo } from './scene.js';
 import { createLights, updateLights } from './lights.js';
 import { loadLogo } from './logo.js';
@@ -17,11 +17,14 @@ const lights = createLights(scene);
 // Collected across async init; the animate loop checks each for null.
 let galaxyMat = null;
 let particleMats = null;
+let logoMaterials = null;
 const strokeTimeUniforms = [];
 const sparkSystems = [];
+const baseColorScratch = new THREE.Color();
 
 loadLogo().then((logo) => {
   galaxyMat = logo.galaxyMat;
+  logoMaterials = logo.logoMaterials;
 
   const patternResult = addPatternLayers(logo.logoMesh, logo.meta);
   strokeTimeUniforms.push(...patternResult.strokeTimeUniforms);
@@ -54,6 +57,16 @@ function animate() {
   }
 
   if (particleMats) updateParticles(particleMats, t);
+
+  // Logo base brightness — sine-wave breath between min and max over `period` seconds.
+  if (logoMaterials) {
+    const lb = ANIM.logoBase;
+    const phase = (t / Math.max(lb.period, 1e-3)) * Math.PI * 2;
+    const k01 = 0.5 + 0.5 * Math.sin(phase);
+    const factor = lb.brightnessMin + (lb.brightnessMax - lb.brightnessMin) * k01;
+    baseColorScratch.set(COLORS.logo.base).multiplyScalar(factor);
+    for (let i = 0; i < logoMaterials.length; i++) logoMaterials[i].color.copy(baseColorScratch);
+  }
 
   for (let i = 0; i < strokeTimeUniforms.length; i++) strokeTimeUniforms[i].value = t;
   for (let i = 0; i < sparkSystems.length; i++)       sparkSystems[i].update(dt);
