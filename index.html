@@ -128,6 +128,7 @@
     import * as THREE from 'three';
     import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
     import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { createIslamicDome } from './patterns/islamic-tile.js';
 
     // Scene
     const scene = new THREE.Scene();
@@ -170,6 +171,11 @@
     fillLight.position.set(0, -4, 2);
     scene.add(fillLight);
 
+    // Islamic tile dome wrapping the scene
+    const dome = createIslamicDome();
+    dome.name = 'islamic-dome';
+    scene.add(dome);
+
     // Controls
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
@@ -178,6 +184,96 @@
 
     // Particle material (created once, updated in animate loop)
     let particleMat = null;
+    let galaxyMat = null;
+
+    // Galaxy / deep-space shader — stars + nebula, masked automatically by the logo mesh shape
+    function createGalaxyMaterial() {
+      return new THREE.ShaderMaterial({
+        uniforms: {
+          uTime: { value: 0 },
+        },
+        vertexShader: `
+          varying vec3 vLocalPos;
+          varying vec3 vNormal;
+          void main() {
+            vLocalPos = position;
+            vNormal = normal;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }
+        `,
+        fragmentShader: `
+          uniform float uTime;
+          varying vec3 vLocalPos;
+          varying vec3 vNormal;
+
+          float hash21(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123); }
+
+          float vnoise(vec2 p) {
+            vec2 i = floor(p);
+            vec2 f = fract(p);
+            vec2 u = f * f * (3.0 - 2.0 * f);
+            return mix(mix(hash21(i), hash21(i + vec2(1.0, 0.0)), u.x),
+                       mix(hash21(i + vec2(0.0, 1.0)), hash21(i + vec2(1.0, 1.0)), u.x), u.y);
+          }
+
+          float fbm(vec2 p) {
+            float v = 0.0;
+            float a = 0.5;
+            for (int i = 0; i < 6; i++) {
+              v += a * vnoise(p);
+              p = p * 2.03 + vec2(17.0, 31.0);
+              a *= 0.5;
+            }
+            return v;
+          }
+
+          float starLayer(vec2 p, float scale, float threshold, float sharpness) {
+            p *= scale;
+            vec2 cell = floor(p);
+            vec2 f = fract(p) - 0.5;
+            float n = hash21(cell);
+            if (n < threshold) return 0.0;
+            vec2 jitter = vec2(hash21(cell + 13.17), hash21(cell + 47.31)) - 0.5;
+            float d = length(f - jitter * 0.6);
+            float intensity = (n - threshold) / (1.0 - threshold);
+            float twinkle = 0.55 + 0.45 * sin(uTime * (1.5 + n * 7.0) + n * 100.0);
+            return smoothstep(0.5, 0.0, d * sharpness) * intensity * twinkle;
+          }
+
+          void main() {
+            vec2 p = vLocalPos.xy * 0.08;
+
+            vec2 flow = vec2(uTime * 0.010, uTime * 0.008);
+            float n1 = fbm(p * 0.6 + flow);
+            float n2 = fbm(p * 1.4 - flow * 0.5 + vec2(5.0, -3.0));
+            float nebulaDensity = pow(clamp(n1 * n2 * 2.6, 0.0, 1.5), 1.6);
+
+            vec3 deepSpace = vec3(0.010, 0.006, 0.035);
+            vec3 nebPurple = vec3(0.45, 0.15, 0.80);
+            vec3 nebBlue   = vec3(0.08, 0.30, 0.95);
+            vec3 nebPink   = vec3(0.95, 0.25, 0.55);
+            vec3 nebula = mix(nebPurple, nebBlue, n1);
+            nebula = mix(nebula, nebPink, smoothstep(0.45, 0.9, n2));
+
+            float stars = 0.0;
+            stars += starLayer(vLocalPos.xy, 0.55, 0.88, 14.0) * 1.2;
+            stars += starLayer(vLocalPos.xy, 1.10, 0.92, 18.0) * 0.9;
+            stars += starLayer(vLocalPos.xy, 2.60, 0.95, 22.0) * 0.6;
+            stars += starLayer(vLocalPos.xy, 5.20, 0.97, 28.0) * 0.35;
+
+            vec3 color = deepSpace;
+            color += nebula * nebulaDensity * 1.3;
+            color += vec3(1.0, 0.96, 0.92) * stars * 2.2;
+
+            // Darken side faces so the logo's 3D depth still reads
+            float facing = abs(vNormal.z);
+            color *= mix(0.35, 1.0, facing);
+
+            gl_FragColor = vec4(color, 1.0);
+          }
+        `,
+      });
+    }
 
     // Load model
     const loader = new GLTFLoader();
@@ -202,6 +298,23 @@
           child.geometry.computeVertexNormals();
         }
       });
+
+      // Galaxy / stars BACKGROUND: a clone of the logo geometry, slightly larger and
+      // pushed behind the amber logo. Because it uses the logo's own shape, the
+      // galaxy is automatically masked to the logo silhouette — visible as a cosmic
+      // halo peeking around/behind the amber logo.
+      galaxyMat = createGalaxyMaterial();
+      let __logoMesh;
+      model.traverse(c => { if (c.isMesh && !__logoMesh) __logoMesh = c; });
+      if (__logoMesh) {
+        const galaxyMesh = new THREE.Mesh(__logoMesh.geometry, galaxyMat);
+        galaxyMesh.position.copy(__logoMesh.position);
+        galaxyMesh.rotation.copy(__logoMesh.rotation);
+        galaxyMesh.scale.copy(__logoMesh.scale).multiplyScalar(1.08);
+        galaxyMesh.position.z -= 2.0; // push behind the amber logo
+        galaxyMesh.renderOrder = -1;
+        (__logoMesh.parent || model).add(galaxyMesh);
+      }
 
       // Scale bigger
       const maxDim = Math.max(size.x, size.y, size.z);
@@ -235,13 +348,14 @@
         }
       }
 
-      // Sample particle origin positions along the star outline
-      const particleCount = 8000;
-      const origins = new Float32Array(particleCount * 3);
+      // Floating ember particles: start in front of logo, curve through the star
+      // opening toward a central vanishing point, collide with the logo surface.
+      const particleCount = 10000;
+      const origins = new Float32Array(particleCount * 3);       // front entry points
+      const passages = new Float32Array(particleCount * 3);      // passage points inside star opening
       const randoms = new Float32Array(particleCount);
       const speeds = new Float32Array(particleCount);
       const sizes = new Float32Array(particleCount);
-      const swirlAmounts = new Float32Array(particleCount);
 
       let totalLength = 0;
       const lengths = starSegments.map(s => {
@@ -250,7 +364,8 @@
         return l;
       });
 
-      for (let i = 0; i < particleCount; i++) {
+      // Sample a point inside the star cutout (pulled inward from outline)
+      function sampleStarInterior() {
         let t = Math.random() * totalLength;
         let segIdx = 0;
         while (segIdx < lengths.length - 1 && t > lengths[segIdx]) {
@@ -259,90 +374,116 @@
         }
         const s = starSegments[segIdx];
         const frac = lengths[segIdx] > 0 ? t / lengths[segIdx] : 0;
+        const ex = s.x1 + (s.x2 - s.x1) * frac;
+        const ey = s.y1 + (s.y2 - s.y1) * frac;
+        const inward = 0.15 + Math.random() * 0.75;
+        return [ex * (1 - inward), ey * (1 - inward)];
+      }
 
-        origins[i * 3]     = s.x1 + (s.x2 - s.x1) * frac;
-        origins[i * 3 + 1] = s.y1 + (s.y2 - s.y1) * frac;
-        origins[i * 3 + 2] = 13.0;
+      for (let i = 0; i < particleCount; i++) {
+        // Origin: cluster around the star opening footprint with a small outward spread.
+        // Most particles born right at the negative-space, some a bit further out.
+        const [ax, ay] = sampleStarInterior();
+        const spread = Math.random() * Math.random() * 18; // skew toward 0 — dense at opening
+        const spreadAngle = Math.random() * Math.PI * 2;
+        origins[i * 3]     = ax + Math.cos(spreadAngle) * spread;
+        origins[i * 3 + 1] = ay + Math.sin(spreadAngle) * spread;
+        // z: right at the opening, only slightly in front
+        origins[i * 3 + 2] = 14 + Math.random() * Math.random() * 18;
+
+        // Passage: an interior star point, pulled tighter for denser funnel
+        const [px, py] = sampleStarInterior();
+        passages[i * 3]     = px * 0.65;
+        passages[i * 3 + 1] = py * 0.65;
+        passages[i * 3 + 2] = 13.0;
 
         randoms[i] = Math.random();
-        speeds[i] = 0.3 + Math.random() * 1.2;
+        speeds[i] = 0.25 + Math.random() * 0.7;   // slower, more floaty
 
-        // Random size class: most small, some medium, a few big
+        // Ember-style size distribution: mostly fine dust + occasional bright heroes
         const r = Math.random();
-        if (r < 0.15) sizes[i] = 2.5 + Math.random() * 2.5;      // big sparklers
-        else if (r < 0.4) sizes[i] = 1.2 + Math.random() * 1.0;   // medium
-        else sizes[i] = 0.4 + Math.random() * 0.8;                 // small dust
-
-        // Swirl intensity: some particles go straight, some twirl wildly
-        const sw = Math.random();
-        if (sw < 0.25) swirlAmounts[i] = 3.0 + Math.random() * 5.0;  // heavy twirlers
-        else if (sw < 0.5) swirlAmounts[i] = 1.0 + Math.random() * 2.0; // moderate
-        else swirlAmounts[i] = Math.random() * 0.5;                    // mostly straight
+        if (r < 0.08) sizes[i] = 3.2 + Math.random() * 2.5;       // bright hero embers
+        else if (r < 0.3) sizes[i] = 1.4 + Math.random() * 1.2;   // medium
+        else sizes[i] = 0.4 + Math.random() * 0.8;                // fine dust
       }
 
       const particleGeo = new THREE.BufferGeometry();
       particleGeo.setAttribute('position', new THREE.BufferAttribute(origins, 3));
+      particleGeo.setAttribute('aPassage', new THREE.BufferAttribute(passages, 3));
       particleGeo.setAttribute('aRandom', new THREE.BufferAttribute(randoms, 1));
       particleGeo.setAttribute('aSpeed', new THREE.BufferAttribute(speeds, 1));
       particleGeo.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1));
-      particleGeo.setAttribute('aSwirl', new THREE.BufferAttribute(swirlAmounts, 1));
 
-      // Gravitational attractor: far behind and above the model
       particleMat = new THREE.ShaderMaterial({
         uniforms: {
           uTime: { value: 0 },
           uPixelRatio: { value: renderer.getPixelRatio() },
-          uAttractor: { value: new THREE.Vector3(0, 50, -120) },
+          uAttractor: { value: new THREE.Vector3(0, 0, -300) },
         },
         vertexShader: `
           uniform float uTime;
           uniform float uPixelRatio;
           uniform vec3 uAttractor;
+          attribute vec3 aPassage;
           attribute float aRandom;
           attribute float aSpeed;
           attribute float aSize;
-          attribute float aSwirl;
           varying float vAlpha;
           varying float vProgress;
           varying float vSize;
 
+          // 4-pointed star radius approximation (cardinal points, concave between)
+          float starRadius(float theta) {
+            float c = abs(cos(2.0 * theta));
+            return 4.0 + 22.0 * pow(c, 3.0);
+          }
+
           void main() {
-            // Each particle loops on its own cycle
-            float cycleDuration = 5.0 / aSpeed;
+            // Each particle loops independently
+            float cycleDuration = 7.0 / aSpeed;
             float t = mod(uTime + aRandom * cycleDuration, cycleDuration) / cycleDuration;
 
-            // Smooth ease with randomized curve shape
+            // Smooth ease (slow start, gentle pull through opening, continue to center)
             float eased = t * t * (3.0 - 2.0 * t);
 
-            // Interpolate from star origin toward distant attractor
-            vec3 pos = mix(position, uAttractor, eased);
+            // Quadratic Bezier: front origin -> star passage -> central vanishing point
+            vec3 p0 = position;
+            vec3 p1 = aPassage;
+            vec3 p2 = uAttractor;
+            float mt = 1.0 - eased;
+            vec3 pos = mt*mt*p0 + 2.0*mt*eased*p1 + eased*eased*p2;
 
-            // Swirl/twirl motion — intensity varies per particle
-            float swirlSpeed = 1.0 + aRandom * 3.0;
-            float spiral = t * 6.28318 * swirlSpeed;
-            float swirlEnvelope = sin(t * 3.14159); // peaks mid-journey
-            float spiralRadius = aSwirl * swirlEnvelope;
+            // Gentle upward drift + wobble (embers rising, stronger while still in front)
+            float driftFactor = smoothstep(1.0, 0.0, eased);
+            pos.y += sin(uTime * 0.7 + aRandom * 6.28) * 1.2 * driftFactor;
+            pos.x += sin(uTime * 0.9 + aRandom * 50.0) * 1.5 * driftFactor;
+            pos.z += cos(uTime * 0.6 + aRandom * 50.0) * 0.8 * driftFactor;
 
-            // Offset phase per particle so twirls don't sync
-            float phase = aRandom * 6.28318;
-            pos.x += cos(spiral + phase) * spiralRadius;
-            pos.y += sin(spiral + phase) * spiralRadius;
-            pos.z += sin(spiral * 0.7 + phase) * spiralRadius * 0.3;
-
-            // Extra random wobble for organic feel
-            pos.x += sin(uTime * 2.3 + aRandom * 50.0) * 0.4 * swirlEnvelope;
-            pos.y += cos(uTime * 1.9 + aRandom * 50.0) * 0.4 * swirlEnvelope;
+            // --- Collide with logo surface ---
+            // If particle would be inside the logo's z-thickness AND outside the
+            // star opening, pin it to the front face.
+            float ang = atan(pos.y, pos.x);
+            float rad = length(pos.xy);
+            float starR = starRadius(ang);
+            bool insideLogoZ = pos.z < 13.0 && pos.z > -1.0;
+            bool insideArch = rad < 58.0;
+            bool outsideStarOpening = rad > starR;
+            if (insideLogoZ && outsideStarOpening && insideArch) {
+              pos.z = 13.3;
+            }
 
             vec4 mvPos = modelViewMatrix * vec4(pos, 1.0);
             gl_Position = projectionMatrix * mvPos;
 
-            // Size: per-particle base size + pulse + journey curve
-            float pulse = 0.8 + 0.2 * sin(uTime * 4.0 + aRandom * 6.28);
-            float sizeCurve = 0.5 + 0.5 * sin(t * 3.14159);
-            gl_PointSize = max(aSize * (10.0 + sizeCurve * 14.0) * pulse * uPixelRatio * (1.0 / -mvPos.z), 1.0);
+            // Gentle flicker like real embers
+            float flicker = 0.7 + 0.3 * sin(uTime * 3.0 + aRandom * 6.28);
+            float sizeCurve = 0.6 + 0.4 * sin(t * 3.14159);
+            gl_PointSize = max(aSize * (10.0 + sizeCurve * 9.0) * flicker * uPixelRatio * (1.0 / -mvPos.z), 1.0);
 
-            // Fade in quickly, bright middle, fade out near end
-            vAlpha = smoothstep(0.0, 0.05, t) * smoothstep(1.0, 0.6, t);
+            // Fade-in at birth; long progressive fade-out as particle converges to distant center
+            float fadeIn = smoothstep(0.0, 0.08, t);
+            float fadeOut = smoothstep(0.95, 0.25, t);   // starts fading early, gone by the time it's deep
+            vAlpha = fadeIn * fadeOut;
             vProgress = t;
             vSize = aSize;
           }
@@ -356,21 +497,22 @@
             float d = length(gl_PointCoord - vec2(0.5));
             if (d > 0.5) discard;
 
-            // Softer glow for big particles, sharper for small
-            float sharpness = mix(1.8, 1.0, clamp(vSize / 3.0, 0.0, 1.0));
-            float glow = 1.0 - smoothstep(0.0, 0.5, d);
-            glow = pow(glow, sharpness);
+            // Tight bright core + soft halo — like the reference embers
+            float core = 1.0 - smoothstep(0.0, 0.12, d);
+            float halo = 1.0 - smoothstep(0.0, 0.5, d);
+            halo = pow(halo, 1.8);
 
-            // Warm gold near star -> cool white as it drifts
-            vec3 warmColor = vec3(1.0, 0.75, 0.3);
-            vec3 coolColor = vec3(0.7, 0.85, 1.0);
-            vec3 color = mix(warmColor, coolColor, vProgress);
+            // Uniform warm amber throughout
+            vec3 emberBody = vec3(1.0, 0.52, 0.10);   // warm orange
+            vec3 emberCore = vec3(1.0, 0.88, 0.55);   // hot yellow-white core
 
-            // Big particles get a brighter hot core
-            float coreBrightness = smoothstep(1.5, 4.0, vSize) * 0.6;
-            color = mix(color, vec3(1.0), glow * (0.5 + coreBrightness));
+            vec3 color = mix(emberBody, emberCore, core * 0.85);
 
-            gl_FragColor = vec4(color, glow * vAlpha);
+            // Big particles get a more prominent hot core
+            float bigBoost = smoothstep(2.0, 4.5, vSize);
+            color += emberCore * core * bigBoost * 0.7;
+
+            gl_FragColor = vec4(color, halo * vAlpha);
           }
         `,
         transparent: true,
@@ -399,9 +541,9 @@
     function animate() {
       requestAnimationFrame(animate);
       controls.update();
-      if (particleMat) {
-        particleMat.uniforms.uTime.value = clock.getElapsedTime();
-      }
+      const t = clock.getElapsedTime();
+      if (particleMat) particleMat.uniforms.uTime.value = t;
+      if (galaxyMat) galaxyMat.uniforms.uTime.value = t;
       renderer.render(scene, camera);
     }
     animate();
