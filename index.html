@@ -129,6 +129,8 @@
     import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
     import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
     import { createIslamicPanel } from './patterns/islamic-tile.js';
+    import { createLatticeUnderlay } from './patterns/lattice-underlay.js';
+    import { createGateFrame } from './patterns/gate-frame.js';
 
     // Scene
     const scene = new THREE.Scene();
@@ -428,6 +430,45 @@
           panel.name = 'islamic-panel';
           panel.position.set(cx, cy, maxZ + 0.05);
           __logoMesh.add(panel);
+
+          // Lattice underlay — solid-fill hexagons on the same grid as the
+          // Islamic panel so each hex frames one rosette. Clip margin =
+          // hexRadius so hex corners can reach the hull edge; the outer
+          // portion slips under the gate frame (which sits in front), so
+          // the visible hex surface meets the frame's inner edge cleanly.
+          const gateFrameWidth = 1.6;
+          const hexRadius = mainTileSize * 1.4;
+          const underlay = createLatticeUnderlay({
+            cols: cols + 2,
+            rows: cols + 2,
+            tileStep,
+            hexRadius,
+            depth: 0.035,
+            color: 0x6B4A1E,
+            clipPolygon,
+            clipMargin: hexRadius,
+          });
+          underlay.name = 'lattice-underlay';
+          underlay.position.set(cx, cy, maxZ + 0.005);
+          __logoMesh.add(underlay);
+
+          // Gate frame — extruded ring along the silhouette with inner/outer
+          // lips and evenly-spaced bosses. Sits on top of everything at the
+          // rim so the logo reads as framed by an architectural gate.
+          const gate = createGateFrame({
+            hull: clipPolygon,
+            frameWidth: gateFrameWidth,
+            frameDepth: 0.5,
+            lipWidth: 0.3,
+            lipDepth: 0.22,
+            bossCount: 56,
+            bossRadius: 0.24,
+            bossDepth: 0.26,
+            color: 0xE5B56A,
+          });
+          gate.name = 'gate-frame';
+          gate.position.set(cx, cy, maxZ + 0.45);
+          __logoMesh.add(gate);
         }
       }
 
@@ -468,9 +509,12 @@
       const halfH = (bbox.max.y - bbox.min.y) * 0.5;
       const halfExtent = Math.max(halfW, halfH);
       const zTol = Math.max(halfExtent * 0.02, 0.1);
-      const innerRadius = halfExtent * 0.55;
+      // Inner-star filter — spans the full inner motif (histogram valley
+      // sits around dist 0.58*halfExtent before the outer lamp silhouette
+      // explodes), so this catches the whole outline, not just its tips.
+      const innerRadius = halfExtent * 0.58;
 
-      // Collect arch-outline edge segments on the front face
+      // Collect inner-star outline edge segments on the front face
       const starSegments = [];
       for (let i = 0; i < edgePos.count; i += 2) {
         const x1 = edgePos.getX(i), y1 = edgePos.getY(i), z1 = edgePos.getZ(i);
@@ -500,7 +544,7 @@
       // Floating ember particles: emerge from deep inside the model (the orange
       // back-glow), pour through the star opening, then drift out toward the
       // camera and disperse outward + upward — matching the portal reference.
-      const particleCount = 22000;
+      const particleCount = 8000;
       const origins  = new Float32Array(particleCount * 3);   // deep inside the model
       const passages = new Float32Array(particleCount * 3);   // through the star opening
       const targets  = new Float32Array(particleCount * 3);   // out front + outward + upward
@@ -559,23 +603,21 @@
       const attractorSpread = halfExtent * 2.2;
 
       for (let i = 0; i < particleCount; i++) {
-        // Origin: on the inner star outline, with a trailing bias that
-        // stretches downward toward the bottom of the model — most
-        // particles hug the outline, some tail all the way to bbox.min.y.
+        // Origin: exactly on the inner star outline with a tiny jitter so
+        // the shape reads as a crisp traced edge.
         const [ox, oy] = sampleStarOutline();
-        const jitter = halfExtent * 0.008;
-        const dropT = Math.pow(Math.random(), 1.6); // bias toward outline, tail down
-        const maxDrop = Math.max(0, oy - bottomY);
+        const jitter = halfExtent * 0.004;
         origins[i * 3]     = ox + (Math.random() - 0.5) * jitter;
-        origins[i * 3 + 1] = oy - dropT * maxDrop + (Math.random() - 0.5) * jitter;
+        origins[i * 3 + 1] = oy + (Math.random() - 0.5) * jitter;
         origins[i * 3 + 2] = frontZ;
 
-        // Passage: still tracing the outline, nudged forward so embers peel
-        // off the rim rather than collapsing inward.
+        // Passage: still tracing the outline, nudged BEHIND the front face so
+        // the Bezier arc stays behind the model the whole way to the attractor
+        // (no forward bulge in front of the logo).
         const [px, py] = sampleStarOutline();
         passages[i * 3]     = px;
         passages[i * 3 + 1] = py;
-        passages[i * 3 + 2] = frontZ + halfExtent * 0.06;
+        passages[i * 3 + 2] = frontZ - halfExtent * 0.1;
 
         // Target: soft cloud around the shared attractor — particles drift
         // toward the distant point rather than converging on it.
@@ -623,9 +665,10 @@
             float cycleDuration = 7.0 / aSpeed;
             float t = mod(uTime + aRandom * cycleDuration, cycleDuration) / cycleDuration;
 
-            // Cubic ease-in — particles linger dense near the origin and
-            // accelerate as they're pulled toward the distant attractor.
-            float eased = t * t * t;
+            // Steep ease-in (quintic) — particles cluster tightly near the
+            // origin for most of the cycle and accelerate only near the end,
+            // so density reads highest at the start of their lifespan.
+            float eased = t * t * t * t * t;
 
             // Quadratic Bezier: deep inside -> star passage -> outward & forward
             vec3 p0 = position;
@@ -634,10 +677,11 @@
             float mt = 1.0 - eased;
             vec3 pos = mt*mt*p0 + 2.0*mt*eased*p1 + eased*eased*p2;
 
-            // Wobble grows as embers leave the portal — feels like rising heat
-            float wobble = eased * 0.9 + 0.15;
-            pos.x += sin(uTime * 0.9 + aRandom * 50.0) * 0.7 * wobble;
-            pos.y += cos(uTime * 0.7 + aRandom * 50.0) * 0.7 * wobble;
+            // Wobble — zero at origin so the outline reads crisply, growing
+            // only as particles leave the star and drift toward the attractor.
+            float wobble = eased * 1.0;
+            pos.x += sin(uTime * 0.9 + aRandom * 50.0) * 0.6 * wobble;
+            pos.y += cos(uTime * 0.7 + aRandom * 50.0) * 0.6 * wobble;
             pos.y += eased * eased * 1.2;  // extra gentle lift as they fly out
 
             vec4 mvPos = modelViewMatrix * vec4(pos, 1.0);
@@ -648,8 +692,8 @@
             float sizeCurve = 0.6 + 0.4 * sin(t * 3.14159);
             gl_PointSize = max(aSize * (10.0 + sizeCurve * 9.0) * flicker * uPixelRatio * (1.0 / -mvPos.z), 1.0);
 
-            // Brightest as they pass through the opening, fade as they drift away
-            float fadeIn  = smoothstep(0.0, 0.18, t);
+            // Quick fade-in so particles are already bright while dense at origin
+            float fadeIn  = smoothstep(0.0, 0.04, t);
             float fadeOut = 1.0 - smoothstep(0.55, 1.0, t);
             vAlpha = fadeIn * fadeOut * 1.7;
             vProgress = t;
