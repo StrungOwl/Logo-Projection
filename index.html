@@ -127,16 +127,88 @@
   <script type="module">
     import * as THREE from 'three';
     import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+    import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
     import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
     import { createIslamicPanel } from './patterns/islamic-tile.js';
     import { createLatticeUnderlay } from './patterns/lattice-underlay.js';
     import { createGateFrame } from './patterns/gate-frame.js';
+    import { createSparkSystem } from './patterns/stroke-sparks.js';
+
+    // =======================================================================
+    // MODEL — which 3D file to load and how to place it. Extension drives the
+    // loader (.glb / .gltf / .obj supported). Edit `path` and reload to swap.
+    // =======================================================================
+    const MODEL = {
+      path:            './3DModels/SDG_logo_3d.glb',
+      scaleToMaxDim:   8,
+      positionOffsetY: -1.0,
+    };
+    window.MODEL = MODEL;
+
+    // =======================================================================
+    // ANIM — every animated value lives here. Edit in source or at runtime
+    // via `window.ANIM` in devtools. Most values are re-read each frame.
+    // Spark `count` is read only at model load (reload to change).
+    // =======================================================================
+    const ANIM = {
+      pulseSpeed: 1.0,
+      keyLight:          { intensityMin: 0.0,  intensityMax: 4.6,
+                           colorAtMin: [1.0, 0.08, 0.00], colorAtMax: [1.0, 0.80, 0.18] },
+      innerGlow:         { intensityMin: 40,   intensityMax: 260, color: 0xff6a18 },
+      frontPatternLight: { intensityMin: 1.2,  intensityMax: 4.8, color: 0xffb070 },
+      rimLight:          { intensityMin: 0.5,  intensityMax: 2.5,
+                           phaseOffset: Math.PI * 0.5, color: 0x4d8aff },
+      ambientIntensity:     0.1,
+      fillIntensity:        0.4,
+      rearPatternIntensity: 1.2,
+      rearPatternColor:     0x7a96c8,
+      galaxy: { timeScale: 1.0, brightness: 1.0 },
+      emberParticles: { cycleDuration: 7.0,
+                        bodyColor: [1.0, 0.52, 0.10], coreColor: [1.0, 0.88, 0.55],
+                        brightness: 1.7 },
+      whiteParticles: { cycleDuration: 7.0,
+                        bodyColor: [0.88, 0.92, 1.0], coreColor: [1.0, 1.0, 1.0],
+                        brightness: 1.7 },
+      panelSparks:   { count: 50, gravity: 8, maxSpeed: 7, damping: 1.6,
+                       snapStrength: 4,
+                       tangentialFactor: 0.8, speedVariance: 0.55, sizeVariance: 0.7,
+                       color: 0xffd9a0, pointSize: 0.45 },
+      latticeSparks: { count: 32, gravity: 7, maxSpeed: 6, damping: 1.5,
+                       snapStrength: 3.5,
+                       tangentialFactor: 0.8, speedVariance: 0.55, sizeVariance: 0.7,
+                       color: 0xffe8c0, pointSize: 0.4 },
+    };
+    window.ANIM = ANIM;
+
+    // =======================================================================
+    // COLORS — non-animated tints. Read at model-load / material-create time,
+    // so reload the page after editing.
+    // =======================================================================
+    const COLORS = {
+      sceneBackground: 0x000000,
+      envTint:         0x888888,
+      logo:            { base: 0xFFBF00, metalness: 0.6, roughness: 0.35,
+                         gradientDark:   [0.72, 0.58, 0.40],
+                         gradientBright: [1.05, 1.02, 0.95] },
+      islamicPanel:    { gold: 0xB08552, stroke: 0xE06A3A,
+                         gradientDark:   [0.68, 0.55, 0.40],
+                         gradientBright: [1.02, 1.0, 0.95] },
+      latticeUnderlay: { fill: 0x6B4A22, stroke: 0xFFC968,
+                         gradientDark:   [0.60, 0.48, 0.35],
+                         gradientBright: [1.0, 1.0, 0.95] },
+      gateFrame:       { base: 0xB8915A,
+                         gradientDark:   [0.35, 0.28, 0.20],
+                         gradientBright: [1.02, 1.0, 0.95] },
+      ambient: 0xffffff,
+      fill:    0xffffff,
+    };
+    window.COLORS = COLORS;
 
     // Scene
     const scene = new THREE.Scene();
     window.__scene = scene;
     window.__THREE = THREE;
-    scene.background = new THREE.Color(0x000000);
+    scene.background = new THREE.Color(COLORS.sceneBackground);
 
     // Camera
     const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
@@ -154,39 +226,39 @@
     // Environment map for metallic reflections
     const pmremGenerator = new THREE.PMREMGenerator(renderer);
     const envScene = new THREE.Scene();
-    envScene.background = new THREE.Color(0x888888);
+    envScene.background = new THREE.Color(COLORS.envTint);
     const envMap = pmremGenerator.fromScene(envScene).texture;
     scene.environment = envMap;
 
     // Lights — cinematic rim lighting for stronger dimension
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.1);
+    const ambientLight = new THREE.AmbientLight(COLORS.ambient, ANIM.ambientIntensity);
     scene.add(ambientLight);
 
-    const keyLight = new THREE.DirectionalLight(0xffffff, 2.5);
+    const keyLight = new THREE.DirectionalLight(0xffffff, ANIM.keyLight.intensityMax);
     keyLight.position.set(5, 8, 4);  // steeper top-front-right
     scene.add(keyLight);
 
-    const rimLight = new THREE.DirectionalLight(0x4d8aff, 1.5);  // cool blue, from behind
+    const rimLight = new THREE.DirectionalLight(ANIM.rimLight.color, ANIM.rimLight.intensityMax);  // cool blue, from behind
     rimLight.position.set(-3, 2, -6);
     scene.add(rimLight);
 
-    const fillLight = new THREE.DirectionalLight(0xffffff, 0.4);
+    const fillLight = new THREE.DirectionalLight(COLORS.fill, ANIM.fillIntensity);
     fillLight.position.set(0, -4, 2);
     scene.add(fillLight);
 
     // Vibrant orange back glow — spills onto dome from inside the model
-    const innerGlow = new THREE.PointLight(0xff6a18, 80, 40, 1.6);
+    const innerGlow = new THREE.PointLight(ANIM.innerGlow.color, ANIM.innerGlow.intensityMax, 40, 1.6);
     innerGlow.position.set(0, -1.0, -2.0);
     scene.add(innerGlow);
 
     // Subtle rim accents on the pattern layers. Warm ember kissing the front
     // pattern edges, cooler dim behind the rear pattern — tight falloff so
     // they graze the reliefs without lifting the ambient brightness.
-    const frontPatternLight = new THREE.PointLight(0xffb070, 1.8, 5, 2);
+    const frontPatternLight = new THREE.PointLight(ANIM.frontPatternLight.color, ANIM.frontPatternLight.intensityMax, 5, 2);
     frontPatternLight.position.set(-2.8, 1.8, 2.6);
     scene.add(frontPatternLight);
 
-    const rearPatternLight = new THREE.PointLight(0x7a96c8, 1.2, 6, 2);
+    const rearPatternLight = new THREE.PointLight(ANIM.rearPatternColor, ANIM.rearPatternIntensity, 6, 2);
     rearPatternLight.position.set(2.8, 1.2, -1.2);
     scene.add(rearPatternLight);
 
@@ -240,6 +312,7 @@
     let whiteParticleMat = null;
     let galaxyMat = null;
     const strokeTimeUniforms = [];
+    const sparkSystems = [];
 
     // Galaxy / deep-space shader — stars + nebula, masked automatically by the logo mesh shape
     function createGalaxyMaterial() {
@@ -254,6 +327,9 @@
           uTime: { value: 0 },
           uCenter: { value: new THREE.Vector2(0, 0) },
           uRadius: { value: 1.0 },
+          uMinY: { value: -1.0 },
+          uFadeHeight: { value: 1.0 },
+          uBrightness: { value: ANIM.galaxy.brightness },
         },
         vertexShader: `
           varying vec3 vLocalPos;
@@ -268,6 +344,9 @@
           uniform float uTime;
           uniform vec2 uCenter;
           uniform float uRadius;
+          uniform float uMinY;
+          uniform float uFadeHeight;
+          uniform float uBrightness;
           varying vec3 vLocalPos;
           varying vec3 vNormal;
 
@@ -366,16 +445,33 @@
             float facing = abs(vNormal.z);
             color *= mix(0.35, 1.0, facing);
 
-            gl_FragColor = vec4(color, 1.0);
+            // Bottom-edge fade: dissolve into the void along the lower rim
+            // of the silhouette so the galaxy doesn't end on a hard line.
+            float bottomFade = smoothstep(uMinY, uMinY + uFadeHeight, vLocalPos.y);
+            color *= bottomFade;
+
+            gl_FragColor = vec4(color * uBrightness, 1.0);
           }
         `,
       });
     }
 
-    // Load model
-    const loader = new GLTFLoader();
-    loader.load('./3DModels/SDG_logo_3d.glb', (gltf) => {
-      const model = gltf.scene;
+    // Extension-aware loader — picks GLTFLoader for .glb/.gltf, OBJLoader for
+    // .obj. Hands back a single Object3D root so the rest of the code doesn't
+    // care which format MODEL.path points to.
+    function loadModel(path, onDone, onError) {
+      const ext = path.split('.').pop().toLowerCase();
+      if (ext === 'glb' || ext === 'gltf') {
+        new GLTFLoader().load(path, (gltf) => onDone(gltf.scene), undefined, onError);
+      } else if (ext === 'obj') {
+        new OBJLoader().load(path, (obj) => onDone(obj), undefined, onError);
+      } else {
+        console.error('Unsupported model format:', ext, '(' + path + ')');
+      }
+    }
+
+    // Load model (loader picked from MODEL.path extension)
+    loadModel(MODEL.path, (model) => {
 
       // Center the model
       const box = new THREE.Box3().setFromObject(model);
@@ -387,9 +483,9 @@
       model.traverse((child) => {
         if (child.isMesh) {
           child.material = new THREE.MeshStandardMaterial({
-            color: 0xFFBF00,
-            metalness: 0.6,
-            roughness: 0.35,
+            color: COLORS.logo.base,
+            metalness: COLORS.logo.metalness,
+            roughness: COLORS.logo.roughness,
             flatShading: true,
           });
           child.geometry.computeVertexNormals();
@@ -397,8 +493,8 @@
           applyGradientTint(child.material, {
             minY: -5.5,
             maxY: 3.5,
-            darkTint:   [0.72, 0.58, 0.40],
-            brightTint: [1.05, 1.02, 0.95],
+            darkTint:   COLORS.logo.gradientDark,
+            brightTint: COLORS.logo.gradientBright,
           });
         }
       });
@@ -464,6 +560,17 @@
           }
           galaxyMat.uniforms.uCenter.value.set(cx, cy);
           galaxyMat.uniforms.uRadius.value = maxR;
+
+          // Bottom-edge fade range: start dissolving ~30% of the silhouette
+          // height up from the lowest hull point, so the galaxy melts into
+          // the void instead of cutting off sharply at the bottom rim.
+          let minY = Infinity, maxY = -Infinity;
+          for (const h of hull) {
+            if (h.y < minY) minY = h.y;
+            if (h.y > maxY) maxY = h.y;
+          }
+          galaxyMat.uniforms.uMinY.value = minY;
+          galaxyMat.uniforms.uFadeHeight.value = 0;   // bottom fade disabled (0% of silhouette height)
 
           const silhouetteGeo = new THREE.ShapeGeometry(shape);
           const galaxyMesh = new THREE.Mesh(silhouetteGeo, galaxyMat);
@@ -533,7 +640,7 @@
             reliefDepth: 0.35,
             strapHalfWidth: 0.3,
             knotSize: 0.7,
-            goldColor: 0xB08552,
+            goldColor: COLORS.islamicPanel.gold,
             clipPolygon: patternClipPolygon,
             // Margin < mainTileSize so outer rosettes overhang the clip
             // polygon and slip under the gate frame — the visible edge
@@ -551,9 +658,9 @@
             maxOpacity: 0.92,
             gradientMinY: -maxR * 1.1,
             gradientMaxY:  maxR * 1.1,
-            gradientDark:   [0.68, 0.55, 0.40],
-            gradientBright: [1.02, 1.0, 0.95],
-            strokeColor: 0xE06A3A,
+            gradientDark:   COLORS.islamicPanel.gradientDark,
+            gradientBright: COLORS.islamicPanel.gradientBright,
+            strokeColor: COLORS.islamicPanel.stroke,
             strokeOpacity: 0.9,
           });
           panel.name = 'islamic-panel';
@@ -576,7 +683,7 @@
             tileStep,
             hexRadius,
             depth: 0.035,
-            color: 0x6B4A22,
+            color: COLORS.latticeUnderlay.fill,
             clipPolygon: patternClipPolygon,
             clipMargin: gateFrameWidth,
             // Hard fragment-shader clip to the original hull — slices any
@@ -591,9 +698,9 @@
             maxOpacity: 0.82,
             gradientMinY: -maxR * 1.1,
             gradientMaxY:  maxR * 1.1,
-            gradientDark:   [0.60, 0.48, 0.35],
-            gradientBright: [1.0, 1.0, 0.95],
-            strokeColor: 0xFFC968,
+            gradientDark:   COLORS.latticeUnderlay.gradientDark,
+            gradientBright: COLORS.latticeUnderlay.gradientBright,
+            strokeColor: COLORS.latticeUnderlay.stroke,
             strokeOpacity: 1.0,
           });
           underlay.name = 'lattice-underlay';
@@ -611,7 +718,7 @@
             if (p.y < hullMinY) hullMinY = p.y;
             if (p.y > hullMaxY) hullMaxY = p.y;
           }
-          const gateBottomCutY = hullMinY + (hullMaxY - hullMinY) * 0.08;
+          const gateBottomCutY = hullMinY + (hullMaxY - hullMinY) * 0.02;
           const gate = createGateFrame({
             hull: clipPolygon,
             frameWidth: gateFrameWidth,
@@ -621,16 +728,72 @@
             bossCount: 56,
             bossRadius: 0.24,
             bossDepth: 0.26,
-            color: 0xB8915A,
+            color: COLORS.gateFrame.base,
             gradientMinY: -maxR * 1.1,
             gradientMaxY:  maxR * 1.1,
-            gradientDark:   [0.35, 0.28, 0.20],
-            gradientBright: [1.02, 1.0, 0.95],
+            gradientDark:   COLORS.gateFrame.gradientDark,
+            gradientBright: COLORS.gateFrame.gradientBright,
             bottomCutY: gateBottomCutY,
           });
           gate.name = 'gate-frame';
           gate.position.set(cx, cy, maxZ + 0.45);
           __logoMesh.add(gate);
+
+          // ------------------------------------------------------------------
+          // Inward-travelling light sparks along the pattern strokes.
+          // Each spark hops from an outer vertex to a neighbour closer to the
+          // pattern centre, lerp-animated. Additive-blended Points sit on top
+          // of the existing stroke edges so they read as energy pulling inward.
+          // ------------------------------------------------------------------
+          // Small, slow, long-lived sparks. speed is panel-units-per-second;
+          // at speed=4 an outer→inner trip of ~50 units takes ~12s, giving
+          // each spark a full journey along the stroke network.
+          // pointSize is multiplied by a perspective factor in-shader, so
+          // ~0.45 produces a small refined bead (soft-sprite + additive keeps
+          // them legible as embers without dominating the composition).
+          // Physics-driven sparks: constant gravity pull toward fadeCenter,
+          // with a position-blend snap each frame to whatever stroke vertex
+          // is closest. That combination lets sparks SKIP from one stroke to
+          // the next as they drift inward — the new nearest stroke becomes
+          // their next anchor automatically. gravity/maxSpeed/damping tuned
+          // so an outer→inner drift takes ~8-12 s.
+          const panelSparks = createSparkSystem({
+            patternGroup: panel,
+            fadeCenter: patternFadeCenter,
+            fadeOuter:  maxR * 0.55,
+            count:            ANIM.panelSparks.count,
+            gravity:          ANIM.panelSparks.gravity,
+            maxSpeed:         ANIM.panelSparks.maxSpeed,
+            damping:          ANIM.panelSparks.damping,
+            snapStrength:     ANIM.panelSparks.snapStrength,
+            tangentialFactor: ANIM.panelSparks.tangentialFactor,
+            speedVariance:    ANIM.panelSparks.speedVariance,
+            sizeVariance:     ANIM.panelSparks.sizeVariance,
+            color:            ANIM.panelSparks.color,
+            pointSize:        ANIM.panelSparks.pointSize,
+            z: 0.12,
+          });
+          panel.add(panelSparks.points);
+
+          const latticeSparks = createSparkSystem({
+            patternGroup: underlay,
+            fadeCenter: patternFadeCenter,
+            fadeOuter:  maxR * 0.65,
+            count:            ANIM.latticeSparks.count,
+            gravity:          ANIM.latticeSparks.gravity,
+            maxSpeed:         ANIM.latticeSparks.maxSpeed,
+            damping:          ANIM.latticeSparks.damping,
+            snapStrength:     ANIM.latticeSparks.snapStrength,
+            tangentialFactor: ANIM.latticeSparks.tangentialFactor,
+            speedVariance:    ANIM.latticeSparks.speedVariance,
+            sizeVariance:     ANIM.latticeSparks.sizeVariance,
+            color:            ANIM.latticeSparks.color,
+            pointSize:        ANIM.latticeSparks.pointSize,
+            z: 0.12,
+          });
+          underlay.add(latticeSparks.points);
+
+          sparkSystems.push(panelSparks, latticeSparks);
 
           // Stash on model so we can refresh fade matrices after scene.add()
           // has computed each group's world transform.
@@ -640,14 +803,14 @@
 
       // Scale bigger
       const maxDim = Math.max(size.x, size.y, size.z);
-      const scale = 8 / maxDim;
+      const scale = MODEL.scaleToMaxDim / maxDim;
       model.scale.setScalar(scale);
 
       // Reset any rotation
       model.rotation.set(0, 0, 0);
 
       // Shift down on Y axis to visually center on screen
-      model.position.y -= 1.0;
+      model.position.y += MODEL.positionOffsetY;
 
       scene.add(model);
 
@@ -828,10 +991,16 @@
         uniforms: {
           uTime: { value: 0 },
           uPixelRatio: { value: renderer.getPixelRatio() },
+          uCycleDuration: { value: ANIM.emberParticles.cycleDuration },
+          uBodyColor:     { value: new THREE.Vector3(...ANIM.emberParticles.bodyColor) },
+          uCoreColor:     { value: new THREE.Vector3(...ANIM.emberParticles.coreColor) },
+          uBrightness:    { value: ANIM.emberParticles.brightness },
         },
         vertexShader: `
           uniform float uTime;
           uniform float uPixelRatio;
+          uniform float uCycleDuration;
+          uniform float uBrightness;
           attribute vec3 aPassage;
           attribute vec3 aTarget;
           attribute float aRandom;
@@ -843,7 +1012,7 @@
 
           void main() {
             // Each particle loops independently
-            float cycleDuration = 7.0 / aSpeed;
+            float cycleDuration = uCycleDuration / aSpeed;
             float t = mod(uTime + aRandom * cycleDuration, cycleDuration) / cycleDuration;
 
             // Steep ease-in (quintic) — particles cluster tightly near the
@@ -876,12 +1045,14 @@
             // Quick fade-in so particles are already bright while dense at origin
             float fadeIn  = smoothstep(0.0, 0.04, t);
             float fadeOut = 1.0 - smoothstep(0.55, 1.0, t);
-            vAlpha = fadeIn * fadeOut * 1.7;
+            vAlpha = fadeIn * fadeOut * uBrightness;
             vProgress = t;
             vSize = aSize;
           }
         `,
         fragmentShader: `
+          uniform vec3 uBodyColor;
+          uniform vec3 uCoreColor;
           varying float vAlpha;
           varying float vProgress;
           varying float vSize;
@@ -895,15 +1066,11 @@
             float halo = 1.0 - smoothstep(0.0, 0.5, d);
             halo = pow(halo, 1.8);
 
-            // Uniform warm amber throughout
-            vec3 emberBody = vec3(1.0, 0.52, 0.10);   // warm orange
-            vec3 emberCore = vec3(1.0, 0.88, 0.55);   // hot yellow-white core
-
-            vec3 color = mix(emberBody, emberCore, core * 0.85);
+            vec3 color = mix(uBodyColor, uCoreColor, core * 0.85);
 
             // Big particles get a more prominent hot core
             float bigBoost = smoothstep(2.0, 4.5, vSize);
-            color += emberCore * core * bigBoost * 0.7;
+            color += uCoreColor * core * bigBoost * 0.7;
 
             gl_FragColor = vec4(color, halo * vAlpha);
           }
@@ -975,9 +1142,15 @@
         uniforms: {
           uTime: { value: 0 },
           uPixelRatio: { value: renderer.getPixelRatio() },
+          uCycleDuration: { value: ANIM.whiteParticles.cycleDuration },
+          uBodyColor:     { value: new THREE.Vector3(...ANIM.whiteParticles.bodyColor) },
+          uCoreColor:     { value: new THREE.Vector3(...ANIM.whiteParticles.coreColor) },
+          uBrightness:    { value: ANIM.whiteParticles.brightness },
         },
         vertexShader: particleMat.vertexShader,
         fragmentShader: `
+          uniform vec3 uBodyColor;
+          uniform vec3 uCoreColor;
           varying float vAlpha;
           varying float vProgress;
           varying float vSize;
@@ -990,13 +1163,10 @@
             float halo = 1.0 - smoothstep(0.0, 0.5, d);
             halo = pow(halo, 1.8);
 
-            // Pure white — faint cool tint in the body, hot white core
-            vec3 body = vec3(0.88, 0.92, 1.0);
-            vec3 corecol = vec3(1.0);
-            vec3 color = mix(body, corecol, core * 0.85);
+            vec3 color = mix(uBodyColor, uCoreColor, core * 0.85);
 
             float bigBoost = smoothstep(2.0, 4.5, vSize);
-            color += corecol * core * bigBoost * 0.7;
+            color += uCoreColor * core * bigBoost * 0.7;
 
             gl_FragColor = vec4(color, halo * vAlpha);
           }
@@ -1030,20 +1200,74 @@
       controls.update();
     });
 
-    // Animate
+    // Animate — every breathing value is pulled from ANIM each frame so
+    // `window.ANIM.*` edits in the devtools console take effect immediately.
     const clock = new THREE.Clock();
     function animate() {
       requestAnimationFrame(animate);
       controls.update();
-      const t = clock.getElapsedTime();
-      if (particleMat) particleMat.uniforms.uTime.value = t;
-      if (whiteParticleMat) whiteParticleMat.uniforms.uTime.value = t;
-      if (galaxyMat) galaxyMat.uniforms.uTime.value = t;
+      const dt = Math.min(clock.getDelta(), 0.05);   // cap so spark stepping stays stable after tab-unhide
+      const t = clock.elapsedTime;
+
+      // Galaxy — time scale lets you slow/speed the nebula churn live.
+      if (galaxyMat) {
+        galaxyMat.uniforms.uTime.value = t * ANIM.galaxy.timeScale;
+        galaxyMat.uniforms.uBrightness.value = ANIM.galaxy.brightness;
+      }
+
+      // Ember + white particle uniforms — color / cycle / brightness hot-swappable.
+      if (particleMat) {
+        particleMat.uniforms.uTime.value = t;
+        particleMat.uniforms.uCycleDuration.value = ANIM.emberParticles.cycleDuration;
+        particleMat.uniforms.uBodyColor.value.fromArray(ANIM.emberParticles.bodyColor);
+        particleMat.uniforms.uCoreColor.value.fromArray(ANIM.emberParticles.coreColor);
+        particleMat.uniforms.uBrightness.value = ANIM.emberParticles.brightness;
+      }
+      if (whiteParticleMat) {
+        whiteParticleMat.uniforms.uTime.value = t;
+        whiteParticleMat.uniforms.uCycleDuration.value = ANIM.whiteParticles.cycleDuration;
+        whiteParticleMat.uniforms.uBodyColor.value.fromArray(ANIM.whiteParticles.bodyColor);
+        whiteParticleMat.uniforms.uCoreColor.value.fromArray(ANIM.whiteParticles.coreColor);
+        whiteParticleMat.uniforms.uBrightness.value = ANIM.whiteParticles.brightness;
+      }
+
       for (let i = 0; i < strokeTimeUniforms.length; i++) strokeTimeUniforms[i].value = t;
-      // Directional-light breathing: key sweeps hard, rim drifts on offset phase
-      // so you can actually see shading shift across the logo. ~6s cycle.
-      keyLight.intensity = 2.5 + 2.0 * Math.sin(t * 1.0);
-      rimLight.intensity = 1.5 + 1.0 * Math.sin(t * 1.0 + Math.PI * 0.5);
+      for (let i = 0; i < sparkSystems.length; i++) sparkSystems[i].update(dt);
+
+      // Directional-light breathing: key sweeps red ↔ amber, inner glow +
+      // front-pattern swell anti-phase, rim drifts on offset phase so shading
+      // visibly shifts across the logo.
+      const pulse   = Math.sin(t * ANIM.pulseSpeed);
+      const pulse01 = 0.5 + 0.5 * pulse;
+      const warm    = 1.0 - pulse01;
+
+      const kl = ANIM.keyLight;
+      keyLight.intensity = Math.max(0.0, kl.intensityMin + (kl.intensityMax - kl.intensityMin) * pulse01);
+      keyLight.color.setRGB(
+        kl.colorAtMin[0] + (kl.colorAtMax[0] - kl.colorAtMin[0]) * pulse01,
+        kl.colorAtMin[1] + (kl.colorAtMax[1] - kl.colorAtMin[1]) * pulse01,
+        kl.colorAtMin[2] + (kl.colorAtMax[2] - kl.colorAtMin[2]) * pulse01
+      );
+
+      const ig = ANIM.innerGlow;
+      innerGlow.intensity = ig.intensityMin + (ig.intensityMax - ig.intensityMin) * warm;
+      innerGlow.color.set(ig.color);
+
+      const fp = ANIM.frontPatternLight;
+      frontPatternLight.intensity = fp.intensityMin + (fp.intensityMax - fp.intensityMin) * warm;
+      frontPatternLight.color.set(fp.color);
+
+      const rl = ANIM.rimLight;
+      const rimPulse01 = 0.5 + 0.5 * Math.sin(t * ANIM.pulseSpeed + rl.phaseOffset);
+      rimLight.intensity = rl.intensityMin + (rl.intensityMax - rl.intensityMin) * rimPulse01;
+      rimLight.color.set(rl.color);
+
+      // Non-breathing lights — still read from ANIM so tweaks are live.
+      ambientLight.intensity = ANIM.ambientIntensity;
+      fillLight.intensity    = ANIM.fillIntensity;
+      rearPatternLight.intensity = ANIM.rearPatternIntensity;
+      rearPatternLight.color.set(ANIM.rearPatternColor);
+
       renderer.render(scene, camera);
     }
     animate();

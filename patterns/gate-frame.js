@@ -184,6 +184,7 @@ export function createGateFrame({
   gradientDark = [0.7, 0.58, 0.42],
   gradientBright = [1.0, 1.0, 1.0],
   bottomCutY = null,
+  innerOffsetter = insetConvex,
 } = {}) {
   const group = new THREE.Group();
 
@@ -222,10 +223,10 @@ export function createGateFrame({
   };
   group.userData.gradUniforms = gradUniforms;
 
-  const inner = insetConvex(hull, frameWidth);
-  const innerLipOuter = insetConvex(hull, frameWidth - lipWidth);
-  const outerLipInner = insetConvex(hull, lipWidth);
-  const midline = insetConvex(hull, frameWidth * 0.5);
+  const inner = innerOffsetter(hull, frameWidth);
+  const innerLipOuter = innerOffsetter(hull, frameWidth - lipWidth);
+  const outerLipInner = innerOffsetter(hull, lipWidth);
+  const midline = innerOffsetter(hull, frameWidth * 0.5);
 
   const clip = bottomCutY !== null;
   const outerArc = clip ? clipArcAboveY(hull, bottomCutY) : null;
