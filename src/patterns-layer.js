@@ -123,15 +123,8 @@ export function addPatternLayers(logoMesh, meta) {
   if (underlay.userData.pulseTimeUniform)  strokeTimeUniforms.push(underlay.userData.pulseTimeUniform);
   patternsToRefresh.push(underlay);
 
-  // Gate frame — extruded arch along the silhouette. Legs extend to the
-  // lowest hull point; bottomCutY offset by a tiny epsilon above hullMinY
-  // so the flat-bottom detection doesn't degenerate to a zero-height cut.
-  let hullMinY = Infinity, hullMaxY = -Infinity;
-  for (const p of clipPolygon) {
-    if (p.y < hullMinY) hullMinY = p.y;
-    if (p.y > hullMaxY) hullMaxY = p.y;
-  }
-  const gateBottomCutY = hullMinY + (hullMaxY - hullMinY) * 0.025;
+  // Gate frame — extruded ring that follows the full hull silhouette
+  // (no bottom cut), so the moulding wraps the entire model outline.
   const gate = createGateFrame({
     hull: clipPolygon,
     frameWidth: gateFrameWidth,
@@ -146,7 +139,7 @@ export function addPatternLayers(logoMesh, meta) {
     gradientMaxY:  maxR * 1.1,
     gradientDark:   hexToRgb(COLORS.gateFrame.gradientDark),
     gradientBright: hexToRgb(COLORS.gateFrame.gradientBright),
-    bottomCutY: gateBottomCutY,
+    bottomCutY: null,
   });
   gate.name = 'gate-frame';
   gate.position.set(cx, cy, maxZ + 0.45);
@@ -236,39 +229,30 @@ export function addPatternLayers(logoMesh, meta) {
   }
   const maxStaggerIdx = maxRadius / tileStep;
 
+  // Infinite-loop mode: each tile runs its OWN rest → exit → gap → entry
+  // cycle with a radius-based phase offset (outer-first). Because
+  // `idlePeriod` (per-tile rest) dominates the cycle, most tiles are at
+  // rest at any instant — only a thin radial band is in motion at once,
+  // and new tiles are continuously re-emerging from beyond the hull to
+  // replace the ones being pulled inward. No global idle/gap — the
+  // pattern never fully empties.
   const cascadeState = { active: 1 };
-  let lastWasIdle = false;
 
   function updateRowCascade(t) {
     const cfg = ANIM.rowCascade;
     if (!cfg) return;
-    const maxStaggerTime  = maxStaggerIdx * cfg.rowStagger;
-    const exitPhaseLen    = maxStaggerTime + cfg.exitDuration;
-    const entryPhaseStart = exitPhaseLen + cfg.gap;
-    const entryPhaseLen   = maxStaggerTime + cfg.entryDuration;
-    const cycleLen        = cfg.idlePeriod + exitPhaseLen + cfg.gap + entryPhaseLen;
-    const phase           = ((t % cycleLen) + cycleLen) % cycleLen;
+    const restDur   = cfg.idlePeriod;
+    const exDur     = cfg.exitDuration;
+    const gapDur    = cfg.gap;
+    const enDur     = cfg.entryDuration;
+    const stag      = cfg.rowStagger;
+    const outerRing = maxRadius + cfg.outerMargin;
+    const period    = restDur + exDur + gapDur + enDur;
+    if (period < 1e-3) return;
 
-    if (phase < cfg.idlePeriod) {
-      if (!lastWasIdle) {
-        for (let i = 0; i < cascadeMeshes.length; i++) {
-          const m = cascadeMeshes[i];
-          m.position.x = m.userData.baseX;
-          m.position.y = m.userData.baseY;
-        }
-        lastWasIdle = true;
-      }
-      cascadeState.active = 1;
-      return;
-    }
-    lastWasIdle = false;
-    cascadeState.active = 0;
-
-    const localT     = phase - cfg.idlePeriod;
-    const exDur      = cfg.exitDuration;
-    const enDur      = cfg.entryDuration;
-    const stag       = cfg.rowStagger;
-    const outerRing  = maxRadius + cfg.outerMargin;
+    const exitStart  = restDur;
+    const gapStart   = restDur + exDur;
+    const entryStart = restDur + exDur + gapDur;
 
     for (let i = 0; i < cascadeMeshes.length; i++) {
       const m    = cascadeMeshes[i];
@@ -278,36 +262,40 @@ export function addPatternLayers(logoMesh, meta) {
       const rayX = m.userData.rayX;
       const rayY = m.userData.rayY;
 
-      const exStart = sIdx * stag;
-      const enStart = entryPhaseStart + sIdx * stag;
+      const offset = sIdx * stag;
+      const phase  = ((t - offset) % period + period) % period;
 
       let posX, posY;
-      if (localT < exStart) {
-        posX = bx; posY = by;
-      } else if (localT < exStart + exDur) {
-        // Exit: rest → fade-center, ease-in cubic (accelerating suction).
-        const u = (localT - exStart) / exDur;
+      if (phase < exitStart) {
+        posX = bx; posY = by;                       // resting at base
+      } else if (phase < gapStart) {
+        // Exit: base → fade center, ease-in cubic (accelerating suction).
+        const u = (phase - exitStart) / exDur;
         const e = u * u * u;
         posX = bx + (fcx - bx) * e;
         posY = by + (fcy - by) * e;
-      } else if (localT < enStart) {
-        // Gap: parked at the fade center (invisible under radial fade).
-        posX = fcx; posY = fcy;
-      } else if (localT < enStart + enDur) {
-        // Entry: outer-ring → rest, ease-in-out cubic. Tiles stay beyond
-        // the hull at entry start (clipped) and settle smoothly into place.
-        const u = (localT - enStart) / enDur;
+      } else if (phase < entryStart) {
+        posX = fcx; posY = fcy;                     // parked at center, invisible under fade
+      } else {
+        // Entry: outer ring → base, ease-in-out cubic. Tile stays beyond
+        // the hull at entry start (clipped) and settles into place.
+        const u = (phase - entryStart) / enDur;
         const e = u < 0.5 ? 4 * u * u * u : 1 - Math.pow(-2 * u + 2, 3) / 2;
         const outerX = fcx + outerRing * rayX;
         const outerY = fcy + outerRing * rayY;
         posX = outerX + (bx - outerX) * e;
         posY = outerY + (by - outerY) * e;
-      } else {
-        posX = bx; posY = by;
       }
       m.position.x = posX;
       m.position.y = posY;
     }
+
+    // Time-averaged fraction at rest — drives spark snap strength in
+    // main.js. Matches the expected fraction of tiles at rest at any
+    // instant under uniform-phase-offset assumption, so sparks pull
+    // toward strokes roughly in proportion to how much of the pattern
+    // is stationary.
+    cascadeState.active = restDur / period;
   }
 
   return { strokeTimeUniforms, sparkSystems, patternsToRefresh,

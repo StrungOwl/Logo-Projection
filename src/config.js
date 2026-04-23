@@ -78,25 +78,37 @@ export const ANIM = {
                    color: '#FFE8C0', hueVariance: 0.08,
                    pointSize: 0.15, trailSize: 25 },
 
-  // Radial cascade — pattern grid sits still for `idlePeriod` seconds, then
-  // every tile is pulled inward toward the pattern's fade center (exit),
-  // parked invisibly under the radial opacity fade during `gap`, then
-  // slides back inward from just outside the hull (entry). Stagger is
-  // outer-first: the outermost ring of tiles leaves first and also
-  // arrives first on re-entry, so the pattern empties and refills from
-  // the outside in.  Both the islamic panel and the lattice underlay
-  // share one schedule so they move as one.  During motion, spark snap
-  // is released (see main.js) so the embers drift freely instead of
-  // clinging to stroke positions that no longer match the tile layout.
-  // `outerMargin` is how far past the hull's maximum radius each tile
-  // starts its entry ray (a few units is enough for the hull-clip shader
-  // to hide it; bigger values make the inward slide read as a longer,
-  // faster glide).
-  rowCascade: { idlePeriod:    8.0,
-                rowStagger:    0.25,
-                exitDuration:  2.5,
-                gap:           1.5,
-                entryDuration: 2.5,
+  // Radial cascade — continuous infinite loop. Each tile independently
+  // cycles rest → exit → gap → entry → rest, with a phase offset by its
+  // radius from the pattern's fade center (outer-first). Because
+  // `idlePeriod` (per-tile rest) dominates the cycle, most tiles are at
+  // rest at any instant; only a thin radial band is in motion, sweeping
+  // inward, while new tiles re-emerge from beyond the hull. The pattern
+  // never fully empties — it's always showing, always flowing inward.
+  //
+  // Dials:
+  //   `idlePeriod`    — per-tile rest duration between cycles. Larger =
+  //                     pattern reads as more settled, motion sparser.
+  //   `rowStagger`    — seconds of phase offset between adjacent radial
+  //                     rings. Larger = wider moving band, softer wave.
+  //   `exitDuration`  — how long one tile takes to be pulled from rest
+  //                     to the fade center (ease-in cubic).
+  //   `gap`           — brief pause at the fade center before the tile
+  //                     teleports to the outer ring for re-entry.
+  //   `entryDuration` — how long one tile takes to slide inward from the
+  //                     outer ring to rest (ease-in-out cubic).
+  //   `outerMargin`   — distance past the hull's max radius each tile
+  //                     starts its entry ray; just needs to be enough for
+  //                     the hull-clip shader to hide the entering tile.
+  //
+  // Spark snap is proportional to the fraction of tiles at rest
+  // (idlePeriod / total period), so sparks pull toward strokes about as
+  // strongly as the pattern is static.
+  rowCascade: { idlePeriod:    30.0,
+                rowStagger:    1.5,
+                exitDuration:  6.0,
+                gap:           0.5,
+                entryDuration: 6.0,
                 outerMargin:   5.0 },
 };
 
