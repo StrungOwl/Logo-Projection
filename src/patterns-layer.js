@@ -293,17 +293,36 @@ export function addPatternLayers(logoMesh, meta) {
     // produces a different flow.
     m.userData.phaseJitter = Math.random() - 0.5;
   }
-  const maxStaggerIdx = maxRadius / tileStep;
 
   // Infinite-loop mode: each tile runs its OWN rest → exit → gap → entry
   // cycle with a radius-based phase offset (outer-first). Because
-  // `idlePeriod` (per-tile rest) dominates the cycle, most tiles are at
-  // rest at any instant — only a thin radial band is in motion at once,
-  // and new tiles are continuously re-emerging from beyond the hull to
+  // `rest` (per-tile rest) dominates the cycle, most tiles are at rest
+  // at any instant — only a thin radial band is in motion at once, and
+  // new tiles are continuously re-emerging from beyond the hull to
   // replace the ones being pulled inward. No global idle/gap — the
   // pattern never fully empties.
-  const cascadeState = { active: 1 };
+  //
+  // `playAllT` / `playAllDuration` are written each frame when
+  // `ANIM.timings.playAll` is true: they expose the all-at-center
+  // window's elapsed seconds (and length) so the 3D overlay can drive
+  // its brick↔petals morph from the same clock.
+  //
+  // `triggerNow(t)` shifts the cycle clock so exit begins immediately
+  // (skipping the rest phase). The natural period continues from there,
+  // so auto-loop keeps running on a new phase. Bound to spacebar in
+  // src/main.js.
+  const cascadeState = { active: 1, playAllT: -1, playAllDuration: 0 };
   let lastAllAtRest = false;
+  let clockBase     = null;   // null = use tcfg.triggerDelay; otherwise overrides
+
+  cascadeState.triggerNow = (t) => {
+    const c  = ANIM.rowCascade;
+    const tc = ANIM.timings && ANIM.timings.cascade;
+    if (!c || !tc) return;
+    const restDur = (c.continuous ? 0 : tc.rest) || 0;
+    // Anchor clock so adjT = restDur right now → exit phase starts immediately.
+    clockBase = t - restDur;
+  };
 
   function parkAll() {
     for (let i = 0; i < cascadeMeshes.length; i++) {
@@ -314,17 +333,19 @@ export function addPatternLayers(logoMesh, meta) {
   }
 
   function updateRowCascade(t, dt = 0) {
-    const cfg = ANIM.rowCascade;
-    if (!cfg) return;
+    const cfg  = ANIM.rowCascade;
+    const tcfg = ANIM.timings && ANIM.timings.cascade;
+    if (!cfg || !tcfg) return;
 
     // Master toggle + initial delay. Before the trigger moment (or while
     // disabled), all tiles stay at rest and the spark snap is full. The
     // first-frame park is guarded so we don't re-assign positions every
     // frame during the long idle.
-    const adjT = t - (cfg.triggerDelay || 0);
+    const adjT = t - (clockBase !== null ? clockBase : (tcfg.triggerDelay || 0));
     if (cfg.enabled === false || adjT < 0) {
       if (!lastAllAtRest) { parkAll(); lastAllAtRest = true; }
       cascadeState.active = 1;
+      cascadeState.playAllT = -1;
       // Advance every tile's pulse clock — they're all at rest.
       for (let i = 0; i < cascadeMeshes.length; i++) {
         const m = cascadeMeshes[i];
@@ -336,15 +357,46 @@ export function addPatternLayers(logoMesh, meta) {
 
     // `continuous` drops the per-tile rest so tiles cycle nonstop —
     // pattern is in constant radial motion instead of mostly-at-rest.
-    const restDur   = cfg.continuous ? 0 : cfg.idlePeriod;
-    const exDur     = cfg.exitDuration;
-    const gapDur    = cfg.gap;
-    const enDur     = cfg.entryDuration;
-    const stag      = cfg.rowStagger;
-    const jitter    = cfg.phaseJitter || 0;
-    const outerRing = maxRadius + cfg.outerMargin;
-    const period    = restDur + exDur + gapDur + enDur;
+    const restDur   = cfg.continuous ? 0 : tcfg.rest;
+    const exDur     = tcfg.out;
+    const enDur     = tcfg.in;
+    const stag      = tcfg.stagger;
+    const jitter    = tcfg.phaseJitter || 0;
+    const outerRing = maxRadius + (cfg.outerMargin ?? 5.0);
+
+    // PlayAll mode: anchor the gap so the overlay window opens the moment
+    // the OUTERMOST tile arrives at center (restDur+exDur). Inner tiles
+    // are still mid-exit during the early window, but they're already
+    // close to the fade-center and the radial alpha fade has dropped them
+    // toward transparent — so the brick wall reads as starting to come in
+    // while the last patterns finish dissolving. Window length = morph
+    // total. Outermost begins entry the moment the window closes.
+    const playAllOn = !!(ANIM.timings && ANIM.timings.playAll);
+    let gapDur, playAllWinStart = -1, playAllDur = 0;
+    if (playAllOn) {
+      const ovr = (ANIM.timings && ANIM.timings.overlay) || {};
+      playAllDur = (ovr.brickHold   || 0) + (ovr.brickToRose || 0)
+                 + (ovr.roseHold    || 0) + (ovr.roseToBrick || 0);
+      gapDur          = playAllDur;
+      playAllWinStart = restDur + exDur;
+    } else {
+      gapDur = tcfg.gap || 0;
+    }
+
+    const period = restDur + exDur + gapDur + enDur;
     if (period < 1e-3) return;
+
+    // Compute where the current global-cycle phase falls inside the
+    // playAll window (or -1 if outside / disabled). Overlay reads this
+    // each frame to drive its morph in lockstep.
+    if (playAllOn) {
+      const cycT = ((adjT % period) + period) % period;
+      const rel  = cycT - playAllWinStart;
+      cascadeState.playAllT        = (rel >= 0 && rel < playAllDur) ? rel : -1;
+      cascadeState.playAllDuration = playAllDur;
+    } else {
+      cascadeState.playAllT = -1;
+    }
 
     const exitStart  = restDur;
     const gapStart   = restDur + exDur;

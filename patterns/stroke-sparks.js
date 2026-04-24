@@ -282,8 +282,12 @@ export function createSparkSystem({
     depthTest: false,
     blending: THREE.AdditiveBlending,
     uniforms: {
-      uMap:   { value: getSparkSprite() },
+      uMap:        { value: getSparkSprite() },
       uPixelRatio: { value: Math.min(window.devicePixelRatio || 1, 2) },
+      // Group-level opacity multiplier — driven from main.js to fade the
+      // whole spark cloud out while the playAll overlay window is open
+      // (and back in when it closes).
+      uOpacity:    { value: 1.0 },
     },
     vertexShader: `
       attribute float aAlpha;
@@ -302,12 +306,13 @@ export function createSparkSystem({
     `,
     fragmentShader: `
       uniform sampler2D uMap;
+      uniform float uOpacity;
       varying float vAlpha;
       varying vec3 vColor;
       void main() {
         vec4 tex = texture2D(uMap, gl_PointCoord);
         if (tex.a < 0.01) discard;
-        gl_FragColor = vec4(vColor, tex.a * vAlpha);
+        gl_FragColor = vec4(vColor, tex.a * vAlpha * uOpacity);
       }
     `,
   });
@@ -322,7 +327,7 @@ export function createSparkSystem({
   const innerFadeStart = fadeOuter * 0.45;
   const innerFadeEnd   = fadeOuter * 0.20;
 
-  const api = { points, update: null, snapScale: 1 };
+  const api = { points, update: null, snapScale: 1, uOpacity: material.uniforms.uOpacity };
 
   function update(dt) {
     // Frame-rate-independent damping: vel *= exp(-damping * dt)

@@ -34,7 +34,7 @@ export const ANIM = {
   // or `ANIM.patterns.enabled = false` in devtools — to hide the
   // decorative layers so the bare model, gate frame, and overlay are
   // visible on their own. Gate frame stays put.
-  patterns: { enabled: false },
+  patterns: { enabled: true },
 
   keyLight:          { intensityMin: 0.0,  intensityMax: 4.6,
                        colorAtMin: '#FF1400', colorAtMax: '#FFCC2E' },
@@ -183,7 +183,7 @@ export const ANIM = {
     scaleMax:       1.10,  // between these two values each pulsePeriod.
     pulsePeriod:    6.0,
     spinSpeed:      0.00,
-    opacity:        0.85,
+    opacity:        0.5,
     halfCut:        false, // full 12-point rosette (hub + all petals).
                            // true drops the -x half so it reads as a
                            // crescent — useful when the flower is
@@ -280,10 +280,7 @@ export const ANIM = {
       flatTop:      true,
       halfCut:      true,
     },
-    // Temporarily disabled while iterating on the flower fill. Remove
-    // this line (or set enabled: true) to restore the 40s brick↔rose
-    // morph cycle.
-    brickWall: { enabled: false },
+    brickWall: { enabled: true },
   },
 
   // Radial cascade — infinite loop where each tile independently cycles
@@ -291,18 +288,84 @@ export const ANIM = {
   // the pattern's fade center (outer-first). Most tiles are at rest at
   // any instant; only a thin radial band is in motion, sweeping inward
   // while new tiles emerge from beyond the hull. Spark snap strength
-  // tracks the at-rest fraction (idlePeriod / total period).
+  // tracks the at-rest fraction (rest / total period).
+  //
+  // All timing knobs (rest / out / in / stagger / etc.) live in
+  // ANIM.timings.cascade further down; this block keeps only structural
+  // settings that aren't durations.
   rowCascade: {
-    enabled:       true,   // master on/off (false = pattern frozen at base positions)
-    continuous:    false,  // true = skip the per-tile rest, tiles cycle nonstop (idlePeriod ignored)
-    triggerDelay:  10.0,   // seconds after load before the cycle kicks in
-    idlePeriod:    30.0,   // per-tile rest between cycles, seconds (ignored if continuous)
-    rowStagger:    1.5,    // phase offset between adjacent radial rings, seconds
-    exitDuration:  6.0,    // one tile rest → fade-center, seconds (ease-in cubic)
-    gap:           0.5,    // pause at center before teleport to outer ring, seconds
-    entryDuration: 6.0,    // one tile outer-ring → rest, seconds (ease-in-out cubic)
-    outerMargin:   5.0,    // distance past hull max-radius where entry rays begin, units
-    phaseJitter:   1.0,    // random per-tile phase offset at load, seconds (< rowStagger keeps wave)
+    enabled:     true,   // master on/off (false = pattern frozen at base positions)
+    continuous:  false,  // true = skip the per-tile rest, tiles cycle nonstop (rest ignored)
+    outerMargin: 5.0,    // distance past hull max-radius where entry rays begin, units
+  },
+
+  // ---------------------------------------------------------------------
+  // TIMINGS — central knobs for orchestrating the cascade and the 3D overlay.
+  //
+  // `playAll` is the master sequencer toggle:
+  //   - false: cascade and overlay free-run independently (legacy behaviour).
+  //             `cascade.gap` is the short pause at center; the overlay's
+  //             brick↔petals morph cycles continuously on its own clock.
+  //   - true:  the cascade's per-tile gap is auto-elongated so every tile
+  //             reaches center at the same instant, and the 3D overlay
+  //             (brick wall → petals → brick) plays exactly once during
+  //             that all-at-center window. Per-tile staggered exit + entry
+  //             curves are unchanged — only the gap is stretched, and the
+  //             overlay is hidden outside the window.
+  //
+  // `cascade.*` — timing knobs for the per-tile cascade.
+  // `overlay.*` — duration of each phase of the overlay morph. Their sum
+  //               is the morph's total length and, in playAll mode, the
+  //               length of the all-at-center window.
+  // ---------------------------------------------------------------------
+  timings: {
+    playAll: true,
+
+    cascade: {
+      rest:         30.0,   // per-tile rest between cycles, seconds (ignored if continuous)
+      out:           6.0,   // one tile rest → fade-center, seconds (ease-in cubic)
+      in:            6.0,   // one tile outer-ring → rest, seconds (ease-in-out cubic)
+      stagger:       1.5,   // phase offset between adjacent radial rings, seconds
+      triggerDelay: 10.0,   // seconds after load before the cycle kicks in
+      phaseJitter:   1.0,   // random per-tile phase offset at load, seconds (< stagger keeps wave)
+      gap:           0.5,   // pause at center, seconds — used when playAll: false.
+                            // When playAll: true the effective gap is auto-
+                            // computed so the all-at-center window equals
+                            // the overlay morph total below.
+    },
+
+    overlay: {              // 3D overlay morph phase durations, seconds.
+                            // Sum = total morph length = the auto-extended
+                            // gap window length when playAll: true. Matches
+                            // the legacy 40s free-run split (15+5+15+5).
+      brickHold:   15.0,    // brick wall holds at full
+      brickToRose:  5.0,    // morph brick → rosette petals
+      roseHold:    15.0,    // petal rosettes dance at full
+      roseToBrick:  5.0,    // morph rosette petals → brick
+
+      // Per-hex stagger for the brick wall's window-edge glide. Hexes are
+      // ordered by `flipStep` (left → right across the wall). Each hex
+      // glides in (entry) / out (exit) along its own drift vector so the
+      // wall reads as a wave instead of a uniform fade.
+      // Total entry time = hexEntryStagger + hexEntryGlide; should fit
+      // inside `brickHold` so the wall is settled before brick→rose
+      // begins. Exit is anchored to the END of the cycle — the last hex
+      // finishes its fade-out exactly at the window close.
+      // Ignored in free-running (playAll: false) mode.
+      hexEntryDelay:   1.5, // delay after window opens before the first
+                            // hex starts gliding in, sec. Lets the cascade
+                            // suck-in finish dissolving inward before the
+                            // brick wall starts forming.
+      hexEntryStagger: 3.0, // seconds for the entry wave to traverse all hexes
+      hexEntryGlide:   4.0, // per-hex glide-in + fade-in duration, sec
+      hexExitStagger:  2.5, // seconds for the exit wave to traverse all hexes
+      hexExitGlide:    3.5, // per-hex glide-out + fade-out duration, sec
+
+      // Spark fade — when the playAll window opens, panel + lattice sparks
+      // fade out instead of vanishing; they fade back in as the window
+      // closes (so they're already lit when the cascade returns).
+      sparkFade:       0.8, // seconds for the fade in/out
+    },
   },
 };
 

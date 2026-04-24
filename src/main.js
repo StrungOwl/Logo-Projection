@@ -47,7 +47,10 @@ loadLogo().then((logo) => {
   ctx.updateRotations  = patternResult.updateRotations;
   ctx.patternLayers    = patternResult.patternLayers;
 
-  const overlayResult = addOverlay(logo.logoMesh, logo.meta);
+  // cascadeState is passed in so the overlay can sync its brick↔petals
+  // morph to the cascade's all-at-center window when ANIM.timings.playAll
+  // is true. With playAll off, the overlay ignores it and free-runs.
+  const overlayResult = addOverlay(logo.logoMesh, logo.meta, patternResult.cascadeState);
   ctx.updateOverlay   = overlayResult.updateOverlay;
 
   scene.add(logo.model);
@@ -99,14 +102,25 @@ export function tick(t, dt) {
 
   for (let i = 0; i < ctx.strokeTimeUniforms.length; i++) ctx.strokeTimeUniforms[i].value = t;
 
-  // Row cascade runs BEFORE sparks so the cascade state gates this frame's
-  // spark snap: sparks drift freely while rows are moving (their stroke
-  // cloud is a load-time snapshot that doesn't follow row motion).
-  if (ctx.updateRotations) ctx.updateRotations(t);
-  if (ctx.updateOverlay)   ctx.updateOverlay(t);
+  // Row cascade runs BEFORE both overlay and sparks: the overlay reads
+  // cascadeState.playAllT to gate its brick↔petals morph to the all-at-
+  // center window, and sparks read cascadeState.active for snap strength.
+  if (ctx.updateRotations)  ctx.updateRotations(t);
   if (ctx.updateRowCascade) ctx.updateRowCascade(t, dt);
+  if (ctx.updateOverlay)    ctx.updateOverlay(t);
   const snapScale = ctx.cascadeState ? ctx.cascadeState.active : 1;
+  // Sparks fade out (not snap to invisible) while the playAll overlay
+  // window is open — the stroke cloud is a load-time snapshot that
+  // doesn't follow the cascade, so unfaded sparks would drift over the
+  // brick wall / petals. Lerp the per-system shader uniform `uOpacity`
+  // toward target each frame for a smooth fade-in / fade-out.
+  const inOverlayWindow = !!(ctx.cascadeState && ctx.cascadeState.playAllT >= 0);
+  const sparkFadeDur = (ANIM.timings && ANIM.timings.overlay && ANIM.timings.overlay.sparkFade) || 0.8;
+  const sparkBlend = 1 - Math.exp(-dt / Math.max(sparkFadeDur, 1e-3));
+  const sparkTarget = inOverlayWindow ? 0 : 1;
   for (let i = 0; i < ctx.sparkSystems.length; i++) {
+    const u = ctx.sparkSystems[i].uOpacity;
+    if (u) u.value += (sparkTarget - u.value) * sparkBlend;
     ctx.sparkSystems[i].snapScale = snapScale;
     ctx.sparkSystems[i].update(dt);
   }
@@ -149,6 +163,15 @@ if (typeof window !== 'undefined') {
   window.startExport      = runExport;                                       // default 4K
   window.startExport1080p = () => runExport({ width: 1920, height: 1080 });
   window.addEventListener('keydown', (e) => {
+    // Spacebar — fire the cascade sequence now (skip rest, begin exit
+    // immediately). Auto-loop continues from this new phase.
+    if (e.code === 'Space' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      if (ctx.cascadeState && ctx.cascadeState.triggerNow) {
+        e.preventDefault();
+        ctx.cascadeState.triggerNow(clock.elapsedTime);
+      }
+      return;
+    }
     if (!e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.key === 'E') runExport();
     else if (e.key === 'D') runExport({ width: 1920, height: 1080 });

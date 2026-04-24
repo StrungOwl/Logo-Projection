@@ -129,7 +129,11 @@ function buildHexSlots(poly, R) {
   const rowStep = R * Math.sqrt(3);
   const slots = [];
   let col = 0;
-  for (let x = minX + R; x <= maxX - R * 0.25; x += colStep) {
+  // Right bound is one extra `colStep` beyond the polygon so the loop
+  // gets one more column on the right side. `pointInPolygon` filters out
+  // any centers that land outside the actual silhouette, so empty
+  // overflow columns naturally drop away.
+  for (let x = minX + R; x <= maxX - R * 0.25 + colStep; x += colStep) {
     const yOff = (col & 1) ? rowStep * 0.5 : 0;
     for (let y = minY + rowStep * 0.5 + yOff; y <= maxY - rowStep * 0.25; y += rowStep) {
       if (pointInPolygon(poly, x, y)) slots.push({ x, y });
@@ -249,7 +253,7 @@ function alignToEdge(pivot, edge, center) {
   return Math.atan2(ty, tx) - Math.PI / 2;
 }
 
-export function addOverlay(logoMesh, meta) {
+export function addOverlay(logoMesh, meta, cascadeState = null) {
   const { silhouette, hull, maxR, maxZ, cx, cy, patternFadeCenter } = meta;
   // Vanishing point the particles converge to — used as the centre of
   // the flower ring below. Falls back to the hull centroid if the logo
@@ -633,7 +637,6 @@ export function addOverlay(logoMesh, meta) {
   // exist in brick mode; extra petals with no brick fade to zero scale.
   const brickCfg      = cfg0.brickWall || {};
   const brickEnabled  = brickCfg.enabled !== false;
-  const morphCycleLen = brickCfg.cycleLen ?? 40.0;
   let morphGroup     = null;
   let brickHexWall   = null;
   let brickHexMeshes = [];
@@ -672,7 +675,13 @@ export function addOverlay(logoMesh, meta) {
     // Hex honeycomb tiling inside the inset silhouette. Each slot gets a
     // flat-top hexagonal mesh; petals (ghosts) fly out of those hex
     // centers during the transit to morph into the flowers.
-    const wallInset = brickCfg.inset ?? 2.5;
+    //
+    // Inset defaults to the silhouette-mask inset (= the gate frame's
+    // inner edge) so hex centers can sit right at the archway boundary
+    // and the wall fills the entire interior. The stencil mask trims any
+    // hex that pokes past the inner edge, so the visible footprint lands
+    // flush with the gate's inner lip instead of inside a smaller pocket.
+    const wallInset = brickCfg.inset ?? cfg0.maskInset ?? 1.6;
     const inner     = insetPolygon(silhouette[0], wallInset);
     const hexR      = brickCfg.hexRadius ?? starSize * 0.25;
     const hexDepth  = brickCfg.hexDepth  ?? starSize * 0.12;
@@ -924,20 +933,62 @@ export function addOverlay(logoMesh, meta) {
     }
     const twoPi = Math.PI * 2;
 
-    // Brick-wall morph alpha (0 = brick, 1 = rosettes). Timings are
-    // [brickHoldEnd, morphUpEnd, roseHoldEnd, morphDownEnd] as fractions
-    // of the 40s cycle. Default splits it as 15s hex wall + 5s transit
-    // + 15s rosettes + 5s transit, so both states get full breathing
-    // room and the morph itself reads as a slow, floaty shift.
-    const morphTimes = brickCfg.timings || [15 / 40, 20 / 40, 35 / 40, 1.0];
+    // Brick-wall morph alpha (0 = brick, 1 = rosettes). Phase durations
+    // come from ANIM.timings.overlay as absolute seconds. The morph runs
+    // brickHold → brickToRose → roseHold → roseToBrick.
+    //
+    // Time source depends on ANIM.timings.playAll:
+    //   - false: free-running cycle on `t`, looping every morphTotal sec
+    //            (legacy behaviour; defaults match the old 40s split).
+    //   - true:  driven by cascadeState.playAllT — the elapsed time inside
+    //            the cascade's all-at-center window. Outside that window
+    //            (playAllT < 0) the entire overlay is hidden so nothing
+    //            renders while patterns are exiting / returning.
+    const tov = (ANIM.timings && ANIM.timings.overlay) || {};
+    const tBrickHold   = tov.brickHold   ?? 15;
+    const tBrickToRose = tov.brickToRose ?? 5;
+    const tRoseHold    = tov.roseHold    ?? 15;
+    const tRoseToBrick = tov.roseToBrick ?? 5;
+    const morphTotal   = tBrickHold + tBrickToRose + tRoseHold + tRoseToBrick;
+
+    const playAllOn = !!(ANIM.timings && ANIM.timings.playAll);
+    let cyc;
+    if (playAllOn) {
+      const pT = cascadeState ? cascadeState.playAllT : -1;
+      if (pT < 0) {
+        for (const w of wrappers) w.visible = false;
+        if (hexWrapper)   hexWrapper.visible   = false;
+        if (morphGroup)   morphGroup.visible   = false;
+        if (brickHexWall) brickHexWall.visible = false;
+        return;
+      }
+      cyc = pT;
+    } else {
+      cyc = morphTotal > 0
+        ? ((t % morphTotal) + morphTotal) % morphTotal
+        : 0;
+    }
+
     let morphAlpha = 1;
-    if (morphGroup) {
-      const cyc = ((t % morphCycleLen) + morphCycleLen) % morphCycleLen;
-      const p   = cyc / morphCycleLen;
-      morphAlpha = smoothstep01(p, morphTimes[0], morphTimes[1])
-                 - smoothstep01(p, morphTimes[2], morphTimes[3]);
+    if (morphGroup && morphTotal > 0) {
+      const t1 = tBrickHold;
+      const t2 = t1 + tBrickToRose;
+      const t3 = t2 + tRoseHold;
+      morphAlpha = smoothstep01(cyc, t1, t2)
+                 - smoothstep01(cyc, t3, t3 + tRoseToBrick);
     }
     const inMorph = !!morphGroup && morphAlpha < 0.999;
+
+    // Per-hex stagger params — entry wave at window open, exit wave at
+    // window close. Each hex's start time is keyed off `flipStep` so the
+    // wave reads as a coherent left→right sweep both directions. Read
+    // here so the hex loop below can use them. Free-running mode skips
+    // all of this (envelope stays at 1, drift stays at 0).
+    const hexEntryDelay   = tov.hexEntryDelay   ?? 1.5;
+    const hexEntryStagger = tov.hexEntryStagger ?? 3.0;
+    const hexEntryGlide   = tov.hexEntryGlide   ?? 4.0;
+    const hexExitStagger  = tov.hexExitStagger  ?? 2.5;
+    const hexExitGlide    = tov.hexExitGlide    ?? 3.5;
 
     // ---- Flower anim always runs ----
     // Writes flower.scale + petal.rotation.x so petal.matrixWorld
@@ -1059,8 +1110,13 @@ export function addOverlay(logoMesh, meta) {
       const hexElapsed  = hexFullCyc > 0
         ? ((t % hexFullCyc) + hexFullCyc) % hexFullCyc
         : 0;
+      // Exit anchor — last hex (stepFrac=1) finishes at cyc = morphTotal.
+      // Each hex's exit start = exitTailEnd - hexExitGlide, offset back by
+      // (1 - stepFrac) * hexExitStagger so flipStep=0 leaves first.
+      const exitTailEnd = morphTotal - hexExitGlide;
+      const stepDenom   = Math.max(1, brickHexMeshes.length - 1);
+
       for (const hex of brickHexMeshes) {
-        hex.material.opacity = brickW;
         const step = hex.userData.flipStep;
         const ph   = (hexElapsed - step * hexTrigger) / hexFall;
         let angle = 0;
@@ -1069,11 +1125,50 @@ export function addOverlay(logoMesh, meta) {
           angle = eased * twoPi;
         }
         hex.rotation.x = angle;
-        // Hex drifts outward along its per-hex direction as the cycle
-        // moves toward rose. Uses `e` (same sine-ease as the ghost pose
-        // lerp) so the scatter feels in sync with petal emergence.
-        hex.position.x = hex.userData.homeX + hex.userData.driftDirX * hex.userData.driftDist * e;
-        hex.position.y = hex.userData.homeY + hex.userData.driftDirY * hex.userData.driftDist * e;
+
+        // Per-hex window-edge envelope. `edgeDrift` (0..1) pushes the hex
+        // toward its drifted-out position; `edgeFade` (0..1) is the on-
+        // screen alpha multiplier. In free-running mode both stay at the
+        // identity (drift 0, fade 1) so only the natural brick↔rose drift
+        // (driven by `e`) takes effect.
+        let edgeDrift = 0;
+        let edgeFade  = 1;
+        if (playAllOn) {
+          const stepFrac = step / stepDenom;
+
+          // Entry wave — first hex (stepFrac=0) starts gliding at
+          // cyc=hexEntryDelay, last hex starts at cyc=hexEntryDelay+
+          // hexEntryStagger. Pre-trigger frames fall through the smoothstep
+          // (u clamped to 0 → eased=0 → edgeDrift=1, edgeFade=0), so each
+          // hex stays drifted + invisible until its turn.
+          const entryStart = hexEntryDelay + hexEntryStagger * stepFrac;
+          const entryEnd   = entryStart + hexEntryGlide;
+          if (cyc < entryEnd) {
+            const u = Math.max(0, (cyc - entryStart) / Math.max(hexEntryGlide, 1e-3));
+            const eased = u * u * (3 - 2 * u);     // smoothstep
+            edgeDrift = 1 - eased;                 // 1 at trigger → 0 settled
+            edgeFade  = eased;                     // 0 → 1 as it settles
+          }
+
+          // Exit wave — symmetric, anchored to the window close. flipStep=0
+          // exits first, last hex exits last (matches entry order so each
+          // hex's "life" inside the window has a coherent in/out direction).
+          const exitStart = exitTailEnd - hexExitStagger * (1 - stepFrac);
+          if (cyc > exitStart) {
+            const u = Math.min(1, (cyc - exitStart) / Math.max(hexExitGlide, 1e-3));
+            const eased = u * u * (3 - 2 * u);
+            if (eased > edgeDrift) edgeDrift = eased;       // drift back out
+            if (1 - eased < edgeFade) edgeFade = 1 - eased; // fade out
+          }
+        }
+
+        // Drift: max(natural-morph drift, window-edge drift). They never
+        // overlap meaningfully — natural drift is 0 in the brick-hold
+        // window where the edge waves live.
+        const driftFactor = e > edgeDrift ? e : edgeDrift;
+        hex.position.x = hex.userData.homeX + hex.userData.driftDirX * hex.userData.driftDist * driftFactor;
+        hex.position.y = hex.userData.homeY + hex.userData.driftDirY * hex.userData.driftDist * driftFactor;
+        hex.material.opacity = brickW * edgeFade;
       }
 
       // Ghosts: grow out of their hex slot (brickBaseScale=0) and
