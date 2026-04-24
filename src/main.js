@@ -45,6 +45,7 @@ loadLogo().then((logo) => {
   ctx.updateRowCascade = patternResult.updateRowCascade;
   ctx.cascadeState     = patternResult.cascadeState;
   ctx.updateRotations  = patternResult.updateRotations;
+  ctx.patternLayers    = patternResult.patternLayers;
 
   const overlayResult = addOverlay(logo.logoMesh, logo.meta);
   ctx.updateOverlay   = overlayResult.updateOverlay;
@@ -74,6 +75,17 @@ export function tick(t, dt) {
   }
 
   if (ctx.particleMats) updateParticles(ctx.particleMats, t);
+
+  // Master pattern toggle — hides the Islamic panel + lattice underlay
+  // (and their child spark systems) when `ANIM.patterns.enabled` is
+  // false. Use from devtools: `ANIM.patterns.enabled = false` to peek
+  // at the bare model + overlay.
+  if (ctx.patternLayers) {
+    const visible = !(ANIM.patterns && ANIM.patterns.enabled === false);
+    for (let i = 0; i < ctx.patternLayers.length; i++) {
+      ctx.patternLayers[i].visible = visible;
+    }
+  }
 
   // Logo base brightness — sine-wave breath between min and max over `period` seconds.
   if (ctx.logoMaterials) {

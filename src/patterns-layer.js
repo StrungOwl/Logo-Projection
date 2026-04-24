@@ -422,5 +422,6 @@ export function addPatternLayers(logoMesh, meta) {
   }
 
   return { strokeTimeUniforms, sparkSystems, patternsToRefresh,
-           updateRowCascade, cascadeState, updateRotations };
+           updateRowCascade, cascadeState, updateRotations,
+           patternLayers: [panel, underlay] };
 }

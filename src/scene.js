@@ -13,7 +13,7 @@ export function createScene() {
   const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
   camera.position.set(0, 1, 3);
 
-  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  const renderer = new THREE.WebGLRenderer({ antialias: true, stencil: true });
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.setPixelRatio(window.devicePixelRatio);
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -49,6 +49,7 @@ export function createScene() {
   window.__scene    = scene;
   window.__camera   = camera;
   window.__controls = controls;
+  window.__renderer = renderer;
   window.__THREE    = THREE;
 
   return { scene, camera, renderer, controls };

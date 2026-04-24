@@ -29,6 +29,13 @@ export const MODEL = {
 export const ANIM = {
   pulseSpeed: 1.0,
 
+  // Master toggle for the front-face pattern layers (Islamic panel +
+  // lattice underlay, plus their child spark systems). Flip to false —
+  // or `ANIM.patterns.enabled = false` in devtools — to hide the
+  // decorative layers so the bare model, gate frame, and overlay are
+  // visible on their own. Gate frame stays put.
+  patterns: { enabled: false },
+
   keyLight:          { intensityMin: 0.0,  intensityMax: 4.6,
                        colorAtMin: '#FF1400', colorAtMax: '#FFCC2E' },
   innerGlow:         { intensityMin: 40,   intensityMax: 260, color: '#FF6A18' },
@@ -110,21 +117,125 @@ export const ANIM = {
   //   opacity      — star alpha (0..1)
   overlay: {
     enabled:        true,
+    instances:      18,    // number of cascade clusters stamped around
+                           // the FULL gate-frame perimeter, evenly
+                           // spaced. Each instance sits on the outline
+                           // with its cut edge aligned to the local
+                           // tangent, so the chain wraps the whole
+                           // arch (top + sides + bottom) end-to-end.
+    maskClip:       true,  // stencil-clip cluster fragments to the
+                           // silhouette interior so any rays poking
+                           // past the gate-frame outline are masked.
+                           // false = no clip (overflow visible).
     starCount:      1,
-    starSize:       4.0,
+    starSize:       25.0,  // outer radius of the largest cascade layer.
+                           // Wrapper scales by up to scaleMax, so the
+                           // max on-screen radius is starSize * scaleMax.
+                           // Keep it under the gate-frame's inner span.
+    starDepth:      1.5,   // z-extrusion thickness (load-only). Set to
+                           // null/undefined to auto-derive from starSize.
+    cascade: {             // stack of concentric rosettes at this fan
+                           // position — largest first, each next layer
+                           // scaled down by `scaleStep` and pushed
+                           // forward by `zStep` so extrusions overlap.
+      count:         3,
+      scaleStep:     0.75, // size ratio between adjacent layers
+      zStep:         1.0,  // z gap between layer bases. With
+                           // starDepth=1.5, a zStep of 1.0 sinks each
+                           // layer's base 0.5 units into the one below.
+      tipLift:       0.6,  // dome the outer rim toward the camera
+                           // (layer-local units at the outermost
+                           // vertex, quadratic falloff from the hub).
+                           // 0 = flat extrusion. Scaled per-layer so
+                           // every star shares the same dish angle.
+      pulseVariance: 0.3,  // ±fraction of `pulsePeriod` each layer's
+                           // own period may drift by (picked randomly
+                           // at load). 0 = all layers locked to the
+                           // base period; 0.3 = organic detune.
+      colorDarkest:  '#6B4820',  // colour of the largest/bottom layer
+                                 // — deep amber, most hue-shifted.
+      colorLightest: '#F0D088',  // colour of the smallest/top layer —
+                                 // bright warm-gold highlight.
+    },
     angleSpread:    Math.PI * 0.55,
     fanRadius:      2.8,
-    zOffset:        0.22,
+    zOffset:        6.0,   // star sits at maxZ+zOffset; hex backdrop sits
+                           // depth behind that (hex front face at
+                           // maxZ+zOffset-depth/2). Keep zOffset > 1.5*
+                           // hexagon.depth so the hex clears the model
+                           // front face instead of getting clipped by it.
     scaleMin:       0.7,
     scaleMax:       1.1,
     pulsePeriod:    6.0,
-    spinSpeed:      0.05,
-    opacity:        0.35,
-    previewXFactor: 1.2,  // preview: anchors overlay left of the model
-                          // (in maxR units past the hull centroid) so
-                          // geometry is inspectable without the main
-                          // pattern behind it. 1.0 = flush with hull
-                          // edge; >1 pulls it further out.
+    spinSpeed:      0.00,
+    opacity:        0.85,
+    halfCut:        true,  // drop hub + all -x petals so the rosette
+                           // reads as a crescent of rays pointing toward
+                           // the model. Cut edge rotates with the mesh
+                           // when spinSpeed != 0; zero spinSpeed to
+                           // freeze the cut vertical.
+    snapToEdge:     true,  // true: wrapper anchored to the left outline
+                           // pivot so the rosette's cut edge lines up
+                           // with the archway's side. false: use
+                           // previewXFactor to park it in empty space.
+    rotationOffset: 0.0,   // extra clockwise rotation (radians) layered
+                           // on top of the edge-aligned base rotation.
+                           // Positive = clockwise. Useful when the
+                           // detected tangent doesn't quite match the
+                           // straight side you have in mind.
+    previewXFactor: -1.5,  // preview: offsets overlay from hull centroid
+                           // in maxR units. Negative = left, positive =
+                           // right. Magnitude must clear half the
+                           // rosette's own outer radius so it sits
+                           // beside the logo instead of overlapping.
+
+    // Domino petal-flip — each rosette picks a random start petal every
+    // cycle, then chains to the angularly closest unvisited petal from
+    // the most recent trigger, so the wave walks neighbour-to-neighbour
+    // like falling dominoes. Each petal does one full 360° rotation
+    // around its base-tangent axis over `fallDuration` seconds; the
+    // next petal fires `triggerInterval` seconds later so adjacent
+    // petals overlap mid-flip. After the last petal completes, the
+    // flower holds flat for `pause` seconds before restarting with a
+    // fresh random start + direction.
+    //   triggerInterval — seconds between consecutive petal firings
+    //                     (< fallDuration for a visible domino wave)
+    //   fallDuration    — seconds for one petal's full 2π flip
+    //   pause           — gap between cycles, seconds
+    //   initStaggerMax  — each flower delays its first cycle by up to
+    //                     this many seconds so neighbouring rosettes
+    //                     don't all start in sync on load
+    petalDomino: {
+      enabled:         true,
+      triggerInterval: 0.08,
+      fallDuration:    0.9,
+      pause:           1.5,
+      initStaggerMax:  3.0,
+    },
+
+    // Large 3D hexagonal prism centred on the logo — a neutral canvas
+    // for future "looks" (material swaps, emissive pulses, rotation,
+    // etc.). Not driven by the fan pulse/spin; add animation hooks in
+    // src/3DOverlay.js if you want it to move.
+    //   radiusFactor — hex circumradius as a multiple of starSize
+    //                  (so the hex tracks the rosette's outer radius;
+    //                  >1 = hex slightly larger than the star)
+    //   depth        — extrusion thickness along z
+    //   zOffset      — z-shift relative to the preview star's depth
+    //                  plane (0 = coplanar with star, negative =
+    //                  behind it, positive = in front)
+    //   flatTop      — true: flat edge on top; false: vertex on top
+    //   halfCut      — true: keep the +x half only (matches the
+    //                  rosette's halfCut — cut edge on -x, faces +x)
+    hexagon: {
+      enabled:      true,
+      radiusFactor: 1.15,
+      depth:        20.0,
+      opacity:      0.35,
+      zOffset:      1.0,
+      flatTop:      true,
+      halfCut:      true,
+    },
   },
 
   // Radial cascade — infinite loop where each tile independently cycles
