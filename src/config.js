@@ -117,18 +117,18 @@ export const ANIM = {
   //   opacity      — star alpha (0..1)
   overlay: {
     enabled:        true,
-    instances:      18,    // instance count on the OUTERMOST ring.
+    instances:      10,    // instance count on the OUTERMOST ring.
                            // Inner rings scale their count down with
                            // ring radius so angular spacing stays
                            // roughly uniform across the fill.
-    radialRadiusFactor: 0.6,  // outermost ring radius, as a multiple
+    radialRadiusFactor: 0.64, // outermost ring radius, as a multiple
                            // of maxR. Too large and flowers fall
                            // outside the silhouette mask and get
                            // clipped.
-    ringSpacingFactor:  0.18, // radial gap between adjacent rings, as
+    ringSpacingFactor:  0.28, // radial gap between adjacent rings, as
                            // a multiple of maxR. Lower = more rings
                            // (denser fill); higher = fewer rings.
-    innerRadiusFactor:  0.08, // stop adding rings once radius drops
+    innerRadiusFactor:  0.14, // stop adding rings once radius drops
                            // below this (× maxR). Keeps the central
                            // vanishing-point area clear so the
                            // particle convergence stays readable.
@@ -143,7 +143,7 @@ export const ANIM = {
                            // overlap the frame ring. 0 = clip to the
                            // outer silhouette (old behaviour).
     starCount:      1,
-    starSize:       25.0,  // outer radius of the largest cascade layer.
+    starSize:       30.0,  // outer radius of the largest cascade layer.
                            // Wrapper scales by up to scaleMax, so the
                            // max on-screen radius is starSize * scaleMax.
                            // Keep it under the gate-frame's inner span.
@@ -179,8 +179,8 @@ export const ANIM = {
                            // maxZ+zOffset-depth/2). Keep zOffset > 1.5*
                            // hexagon.depth so the hex clears the model
                            // front face instead of getting clipped by it.
-    scaleMin:       1.0,   // set min === max to freeze the flower size
-    scaleMax:       1.0,   // (pulse disabled). Vary these to re-enable.
+    scaleMin:       0.85,  // flower scale pulse — wrapper breathes
+    scaleMax:       1.10,  // between these two values each pulsePeriod.
     pulsePeriod:    6.0,
     spinSpeed:      0.00,
     opacity:        0.85,
@@ -280,6 +280,10 @@ export const ANIM = {
       flatTop:      true,
       halfCut:      true,
     },
+    // Temporarily disabled while iterating on the flower fill. Remove
+    // this line (or set enabled: true) to restore the 40s brick↔rose
+    // morph cycle.
+    brickWall: { enabled: false },
   },
 
   // Radial cascade — infinite loop where each tile independently cycles
