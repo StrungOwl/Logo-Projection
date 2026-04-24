@@ -313,7 +313,7 @@ export function addPatternLayers(logoMesh, meta) {
     }
   }
 
-  function updateRowCascade(t) {
+  function updateRowCascade(t, dt = 0) {
     const cfg = ANIM.rowCascade;
     if (!cfg) return;
 
@@ -325,6 +325,11 @@ export function addPatternLayers(logoMesh, meta) {
     if (cfg.enabled === false || adjT < 0) {
       if (!lastAllAtRest) { parkAll(); lastAllAtRest = true; }
       cascadeState.active = 1;
+      // Advance every tile's pulse clock — they're all at rest.
+      for (let i = 0; i < cascadeMeshes.length; i++) {
+        const m = cascadeMeshes[i];
+        m.userData.pulseTime = (m.userData.pulseTime || 0) + dt;
+      }
       return;
     }
     lastAllAtRest = false;
@@ -368,13 +373,18 @@ export function addPatternLayers(logoMesh, meta) {
         // own stagger moment so no tile is caught mid-motion on the
         // trigger frame (clean cold start for discrete cycles).
         const localT = adjT - offset;
-        if (localT < 0) { m.position.x = bx; m.position.y = by; continue; }
+        if (localT < 0) {
+          m.position.x = bx; m.position.y = by;
+          m.userData.pulseTime = (m.userData.pulseTime || 0) + dt;
+          continue;
+        }
         phase = localT % period;
       }
 
-      let posX, posY;
+      let posX, posY, atRest = false;
       if (phase < exitStart) {
         posX = bx; posY = by;                       // resting at base
+        atRest = true;
       } else if (phase < gapStart) {
         // Exit: base → fade center, ease-in cubic (accelerating suction).
         const u = (phase - exitStart) / exDur;
@@ -395,6 +405,12 @@ export function addPatternLayers(logoMesh, meta) {
       }
       m.position.x = posX;
       m.position.y = posY;
+      // Per-tile pulse clock — advances only while at rest so the hex
+      // brightness animation freezes during exit/gap/entry and resumes
+      // where it left off when the tile returns to base. Keeps the pulse
+      // from fighting the cascade motion.
+      if (atRest) m.userData.pulseTime = (m.userData.pulseTime || 0) + dt;
+      else if (m.userData.pulseTime === undefined) m.userData.pulseTime = 0;
     }
 
     // Time-averaged fraction at rest — drives spark snap strength in

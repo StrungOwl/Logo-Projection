@@ -85,7 +85,7 @@ export function tick(t, dt) {
   // spark snap: sparks drift freely while rows are moving (their stroke
   // cloud is a load-time snapshot that doesn't follow row motion).
   if (ctx.updateRotations) ctx.updateRotations(t);
-  if (ctx.updateRowCascade) ctx.updateRowCascade(t);
+  if (ctx.updateRowCascade) ctx.updateRowCascade(t, dt);
   const snapScale = ctx.cascadeState ? ctx.cascadeState.active : 1;
   for (let i = 0; i < ctx.sparkSystems.length; i++) {
     ctx.sparkSystems[i].snapScale = snapScale;

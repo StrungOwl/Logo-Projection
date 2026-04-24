@@ -346,6 +346,13 @@ export function createLatticeUnderlay({
       mesh.onBeforeRender = function () {
         pulseUniforms.uPulseSeed.value        = this.userData.pulseSeed;
         pulseUniforms.uPulseSpeedFactor.value = this.userData.pulseSpeedFactor;
+        // Per-hex pulse clock — set by the row cascade each frame. Freezes
+        // while the hex is in motion so brightness doesn't animate during
+        // exit/gap/entry. Falls back to the shared uPulseTime before the
+        // cascade has run at least once.
+        if (this.userData.pulseTime !== undefined) {
+          pulseUniforms.uPulseTime.value = this.userData.pulseTime;
+        }
       };
       if (edgesGeo) {
         const stroke = new THREE.LineSegments(edgesGeo, lineMat);
