@@ -250,7 +250,12 @@ function alignToEdge(pivot, edge, center) {
 }
 
 export function addOverlay(logoMesh, meta) {
-  const { silhouette, hull, maxR, maxZ, cx, cy } = meta;
+  const { silhouette, hull, maxR, maxZ, cx, cy, patternFadeCenter } = meta;
+  // Vanishing point the particles converge to — used as the centre of
+  // the flower ring below. Falls back to the hull centroid if the logo
+  // pipeline couldn't find an inner-star centroid.
+  const fadeCX = cx + (patternFadeCenter?.[0] ?? 0);
+  const fadeCY = cy + (patternFadeCenter?.[1] ?? 0);
   const wrappers = [];
 
   const outline = (silhouette && silhouette[0]) ? silhouette[0] : hull;
@@ -375,7 +380,7 @@ export function addOverlay(logoMesh, meta) {
     starMats.push(new THREE.MeshStandardMaterial(matOpts));
   }
 
-  function makeFan(pivot, wrapperRotation, spinDir, phaseOffset) {
+  function makeFan(pivot, wrapperRotation, spinDir, phaseOffset, dominoDelay = 0) {
     const count     = cfg0.starCount   ?? 5;
     const spread    = cfg0.angleSpread ?? Math.PI * 0.55;
     const fanRadius = cfg0.fanRadius   ?? maxR * 0.45;
@@ -471,7 +476,7 @@ export function addOverlay(logoMesh, meta) {
         flower.userData.petalAngles    = petalAngles;
         flower.userData.dominoSteps    = chain.steps;
         flower.userData.dominoMaxStep  = chain.maxStep;
-        flower.userData.dominoStart    = i * fanStagger + j * cascadeStagger;
+        flower.userData.dominoStart    = i * fanStagger + j * cascadeStagger + dominoDelay;
 
         stack.add(flower);
         cascadeLayers.push(flower);
@@ -579,34 +584,43 @@ export function addOverlay(logoMesh, meta) {
     };
     makeFan(previewPivot, -(cfg0.rotationOffset ?? 0), +1, 0);
   } else {
-    // Walk the FULL outline perimeter, dropping `instances` clusters at
-    // even arc-length intervals so the chain wraps the entire gate
-    // frame — left side, top arch, right side, bottom — instead of
-    // stopping at rightPivot. Starting offset is leftPivot's arc
-    // position; direction is whichever way leads UP from that start
-    // (so the chain reads "first instance ascends" on either winding).
-    const startArc = cumArc[nearestIdx(leftPivot)];
-    const startIdx = nearestIdx(leftPivot);
-    const dir = outline[(startIdx + 1) % N].y > outline[startIdx].y ? +1 : -1;
-
-    const instances = Math.max(1, cfg0.instances ?? 1);
-    // Full-ring spacing — no `-1` since the chain wraps; the last
-    // instance lands one step before the first, so the loop closes.
-    const spacing = perimeter / instances;
+    // Radial fill — concentric rings around the particle vanishing
+    // point (fadeCX, fadeCY). Outermost ring lives at
+    // `maxR * radialRadiusFactor`, with each inner ring stepped in by
+    // `maxR * ringSpacingFactor`. Instance count scales with ring
+    // radius so angular spacing (≈ outerCircumference / instances)
+    // stays roughly constant from ring to ring. Alternate rings are
+    // offset by half an angular step so adjacent rings stagger
+    // instead of radially stacking. Each flower's rotation aims its
+    // rays inward toward the vanishing point.
+    const outerInstances = Math.max(1, cfg0.instances ?? 1);
     const rotationOffset = cfg0.rotationOffset ?? 0;
+    const outerR      = maxR * (cfg0.radialRadiusFactor ?? 0.6);
+    const ringSpacing = maxR * (cfg0.ringSpacingFactor  ?? 0.18);
+    const innerR      = maxR * (cfg0.innerRadiusFactor  ?? 0.08);
+    const angleStep   = (2 * Math.PI * outerR) / outerInstances;
+    // Outer ring fires the domino first; each inner ring delayed by
+    // `ringStagger` so the flip wave rolls inward toward the centre.
+    const ringStagger = cfg0.petalDomino?.ringStagger ?? 0.9;
 
-    for (let k = 0; k < instances; k++) {
-      const s = sampleAtArc(startArc + dir * k * spacing);
-      // alignToEdge accepts any object with dx/dy/len, so we pass the
-      // sample itself as both pivot and edge.
-      let rot = alignToEdge(s, s, center) - rotationOffset;
-      // Alternate spin direction on adjacent clusters so any non-zero
-      // `spinSpeed` doesn't make the whole chain drift in one direction.
-      const spinDir = k % 2 === 0 ? +1 : -1;
-      // Phase-stagger the initial pulse across instances; per-layer
-      // random phase still dominates, this just breaks up k=0 sync.
-      const phaseOffset = (k / instances) * Math.PI * 2;
-      makeFan({ x: s.x, y: s.y }, rot, spinDir, phaseOffset);
+    let k = 0;
+    for (let r = 0; r < 32; r++) {
+      const ringR = outerR - r * ringSpacing;
+      if (ringR < innerR) break;
+      const ringCircum = 2 * Math.PI * ringR;
+      const ringCount  = Math.max(1, Math.round(ringCircum / angleStep));
+      const ringOffset = (r & 1) ? Math.PI / ringCount : 0;
+      const ringDelay  = r * ringStagger;
+      for (let i = 0; i < ringCount; i++) {
+        const theta = ringOffset + (i / ringCount) * Math.PI * 2;
+        const px = fadeCX + Math.cos(theta) * ringR;
+        const py = fadeCY + Math.sin(theta) * ringR;
+        const rot = theta + Math.PI - rotationOffset;
+        const spinDir = k % 2 === 0 ? +1 : -1;
+        const phaseOffset = (k * 0.37) % (Math.PI * 2);
+        makeFan({ x: px, y: py }, rot, spinDir, phaseOffset, ringDelay);
+        k++;
+      }
     }
   }
 
@@ -619,7 +633,7 @@ export function addOverlay(logoMesh, meta) {
   // exist in brick mode; extra petals with no brick fade to zero scale.
   const brickCfg      = cfg0.brickWall || {};
   const brickEnabled  = brickCfg.enabled !== false;
-  const morphCycleLen = brickCfg.cycleLen ?? 27.0;
+  const morphCycleLen = brickCfg.cycleLen ?? 40.0;
   let morphGroup     = null;
   let brickHexWall   = null;
   let brickHexMeshes = [];
@@ -689,11 +703,14 @@ export function addOverlay(logoMesh, meta) {
     hexWall.visible = false;
     logoMesh.add(hexWall);
 
+    // Warm amber-red hue for the wall — distinct from the rosettes so
+    // the brick↔rose hand-off reads as a colour shift too.
+    const hexColor = new THREE.Color(brickCfg.color ?? '#D14A22');
     const hexMeshes = [];
-    const hexBaseColor = starMats[0].color.clone();
     for (const slot of slots) {
       const hMat = starMats[0].clone();
-      hMat.emissive = hexBaseColor.clone();
+      hMat.color = hexColor.clone();
+      hMat.emissive = hexColor.clone();
       hMat.emissiveIntensity = 0;
       hMat.transparent = true;         // needed for brickW-driven opacity
       const mesh = new THREE.Mesh(hexGeo, hMat);
@@ -704,13 +721,34 @@ export function addOverlay(logoMesh, meta) {
 
     // Assign each hex a domino step index by spatial order — sort by X
     // (then Y as tiebreaker) so the wave reads as a clean left-to-right
-    // sweep. flipStep is used at runtime to stagger the flips.
+    // sweep across the wall. flipStep is read at runtime to stagger the
+    // flip trigger times.
     const sortedHexes = [...hexMeshes].sort((a, b) =>
       (a.position.x - b.position.x) || (a.position.y - b.position.y));
     for (let i = 0; i < sortedHexes.length; i++) {
       sortedHexes[i].userData.flipStep = i;
     }
-    const rand = () => Math.random() * 2 - 1; void rand;
+
+    // Per-hex drift vector for the "move out" transit animation. The
+    // base direction is radial from the model center so hexes scatter
+    // outward; a small angular jitter + distance variance breaks strict
+    // radial symmetry so it reads as organic scatter rather than an
+    // explosion.
+    const driftDistBase = brickCfg.hexDriftDist   ?? hexR * 4.0;
+    const driftJitter   = brickCfg.hexDriftJitter ?? 0.5; // radians
+    for (const hex of hexMeshes) {
+      const sx = hex.position.x - cx;
+      const sy = hex.position.y - cy;
+      const len = Math.hypot(sx, sy) || 1;
+      const baseX = sx / len, baseY = sy / len;
+      const ja = (Math.random() - 0.5) * driftJitter * 2;
+      const ca = Math.cos(ja), sa = Math.sin(ja);
+      hex.userData.driftDirX = baseX * ca - baseY * sa;
+      hex.userData.driftDirY = baseX * sa + baseY * ca;
+      hex.userData.driftDist = driftDistBase * (0.7 + Math.random() * 0.6);
+      hex.userData.homeX = hex.position.x;
+      hex.userData.homeY = hex.position.y;
+    }
 
     // Pair each rosette petal with its nearest unused hex slot — the
     // slot becomes that petal's emergence point during transit. Unused
@@ -762,6 +800,12 @@ export function addOverlay(logoMesh, meta) {
         rosePos:        pd.rosePos,
         roseQuat:       pd.roseQuat,
         roseScale:      pd.roseScale,
+        // Perpendicular-to-path bob for an organic curved transit.
+        // Magnitude is a fraction of path length so short transits
+        // bob less; sign randomises which side of the straight line
+        // each petal curves around.
+        bobMagFrac:     0.18 * (0.5 + Math.random() * 0.8),
+        bobSign:        Math.random() < 0.5 ? -1 : 1,
       });
     }
 
@@ -882,10 +926,10 @@ export function addOverlay(logoMesh, meta) {
 
     // Brick-wall morph alpha (0 = brick, 1 = rosettes). Timings are
     // [brickHoldEnd, morphUpEnd, roseHoldEnd, morphDownEnd] as fractions
-    // of the 27s cycle. Default splits it as 7s brick + 3s transit +
-    // 14s rose + 3s transit, so the rosette phase gets the lion's share
-    // while each state still has room for a floaty hand-off.
-    const morphTimes = brickCfg.timings || [7 / 27, 10 / 27, 24 / 27, 1.0];
+    // of the 40s cycle. Default splits it as 15s hex wall + 5s transit
+    // + 15s rosettes + 5s transit, so both states get full breathing
+    // room and the morph itself reads as a slow, floaty shift.
+    const morphTimes = brickCfg.timings || [15 / 40, 20 / 40, 35 / 40, 1.0];
     let morphAlpha = 1;
     if (morphGroup) {
       const cyc = ((t % morphCycleLen) + morphCycleLen) % morphCycleLen;
@@ -1000,16 +1044,36 @@ export function addOverlay(logoMesh, meta) {
       const ta     = morphAlpha;
       const e      = 0.5 - 0.5 * Math.cos(ta * Math.PI);
       const brickW = 1 - e;            // 1 at brick hold, 0 at rose hold
-      const bmn    = brickCfg.pulseMin ?? mn;
-      const bmx    = brickCfg.pulseMax ?? mx;
 
-      // Hex wall: each tile breathes in brick mode and shrinks away as
-      // the cycle hands off to rose. `brickW` handles the fade so hexes
-      // vanish smoothly while petals fly out of their centers.
+      // Hex wall: STATIC size. Tiles do a domino flip around their
+      // local +X axis, with trigger times staggered by flipStep so a
+      // left-to-right wave rolls across the wall. brickW drives the
+      // material opacity so hexes fade (not shrink) across transits.
+      const hexTrigger = brickCfg.hexDominoTrigger ?? 0.18;
+      const hexFall    = brickCfg.hexDominoFall    ?? 2.2;
+      const hexPause   = brickCfg.hexDominoPause   ?? 2.5;
+      const hexCount   = brickHexMeshes.length;
+      const hexMaxStep = Math.max(0, hexCount - 1);
+      const hexCycleLen = hexMaxStep * hexTrigger + hexFall;
+      const hexFullCyc  = hexCycleLen + hexPause;
+      const hexElapsed  = hexFullCyc > 0
+        ? ((t % hexFullCyc) + hexFullCyc) % hexFullCyc
+        : 0;
       for (const hex of brickHexMeshes) {
-        const pulseK    = 0.5 + 0.5 * Math.sin((t / hex.userData.pulsePeriod) * twoPi + hex.userData.pulsePhase);
-        const pulseFactor = bmn + (bmx - bmn) * pulseK;
-        hex.scale.setScalar(brickW * hex.userData.sizeJitter * pulseFactor);
+        hex.material.opacity = brickW;
+        const step = hex.userData.flipStep;
+        const ph   = (hexElapsed - step * hexTrigger) / hexFall;
+        let angle = 0;
+        if (ph > 0 && ph < 1) {
+          const eased = 0.5 - 0.5 * Math.cos(ph * Math.PI);
+          angle = eased * twoPi;
+        }
+        hex.rotation.x = angle;
+        // Hex drifts outward along its per-hex direction as the cycle
+        // moves toward rose. Uses `e` (same sine-ease as the ghost pose
+        // lerp) so the scatter feels in sync with petal emergence.
+        hex.position.x = hex.userData.homeX + hex.userData.driftDirX * hex.userData.driftDist * e;
+        hex.position.y = hex.userData.homeY + hex.userData.driftDirY * hex.userData.driftDist * e;
       }
 
       // Ghosts: grow out of their hex slot (brickBaseScale=0) and
@@ -1029,6 +1093,17 @@ export function addOverlay(logoMesh, meta) {
         }
 
         g.mesh.position.lerpVectors(g.brickPos, _rPos, e);
+        // Perpendicular bob — peaks mid-transit, zero at both ends — so
+        // each petal curves around a unique arc instead of tracking a
+        // straight line. Gives the flowers their "organic" drift-in.
+        const pdx = _rPos.x - g.brickPos.x;
+        const pdy = _rPos.y - g.brickPos.y;
+        const pLen = Math.hypot(pdx, pdy);
+        if (pLen > 1e-4) {
+          const bob = Math.sin(e * Math.PI) * pLen * g.bobMagFrac * g.bobSign;
+          g.mesh.position.x += (-pdy / pLen) * bob;
+          g.mesh.position.y += ( pdx / pLen) * bob;
+        }
         g.mesh.scale.setScalar(g.brickBaseScale + (rScaleX - g.brickBaseScale) * e);
         _qBase.copy(g.brickQuat).slerp(_rQuat, e);
         g.mesh.quaternion.copy(_qBase);

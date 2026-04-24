@@ -117,12 +117,21 @@ export const ANIM = {
   //   opacity      — star alpha (0..1)
   overlay: {
     enabled:        true,
-    instances:      18,    // number of cascade clusters stamped around
-                           // the FULL gate-frame perimeter, evenly
-                           // spaced. Each instance sits on the outline
-                           // with its cut edge aligned to the local
-                           // tangent, so the chain wraps the whole
-                           // arch (top + sides + bottom) end-to-end.
+    instances:      18,    // instance count on the OUTERMOST ring.
+                           // Inner rings scale their count down with
+                           // ring radius so angular spacing stays
+                           // roughly uniform across the fill.
+    radialRadiusFactor: 0.6,  // outermost ring radius, as a multiple
+                           // of maxR. Too large and flowers fall
+                           // outside the silhouette mask and get
+                           // clipped.
+    ringSpacingFactor:  0.18, // radial gap between adjacent rings, as
+                           // a multiple of maxR. Lower = more rings
+                           // (denser fill); higher = fewer rings.
+    innerRadiusFactor:  0.08, // stop adding rings once radius drops
+                           // below this (× maxR). Keeps the central
+                           // vanishing-point area clear so the
+                           // particle convergence stays readable.
     maskClip:       true,  // stencil-clip cluster fragments to the
                            // silhouette interior so any rays poking
                            // past the gate-frame outline are masked.
@@ -170,16 +179,16 @@ export const ANIM = {
                            // maxZ+zOffset-depth/2). Keep zOffset > 1.5*
                            // hexagon.depth so the hex clears the model
                            // front face instead of getting clipped by it.
-    scaleMin:       0.7,
-    scaleMax:       1.1,
+    scaleMin:       1.0,   // set min === max to freeze the flower size
+    scaleMax:       1.0,   // (pulse disabled). Vary these to re-enable.
     pulsePeriod:    6.0,
     spinSpeed:      0.00,
     opacity:        0.85,
-    halfCut:        true,  // drop hub + all -x petals so the rosette
-                           // reads as a crescent of rays pointing toward
-                           // the model. Cut edge rotates with the mesh
-                           // when spinSpeed != 0; zero spinSpeed to
-                           // freeze the cut vertical.
+    halfCut:        false, // full 12-point rosette (hub + all petals).
+                           // true drops the -x half so it reads as a
+                           // crescent — useful when the flower is
+                           // anchored flush to an outline edge, not for
+                           // radial placement around a centre point.
     snapToEdge:     true,  // true: wrapper anchored to the left outline
                            // pivot so the rosette's cut edge lines up
                            // with the archway's side. false: use
@@ -217,6 +226,11 @@ export const ANIM = {
       fallDuration:    0.9,
       pause:           1.5,
       initStaggerMax:  3.0,
+      ringStagger:     0.9,  // seconds of delay added per inward ring,
+                             // so the flip wave starts on the OUTER
+                             // ring and propagates toward the centre.
+                             // Higher = slower inward sweep; 0 = all
+                             // rings fire simultaneously.
     },
 
     // Per-petal brightness twinkle — each petal owns its own material
