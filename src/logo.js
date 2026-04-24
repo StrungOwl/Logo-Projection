@@ -29,6 +29,141 @@ function loadModelByExt(path, onDone, onError) {
   }
 }
 
+// Ramer–Douglas–Peucker on an open polyline. Keeps the endpoints + any
+// internal point whose perpendicular distance to the simplified line
+// exceeds `tol`. Preserves sharp corners while collapsing dense
+// tessellation along smooth curves.
+function rdpOpen(pts, tol) {
+  if (pts.length < 3) return pts.slice();
+  const keep = new Array(pts.length).fill(false);
+  keep[0] = true; keep[pts.length - 1] = true;
+  const stack = [[0, pts.length - 1]];
+  while (stack.length) {
+    const [s, e] = stack.pop();
+    if (e <= s + 1) continue;
+    const a = pts[s], b = pts[e];
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const denom = Math.hypot(dx, dy) || 1;
+    let maxD = -1, maxI = -1;
+    for (let i = s + 1; i < e; i++) {
+      const p = pts[i];
+      const d = Math.abs(dy * p.x - dx * p.y + b.x * a.y - b.y * a.x) / denom;
+      if (d > maxD) { maxD = d; maxI = i; }
+    }
+    if (maxD > tol) {
+      keep[maxI] = true;
+      stack.push([s, maxI]); stack.push([maxI, e]);
+    }
+  }
+  const out = [];
+  for (let i = 0; i < pts.length; i++) if (keep[i]) out.push(pts[i]);
+  return out;
+}
+
+// Closed-loop RDP. Splits the loop at the two vertices farthest apart
+// (rotation-stable anchors), simplifies each arc as an open polyline,
+// then re-stitches without duplicating the anchors.
+function simplifyLoopRDP(loop, tol) {
+  if (loop.length < 4) return loop.slice();
+  let i1 = 0, maxD = -1;
+  for (let i = 1; i < loop.length; i++) {
+    const dx = loop[i].x - loop[0].x, dy = loop[i].y - loop[0].y;
+    const d = dx * dx + dy * dy;
+    if (d > maxD) { maxD = d; i1 = i; }
+  }
+  const armA = [], armB = [];
+  for (let k = 0;  k !== i1;        k = (k + 1) % loop.length) armA.push(loop[k]);
+  armA.push(loop[i1]);
+  for (let k = i1; k !== 0;         k = (k + 1) % loop.length) armB.push(loop[k]);
+  armB.push(loop[0]);
+  const sA = rdpOpen(armA, tol);
+  const sB = rdpOpen(armB, tol);
+  return sA.slice(0, -1).concat(sB.slice(0, -1));
+}
+
+// Walk the front-face triangle mesh and return the actual silhouette as
+// closed loops in mesh-local 2D coords. A "front-face triangle" has all
+// three vertices at z within `zTol` of `maxZ`. Vertices are welded by 2D
+// position (so split UVs/normals don't fragment edges); boundary edges
+// (those appearing in exactly one front-face triangle) are chained into
+// loops in their natural triangle-CCW direction. Result: outer perimeter
+// comes back CCW, internal cutouts come back CW. Loops are sorted by
+// |area| descending so loops[0] is the outer outline.
+function extractFrontSilhouette(geometry, maxZ, zTol = 0.25) {
+  const pos = geometry.attributes.position;
+  const idx = geometry.index;
+
+  const wmap = new Map();   // weldKey -> wIdx
+  const wpts = [];          // wIdx -> {x, y}
+  const vToW = new Map();   // original vIdx -> wIdx (front-face only)
+  const weldKey = (x, y) => Math.round(x * 1000) + ',' + Math.round(y * 1000);
+
+  for (let i = 0; i < pos.count; i++) {
+    if (Math.abs(pos.getZ(i) - maxZ) > zTol) continue;
+    const x = pos.getX(i), y = pos.getY(i);
+    const key = weldKey(x, y);
+    let w = wmap.get(key);
+    if (w === undefined) { w = wpts.length; wmap.set(key, w); wpts.push({ x, y }); }
+    vToW.set(i, w);
+  }
+
+  const edgeCount = new Map();   // "min,max" -> count
+  const edgeDir   = new Map();   // "min,max" -> {a, b} (first occurrence's CCW direction)
+  function addEdge(a, b) {
+    if (a === b) return;
+    const key = a < b ? a + ',' + b : b + ',' + a;
+    edgeCount.set(key, (edgeCount.get(key) || 0) + 1);
+    if (!edgeDir.has(key)) edgeDir.set(key, { a, b });
+  }
+
+  const triCount = idx ? idx.count / 3 : pos.count / 3;
+  for (let t = 0; t < triCount; t++) {
+    const i0 = idx ? idx.getX(t * 3)     : t * 3;
+    const i1 = idx ? idx.getX(t * 3 + 1) : t * 3 + 1;
+    const i2 = idx ? idx.getX(t * 3 + 2) : t * 3 + 2;
+    const w0 = vToW.get(i0), w1 = vToW.get(i1), w2 = vToW.get(i2);
+    if (w0 === undefined || w1 === undefined || w2 === undefined) continue;
+    addEdge(w0, w1); addEdge(w1, w2); addEdge(w2, w0);
+  }
+
+  // Adjacency: outgoing boundary edges from each vertex, indexed by start.
+  const out = new Map();
+  for (const [key, count] of edgeCount) {
+    if (count !== 1) continue;
+    const e = edgeDir.get(key);
+    if (!out.has(e.a)) out.set(e.a, []);
+    out.get(e.a).push(e);
+  }
+
+  const used = new Set();
+  const loops = [];
+  for (const startList of out.values()) {
+    for (const seed of startList) {
+      if (used.has(seed)) continue;
+      const loop = [];
+      let cur = seed;
+      while (cur && !used.has(cur)) {
+        used.add(cur);
+        loop.push(wpts[cur.a]);
+        const nexts = out.get(cur.b);
+        cur = nexts ? nexts.find(e => !used.has(e)) : null;
+      }
+      if (loop.length >= 3) loops.push(loop);
+    }
+  }
+
+  const area = (loop) => {
+    let a = 0;
+    for (let i = 0; i < loop.length; i++) {
+      const p = loop[i], q = loop[(i + 1) % loop.length];
+      a += p.x * q.y - q.x * p.y;
+    }
+    return a * 0.5;
+  };
+  loops.sort((p, q) => Math.abs(area(q)) - Math.abs(area(p)));
+  return loops;
+}
+
 // Andrew's monotone-chain 2D convex hull. Returns a CCW-ish outline with
 // no holes, so the galaxy plate + pattern clip polygons always cover the
 // full silhouette even if the source geometry has internal cutouts.
@@ -131,6 +266,18 @@ function computeSilhouetteMeta(logoMesh) {
 
   const hull = convexHull2D(frontPts);
 
+  logoMesh.geometry.computeBoundingBox();
+  const bb = logoMesh.geometry.boundingBox;
+
+  // True silhouette (concave outer outline + any internal cutouts) walked
+  // off the front-face triangle mesh, then RDP-simplified so the gate
+  // frame's polygon-offset routine (and ExtrudeGeometry) deal with
+  // hundreds of vertices instead of thousands. Tolerance is tied to the
+  // model's bbox so the same code adapts across model sizes.
+  const rawSilhouette = extractFrontSilhouette(logoMesh.geometry, maxZ);
+  const simplifyTol = Math.max(bb.max.x - bb.min.x, bb.max.y - bb.min.y) * 0.0025;
+  const silhouette = rawSilhouette.map(loop => simplifyLoopRDP(loop, simplifyTol));
+
   // Hull centroid (average of hull vertices).
   let cx = 0, cy = 0;
   for (const h of hull) { cx += h.x; cy += h.y; }
@@ -155,8 +302,6 @@ function computeSilhouetteMeta(logoMesh) {
   // inside the inner cutout. This is where the galaxy glow reads brightest,
   // so we anchor pattern opacity fades here — the dissolve hugs the hot
   // spot rather than the geometric hull centroid.
-  logoMesh.geometry.computeBoundingBox();
-  const bb = logoMesh.geometry.boundingBox;
   const halfExtent = Math.max((bb.max.x - bb.min.x) * 0.5, (bb.max.y - bb.min.y) * 0.5);
   const zTol = Math.max(halfExtent * 0.02, 0.1);
   const innerR = halfExtent * 0.58;
@@ -177,13 +322,13 @@ function computeSilhouetteMeta(logoMesh) {
   // Panel is positioned at (cx, cy), so panel-local = mesh-local - (cx, cy).
   const patternFadeCenter = [innerCenterX - cx, innerCenterY - cy];
 
-  return { hull, cx, cy, maxR, maxZ, hullMinY, hullMaxY, halfExtent, bbox: bb, patternFadeCenter };
+  return { hull, silhouette, cx, cy, maxR, maxZ, hullMinY, hullMaxY, halfExtent, bbox: bb, patternFadeCenter };
 }
 
 // Flat silhouette plate holding the galaxy shader, parented just behind
 // the front face. Halo scale = 1.0 matches the logo silhouette exactly.
 function attachGalaxyPlate(logoMesh, meta) {
-  const { hull, cx, cy, maxR, maxZ, hullMinY } = meta;
+  const { hull, cx, cy, maxR, maxZ, hullMinY, hullMaxY } = meta;
   if (hull.length < 3) return null;
 
   const shape = new THREE.Shape();
@@ -195,7 +340,7 @@ function attachGalaxyPlate(logoMesh, meta) {
   galaxyMat.uniforms.uCenter.value.set(cx, cy);
   galaxyMat.uniforms.uRadius.value = maxR;
   galaxyMat.uniforms.uMinY.value   = hullMinY;
-  galaxyMat.uniforms.uFadeHeight.value = 0;  // bottom fade disabled
+  galaxyMat.uniforms.uFadeHeight.value = (hullMaxY - hullMinY) * 0.10;
 
   const galaxyMesh = new THREE.Mesh(new THREE.ShapeGeometry(shape), galaxyMat);
   galaxyMesh.position.set(0, 0, maxZ - 0.5);

@@ -78,38 +78,40 @@ export const ANIM = {
                    color: '#FFE8C0', hueVariance: 0.08,
                    pointSize: 0.15, trailSize: 25 },
 
-  // Radial cascade — continuous infinite loop. Each tile independently
-  // cycles rest → exit → gap → entry → rest, with a phase offset by its
-  // radius from the pattern's fade center (outer-first). Because
-  // `idlePeriod` (per-tile rest) dominates the cycle, most tiles are at
-  // rest at any instant; only a thin radial band is in motion, sweeping
-  // inward, while new tiles re-emerge from beyond the hull. The pattern
-  // never fully empties — it's always showing, always flowing inward.
-  //
-  // Dials:
-  //   `idlePeriod`    — per-tile rest duration between cycles. Larger =
-  //                     pattern reads as more settled, motion sparser.
-  //   `rowStagger`    — seconds of phase offset between adjacent radial
-  //                     rings. Larger = wider moving band, softer wave.
-  //   `exitDuration`  — how long one tile takes to be pulled from rest
-  //                     to the fade center (ease-in cubic).
-  //   `gap`           — brief pause at the fade center before the tile
-  //                     teleports to the outer ring for re-entry.
-  //   `entryDuration` — how long one tile takes to slide inward from the
-  //                     outer ring to rest (ease-in-out cubic).
-  //   `outerMargin`   — distance past the hull's max radius each tile
-  //                     starts its entry ray; just needs to be enough for
-  //                     the hull-clip shader to hide the entering tile.
-  //
-  // Spark snap is proportional to the fraction of tiles at rest
-  // (idlePeriod / total period), so sparks pull toward strokes about as
-  // strongly as the pattern is static.
-  rowCascade: { idlePeriod:    30.0,
-                rowStagger:    1.5,
-                exitDuration:  6.0,
-                gap:           0.5,
-                entryDuration: 6.0,
-                outerMargin:   5.0 },
+  // Slow rotation on a random subset of rosettes ("flowers") and lattice
+  // hexes. Each picked mesh gets a random phase offset and a signed angular
+  // speed picked uniformly from [speedMin, speedMax] (half CCW, half CW) so
+  // neighbours drift out of sync. `rosetteFraction`/`hexFraction` control
+  // what share of each pattern rotates; the rest stay still. Fractions +
+  // per-mesh speed assignments are sampled at load (reload to resample);
+  // `enabled`, `speedMin`, `speedMax` are read live but changing speed at
+  // runtime causes a small jump since `rotation.z = phase + speed*t`.
+  patternRotation: {
+    enabled:         true,
+    rosetteFraction: 0.35,  // share of rosettes that rotate
+    hexFraction:     0.35,  // share of lattice hexes that rotate
+    speedMin:        0.15,  // radians/sec (≈8.6°/sec)
+    speedMax:        0.50,  // radians/sec (≈28.6°/sec)
+  },
+
+  // Radial cascade — infinite loop where each tile independently cycles
+  // rest → exit → gap → entry → rest, phase-offset by its radius from
+  // the pattern's fade center (outer-first). Most tiles are at rest at
+  // any instant; only a thin radial band is in motion, sweeping inward
+  // while new tiles emerge from beyond the hull. Spark snap strength
+  // tracks the at-rest fraction (idlePeriod / total period).
+  rowCascade: {
+    enabled:       true,   // master on/off (false = pattern frozen at base positions)
+    continuous:    false,  // true = skip the per-tile rest, tiles cycle nonstop (idlePeriod ignored)
+    triggerDelay:  10.0,   // seconds after load before the cycle kicks in
+    idlePeriod:    30.0,   // per-tile rest between cycles, seconds (ignored if continuous)
+    rowStagger:    1.5,    // phase offset between adjacent radial rings, seconds
+    exitDuration:  6.0,    // one tile rest → fade-center, seconds (ease-in cubic)
+    gap:           0.5,    // pause at center before teleport to outer ring, seconds
+    entryDuration: 6.0,    // one tile outer-ring → rest, seconds (ease-in-out cubic)
+    outerMargin:   5.0,    // distance past hull max-radius where entry rays begin, units
+    phaseJitter:   1.0,    // random per-tile phase offset at load, seconds (< rowStagger keeps wave)
+  },
 };
 
 // -----------------------------------------------------------------------

@@ -18,7 +18,7 @@ import { createGateFrame }       from '../patterns/gate-frame.js';
 import { createSparkSystem }     from '../patterns/stroke-sparks.js';
 
 export function addPatternLayers(logoMesh, meta) {
-  const { hull, cx, cy, maxR, maxZ, patternFadeCenter } = meta;
+  const { hull, silhouette, cx, cy, maxR, maxZ, patternFadeCenter } = meta;
   const strokeTimeUniforms = [];
   const sparkSystems = [];
   const patternsToRefresh = [];
@@ -26,6 +26,11 @@ export function addPatternLayers(logoMesh, meta) {
   // Hull in panel-local coords (panel is positioned at (cx, cy), so
   // pattern clip uses mesh-local - (cx, cy)).
   const clipPolygon = hull.map(h => ({ x: h.x - cx, y: h.y - cy }));
+  // True silhouette (concave, from SVG) in the same local space; falls
+  // back to the convex hull if the SVG didn't load.
+  const gateOutline = (silhouette && silhouette[0])
+    ? silhouette[0].map(p => ({ x: p.x - cx, y: p.y - cy }))
+    : clipPolygon;
 
   // Pattern grid sizing.
   const tileStep      = 6.5;
@@ -47,6 +52,16 @@ export function addPatternLayers(logoMesh, meta) {
     y: p.y > 0 ? p.y + topPushOut : p.y,
   }));
 
+  // Polygon clip for both patterns: the true silhouette (outer concave
+  // outline + interior cutouts) so pattern fragments are confined to the
+  // logo's solid area — outer perimeter sits flush with the gate frame's
+  // outer edge, and tiles are sliced cleanly out of the negative-space
+  // holes (where the gate frame doesn't wrap). Falls back to the convex
+  // hull if the SVG didn't load.
+  const silhouettePolygons = (silhouette && silhouette.length)
+    ? silhouette.map(loop => loop.map(p => ({ x: p.x - cx, y: p.y - cy })))
+    : [clipPolygon];
+
   // Islamic tile panel. Center fades to transparent so the galaxy core
   // glow bleeds through; outer rim stays mostly opaque.
   const panel = createIslamicPanel({
@@ -61,7 +76,7 @@ export function addPatternLayers(logoMesh, meta) {
     goldColor: COLORS.islamicPanel.gold,
     clipPolygon: patternClipPolygon,
     clipMargin: gateFrameWidth,
-    hullClip: clipPolygon,
+    hullClip: silhouettePolygons,
     fadeInnerR: maxR * 0.12,
     fadeOuterR: maxR * 0.55,
     fadeCenter: patternFadeCenter,
@@ -94,7 +109,7 @@ export function addPatternLayers(logoMesh, meta) {
     color: COLORS.latticeUnderlay.fill,
     clipPolygon: patternClipPolygon,
     clipMargin: gateFrameWidth,
-    hullClip: clipPolygon,
+    hullClip: silhouettePolygons,
     fadeInnerR: maxR * 0.16,
     fadeOuterR: maxR * 0.65,
     fadeCenter: patternFadeCenter,
@@ -123,10 +138,10 @@ export function addPatternLayers(logoMesh, meta) {
   if (underlay.userData.pulseTimeUniform)  strokeTimeUniforms.push(underlay.userData.pulseTimeUniform);
   patternsToRefresh.push(underlay);
 
-  // Gate frame — extruded ring that follows the full hull silhouette
-  // (no bottom cut), so the moulding wraps the entire model outline.
+  // Gate frame — extruded ring that follows the true model silhouette
+  // (concave outline from the SVG), wrapping the entire perimeter.
   const gate = createGateFrame({
-    hull: clipPolygon,
+    hull: gateOutline,
     frameWidth: gateFrameWidth,
     frameDepth: 0.5,
     lipWidth: 0.3,
@@ -191,6 +206,52 @@ export function addPatternLayers(logoMesh, meta) {
   sparkSystems.push(panelSparks, latticeSparks);
 
   // ---------------------------------------------------------------------
+  // Slow rotation for a random subset of rosettes and lattice hexes. Each
+  // picked mesh gets a random phase offset and a signed angular speed so
+  // neighbours drift in different directions at different rates. Runs
+  // independently of the radial cascade (cascade writes position, this
+  // writes rotation.z) so both can stack.
+  // ---------------------------------------------------------------------
+  const rotatableMeshes = [];
+  panel.traverse(o => {
+    if (o.isMesh && o.userData.isRosette) {
+      rotatableMeshes.push({ mesh: o, kind: 'rosette' });
+    }
+  });
+  underlay.traverse(o => {
+    if (o.isMesh && o.userData.baseX !== undefined) {
+      rotatableMeshes.push({ mesh: o, kind: 'hex' });
+    }
+  });
+
+  const rotCfg0 = ANIM.patternRotation;
+  for (const r of rotatableMeshes) {
+    const fraction = r.kind === 'rosette' ? rotCfg0.rosetteFraction
+                                          : rotCfg0.hexFraction;
+    if (Math.random() < fraction) {
+      const dir   = Math.random() < 0.5 ? -1 : 1;
+      const speed = rotCfg0.speedMin +
+                    Math.random() * (rotCfg0.speedMax - rotCfg0.speedMin);
+      r.mesh.userData.rotateSpeed = dir * speed;
+      r.mesh.userData.rotatePhase = Math.random() * Math.PI * 2;
+    } else {
+      r.mesh.userData.rotateSpeed = 0;
+      r.mesh.userData.rotatePhase = 0;
+    }
+  }
+
+  function updateRotations(t) {
+    const cfg = ANIM.patternRotation;
+    if (!cfg || cfg.enabled === false) return;
+    for (let i = 0; i < rotatableMeshes.length; i++) {
+      const m = rotatableMeshes[i].mesh;
+      if (m.userData.rotateSpeed !== 0) {
+        m.rotation.z = m.userData.rotatePhase + m.userData.rotateSpeed * t;
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------
   // Radial cascade driver. Each tagged mesh has a rest position (baseX,
   // baseY) and an outward ray through the pattern's fade center.
   //   Exit  — every tile is pulled along its ray toward the fade center.
@@ -226,6 +287,11 @@ export function addPatternLayers(logoMesh, meta) {
   }
   for (const m of cascadeMeshes) {
     m.userData.staggerIdx = (maxRadius - m.userData.radius) / tileStep;
+    // Per-tile random phase jitter — sampled once at load so the wave
+    // direction (outer-first) is preserved but tiles within the same
+    // ring don't all fire at the same instant, and each page load
+    // produces a different flow.
+    m.userData.phaseJitter = Math.random() - 0.5;
   }
   const maxStaggerIdx = maxRadius / tileStep;
 
@@ -237,15 +303,40 @@ export function addPatternLayers(logoMesh, meta) {
   // replace the ones being pulled inward. No global idle/gap — the
   // pattern never fully empties.
   const cascadeState = { active: 1 };
+  let lastAllAtRest = false;
+
+  function parkAll() {
+    for (let i = 0; i < cascadeMeshes.length; i++) {
+      const m = cascadeMeshes[i];
+      m.position.x = m.userData.baseX;
+      m.position.y = m.userData.baseY;
+    }
+  }
 
   function updateRowCascade(t) {
     const cfg = ANIM.rowCascade;
     if (!cfg) return;
-    const restDur   = cfg.idlePeriod;
+
+    // Master toggle + initial delay. Before the trigger moment (or while
+    // disabled), all tiles stay at rest and the spark snap is full. The
+    // first-frame park is guarded so we don't re-assign positions every
+    // frame during the long idle.
+    const adjT = t - (cfg.triggerDelay || 0);
+    if (cfg.enabled === false || adjT < 0) {
+      if (!lastAllAtRest) { parkAll(); lastAllAtRest = true; }
+      cascadeState.active = 1;
+      return;
+    }
+    lastAllAtRest = false;
+
+    // `continuous` drops the per-tile rest so tiles cycle nonstop —
+    // pattern is in constant radial motion instead of mostly-at-rest.
+    const restDur   = cfg.continuous ? 0 : cfg.idlePeriod;
     const exDur     = cfg.exitDuration;
     const gapDur    = cfg.gap;
     const enDur     = cfg.entryDuration;
     const stag      = cfg.rowStagger;
+    const jitter    = cfg.phaseJitter || 0;
     const outerRing = maxRadius + cfg.outerMargin;
     const period    = restDur + exDur + gapDur + enDur;
     if (period < 1e-3) return;
@@ -262,8 +353,24 @@ export function addPatternLayers(logoMesh, meta) {
       const rayX = m.userData.rayX;
       const rayY = m.userData.rayY;
 
-      const offset = sIdx * stag;
-      const phase  = ((t - offset) % period + period) % period;
+      const offset = sIdx * stag + m.userData.phaseJitter * jitter;
+      let phase;
+      if (cfg.continuous) {
+        // Continuous mode: tiles drop straight into their natural phase
+        // at the trigger instant. Because outer tiles have small offset
+        // and inner tiles have large offset, negative-wrapping puts the
+        // inner tiles mid-entry (approaching rest from the outer ring)
+        // at the exact moment outer tiles start their exit — so the
+        // exterior is already refilling the first time the pattern moves.
+        phase = ((adjT - offset) % period + period) % period;
+      } else {
+        // Non-continuous: gate each tile at its base position until its
+        // own stagger moment so no tile is caught mid-motion on the
+        // trigger frame (clean cold start for discrete cycles).
+        const localT = adjT - offset;
+        if (localT < 0) { m.position.x = bx; m.position.y = by; continue; }
+        phase = localT % period;
+      }
 
       let posX, posY;
       if (phase < exitStart) {
@@ -299,5 +406,5 @@ export function addPatternLayers(logoMesh, meta) {
   }
 
   return { strokeTimeUniforms, sparkSystems, patternsToRefresh,
-           updateRowCascade, cascadeState };
+           updateRowCascade, cascadeState, updateRotations };
 }

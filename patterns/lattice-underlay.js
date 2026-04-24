@@ -61,11 +61,12 @@ export function createLatticeUnderlay({
   material = null,
   clipPolygon = null,
   clipMargin = 0,
-  // Convex CCW polygon (panel-local). When provided, the fragment shader
-  // hard-clips every hex/stroke fragment to the polygon's interior —
-  // hexes that overhang get sliced along the polygon edge instead of
-  // poking past it. Separate from `clipPolygon` so placement can still
-  // allow overhang while the rendered edge stays clean.
+  // Polygon clip (panel-local). Accepts either a single CCW polygon
+  // (array of {x,y}) or a list of loops [outer CCW, hole CW, ...] for
+  // concave shapes with holes. The fragment shader hard-clips every
+  // hex/stroke fragment to the polygon's interior — hexes that overhang
+  // get sliced along the polygon edge. Separate from `clipPolygon` so
+  // placement can still allow overhang while the rendered edge stays clean.
   hullClip = null,
   fadeInnerR = 0,
   fadeOuterR = 0,
@@ -137,44 +138,55 @@ export function createLatticeUnderlay({
     mat.transparent = true;
   }
 
-  // Precompute half-plane equations for the hard hull clip. Each edge a→b
-  // of a CCW convex polygon has an inward normal; a point p is inside iff
-  // n·p + d >= 0 for every edge. Packed as vec3(nx, ny, d).
-  let hullPlanes = null;
-  let hullPlaneCount = 0;
-  if (hullClip && hullClip.length >= 3) {
-    hullPlaneCount = hullClip.length;
-    hullPlanes = new Float32Array(hullPlaneCount * 3);
-    for (let i = 0; i < hullPlaneCount; i++) {
-      const a = hullClip[i];
-      const b = hullClip[(i + 1) % hullPlaneCount];
-      const ex = b.x - a.x, ey = b.y - a.y;
-      const len = Math.hypot(ex, ey) || 1;
-      const nx = -ey / len, ny = ex / len;
-      const d = -(nx * a.x + ny * a.y);
-      hullPlanes[i * 3] = nx;
-      hullPlanes[i * 3 + 1] = ny;
-      hullPlanes[i * 3 + 2] = d;
+  // Pack polygon edges for an even-odd point-in-polygon test in the
+  // shader (handles concave outline + interior holes). Accept either a
+  // single polygon (array of {x,y}) or a list of loops (outer CCW + holes
+  // CW). Each edge → vec4(ax, ay, bx, by); fragment shader counts edges
+  // crossed by a horizontal +X ray from the fragment — even = outside.
+  let hullEdges = null;
+  let hullEdgeCount = 0;
+  if (hullClip && hullClip.length > 0) {
+    const loops = (hullClip[0] && 'x' in hullClip[0]) ? [hullClip] : hullClip;
+    let total = 0;
+    for (const loop of loops) if (loop && loop.length >= 3) total += loop.length;
+    if (total > 0) {
+      hullEdges = new Float32Array(total * 4);
+      let off = 0;
+      for (const loop of loops) {
+        if (!loop || loop.length < 3) continue;
+        for (let i = 0; i < loop.length; i++) {
+          const a = loop[i];
+          const b = loop[(i + 1) % loop.length];
+          hullEdges[off++] = a.x;
+          hullEdges[off++] = a.y;
+          hullEdges[off++] = b.x;
+          hullEdges[off++] = b.y;
+        }
+      }
+      hullEdgeCount = total;
     }
   }
-  const hullClipUniforms = hullPlanes
-    ? { uHullPlanes: { value: hullPlanes } }
+  const hullClipUniforms = hullEdges
+    ? { uHullEdges: { value: hullEdges } }
     : null;
-
-  // GLSL snippets injected into both the fill and stroke shaders when
-  // hullClip is active. HULL_CLIP_COUNT is baked at compile time so the
-  // loop unrolls cleanly on WebGL drivers.
-  const hullClipCommon = hullPlanes
+  const hullClipCommon = hullEdges
     ? `
-      #define HULL_CLIP_COUNT ${hullPlaneCount}
-      uniform vec3 uHullPlanes[HULL_CLIP_COUNT];`
+      #define HULL_EDGE_COUNT ${hullEdgeCount}
+      uniform vec4 uHullEdges[HULL_EDGE_COUNT];`
     : '';
-  const hullClipCall = hullPlanes
+  const hullClipCall = hullEdges
     ? `
-      for (int _hi = 0; _hi < HULL_CLIP_COUNT; _hi++) {
-        vec3 _pl = uHullPlanes[_hi];
-        if (_pl.x * vPanelXY.x + _pl.y * vPanelXY.y + _pl.z < 0.0) discard;
-      }`
+      int _ci = 0;
+      for (int _ei = 0; _ei < HULL_EDGE_COUNT; _ei++) {
+        vec4 _e = uHullEdges[_ei];
+        bool _ay = _e.y > vPanelXY.y;
+        bool _by = _e.w > vPanelXY.y;
+        if (_ay != _by) {
+          float _xc = (_e.z - _e.x) * (vPanelXY.y - _e.y) / (_e.w - _e.y) + _e.x;
+          if (vPanelXY.x < _xc) _ci++;
+        }
+      }
+      if (_ci - (_ci / 2) * 2 == 0) discard;`
     : '';
 
   mat.onBeforeCompile = (shader) => {
