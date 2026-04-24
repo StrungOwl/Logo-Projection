@@ -29,7 +29,7 @@ function buildRingShape(outer, inner) {
 // self-intersect the inset polygon. We clamp at `maxSpikeMul * distance`
 // — pointed enough to read as a tip, short enough not to poke through a
 // far edge of the inset.
-function insetPolygon(poly, distance, maxSpikeMul = 3) {
+export function insetPolygon(poly, distance, maxSpikeMul = 3) {
   const n = poly.length;
   const out = new Array(n);
   const maxLen = distance * maxSpikeMul;

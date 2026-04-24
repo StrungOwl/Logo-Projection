@@ -127,6 +127,12 @@ export const ANIM = {
                            // silhouette interior so any rays poking
                            // past the gate-frame outline are masked.
                            // false = no clip (overflow visible).
+    maskInset:      1.6,   // inset the stencil polygon inward by this
+                           // many units so it lines up with the gate
+                           // frame's INNER edge (gateFrameWidth in
+                           // patterns-layer.js is 1.6). Clusters never
+                           // overlap the frame ring. 0 = clip to the
+                           // outer silhouette (old behaviour).
     starCount:      1,
     starSize:       25.0,  // outer radius of the largest cascade layer.
                            // Wrapper scales by up to scaleMax, so the
@@ -213,6 +219,30 @@ export const ANIM = {
       initStaggerMax:  3.0,
     },
 
+    // Per-petal brightness twinkle — each petal owns its own material
+    // clone and pulses between brightnessMin/Max (diffuse) + emissive
+    // Min/Max with an independent random phase and a period scaled by a
+    // random factor in [1-speedVariance, 1+speedVariance]. Result is a
+    // "slightly random" shimmer where neighbours drift in/out of sync
+    // without any single global beat. Emissive uses each petal's base
+    // colour so the pulse reads as warm glow rather than a wash.
+    petalBrightness: {
+      enabled:       true,
+      brightnessMin: 0.45,  // diffuse colour multiplier at trough
+      brightnessMax: 1.35,  // diffuse colour multiplier at peak
+      emissiveMin:   0.0,   // emissiveIntensity at trough
+      emissiveMax:   0.8,   // emissiveIntensity at peak
+      pulsePeriod:   3.8,   // seconds for one full brightness cycle
+      speedVariance: 0.45,  // ±fraction of pulsePeriod per-petal drift
+      startDelay:    2.5,   // seconds after load that petals stay steady
+                            // (no brightness modulation) before the
+                            // shimmer begins to fade in.
+      rampDuration:  4.0,   // seconds for the shimmer envelope to ramp
+                            // from 0 (flat) to 1 (full amplitude) after
+                            // startDelay. Uses a smoothstep curve so
+                            // the pulse grows rather than snaps on.
+    },
+
     // Large 3D hexagonal prism centred on the logo — a neutral canvas
     // for future "looks" (material swaps, emissive pulses, rotation,
     // etc.). Not driven by the fan pulse/spin; add animation hooks in
@@ -228,7 +258,7 @@ export const ANIM = {
     //   halfCut      — true: keep the +x half only (matches the
     //                  rosette's halfCut — cut edge on -x, faces +x)
     hexagon: {
-      enabled:      true,
+      enabled:      false,
       radiusFactor: 1.15,
       depth:        20.0,
       opacity:      0.35,

@@ -11,6 +11,7 @@
 
 import * as THREE from 'three';
 import { ANIM, COLORS } from './config.js';
+import { insetPolygon } from '../patterns/gate-frame.js';
 
 // Rosette parts — the same hub + inner/outer petal ratios as
 // patterns/islamic-tile.js, but returned as independent pieces so each
@@ -97,37 +98,112 @@ function liftPetalTip(geo, baseR, outerR, amount) {
   geo.computeVertexNormals();
 }
 
-// Domino trigger order starting from `startIdx`. Picks the angularly
-// closest unvisited petal to the most recently activated one, so the
-// wave reads as a chain hopping neighbor-to-neighbor. For a full ring
-// this collapses to "go one way until you wrap"; for a halfCut arc it
-// sweeps to one end, then jumps across the cut to sweep the other arc.
-// Ties broken with `rng` so mirror-symmetric starts don't always bias
-// the same direction.
-function computeDominoOrder(angles, startIdx, rng) {
-  const N = angles.length;
-  const visited = new Array(N).fill(false);
-  const order = [startIdx];
-  visited[startIdx] = true;
+// Ray-cast point-in-polygon. Poly is a closed ring of {x,y}; returns true
+// if (x,y) is inside. Used for masking the brick-wall grid against the
+// insetted gate-frame silhouette.
+function pointInPolygon(poly, x, y) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i].x, yi = poly[i].y;
+    const xj = poly[j].x, yj = poly[j].y;
+    const cross = ((yi > y) !== (yj > y)) &&
+      (x < (xj - xi) * (y - yi) / ((yj - yi) || 1e-12) + xi);
+    if (cross) inside = !inside;
+  }
+  return inside;
+}
+
+// Honeycomb tiling inside `poly` with flat-top hexagons of circumradius
+// `R`. Column spacing is 1.5R, row spacing is R·√3, and alternate
+// columns are offset by half a row — the standard tight hex pack.
+// Only slot centers inside the polygon are kept.
+function buildHexSlots(poly, R) {
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const p of poly) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  const colStep = R * 1.5;
+  const rowStep = R * Math.sqrt(3);
+  const slots = [];
+  let col = 0;
+  for (let x = minX + R; x <= maxX - R * 0.25; x += colStep) {
+    const yOff = (col & 1) ? rowStep * 0.5 : 0;
+    for (let y = minY + rowStep * 0.5 + yOff; y <= maxY - rowStep * 0.25; y += rowStep) {
+      if (pointInPolygon(poly, x, y)) slots.push({ x, y });
+    }
+    col++;
+  }
+  return slots;
+}
+
+// Clamped smoothstep on [a,b]. Used to shape the morph alpha curve over
+// the cycle so holds at both endpoints feel steady.
+function smoothstep01(x, a, b) {
+  const t = Math.max(0, Math.min(1, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+}
+
+// Pick the two "lower" seed petals for a flower — one on the world-left
+// (x<0) and one on the world-right (x>0), each with the most-negative
+// world-y (i.e. closest to "below" from each side). `wrapperRotation` is
+// the flower's base rotation so world-angle = petalAngle + wrapperRotation.
+// Falls back to the single lowest petal if one side has no candidate.
+function findLowerSeeds(angles, wrapperRotation) {
+  const ranked = angles.map((a, i) => {
+    const wa = a + wrapperRotation;
+    return { i, x: Math.cos(wa), y: Math.sin(wa) };
+  });
+  ranked.sort((p, q) => p.y - q.y); // most-negative y first
+  const left  = ranked.find(r => r.x <  0);
+  const right = ranked.find(r => r.x >= 0);
+  const seeds = [];
+  if (left)  seeds.push(left.i);
+  if (right) seeds.push(right.i);
+  if (seeds.length === 0 && ranked.length) seeds.push(ranked[0].i);
+  return seeds;
+}
+
+// Step number per petal for a domino that starts at every seed simultaneously
+// (step 0) and, at each step, adds the unvisited petal angularly closest to
+// any already-flipped petal. Returns { steps, maxStep }. Seeds fire together;
+// the wave then ripples outward from both, meeting where the fronts converge.
+function computeSeedChain(angles, seeds) {
   const twoPi = Math.PI * 2;
-  while (order.length < N) {
-    const curTheta = angles[order[order.length - 1]];
-    let bestIdx = -1, bestDist = Infinity;
+  const N = angles.length;
+  const steps = new Array(N).fill(-1);
+  const visited = new Array(N).fill(false);
+  let placed = 0;
+  for (const s of seeds) {
+    if (s >= 0 && s < N && !visited[s]) {
+      visited[s] = true;
+      steps[s] = 0;
+      placed++;
+    }
+  }
+  let cur = 0;
+  while (placed < N) {
+    cur++;
+    let best = -1, bestD = Infinity;
     for (let i = 0; i < N; i++) {
       if (visited[i]) continue;
-      let d = Math.abs(angles[i] - curTheta);
-      d = Math.min(d, twoPi - d);
-      if (d < bestDist - 1e-9) {
-        bestDist = d;
-        bestIdx = i;
-      } else if (Math.abs(d - bestDist) < 1e-9 && rng() < 0.5) {
-        bestIdx = i;
+      let mn = Infinity;
+      for (let j = 0; j < N; j++) {
+        if (!visited[j]) continue;
+        let d = Math.abs(angles[i] - angles[j]);
+        d = Math.min(d, twoPi - d);
+        if (d < mn) mn = d;
       }
+      if (mn < bestD) { bestD = mn; best = i; }
     }
-    order.push(bestIdx);
-    visited[bestIdx] = true;
+    if (best < 0) break;
+    visited[best] = true;
+    steps[best] = cur;
+    placed++;
   }
-  return order;
+  return { steps, maxStep: cur };
 }
 
 // Longest outline edge on the requested side of the hull centroid. The
@@ -222,7 +298,13 @@ export function addOverlay(logoMesh, meta) {
   // by setting `cfg0.maskClip = false`.
   const maskClip = cfg0.maskClip !== false;
   if (maskClip && silhouette && silhouette[0] && silhouette[0].length >= 3) {
-    const sil = silhouette[0];
+    // Inset the silhouette so the stencil polygon sits INSIDE the
+    // gate-frame's inner edge — clusters clip to the aperture, not the
+    // gate-frame's outer outline, so rays never overlap the frame.
+    const maskInset = cfg0.maskInset ?? 1.6;
+    const sil = maskInset > 0
+      ? insetPolygon(silhouette[0], maskInset)
+      : silhouette[0];
     const maskShape = new THREE.Shape();
     maskShape.moveTo(sil[0].x, sil[0].y);
     for (let i = 1; i < sil.length; i++) maskShape.lineTo(sil[i].x, sil[i].y);
@@ -308,8 +390,9 @@ export function addOverlay(logoMesh, meta) {
     const fan = new THREE.Group();
     const basePeriod    = cfg0.pulsePeriod ?? 6.0;
     const pulseVariance = cascade.pulseVariance ?? 0;
-    const dominoCfg     = cfg0.petalDomino || {};
-    const dominoInitMax = dominoCfg.initStaggerMax ?? 3.0;
+    const dominoCfg      = cfg0.petalDomino || {};
+    const fanStagger     = dominoCfg.fanStagger     ?? 0.35;
+    const cascadeStagger = dominoCfg.cascadeStagger ?? 0.12;
     for (let i = 0; i < count; i++) {
       const u = count === 1 ? 0.5 : i / (count - 1);
       const localAngle = (u - 0.5) * spread;
@@ -337,11 +420,24 @@ export function addOverlay(logoMesh, meta) {
 
         const petals = [];
         const petalAngles = [];
+        // Per-petal brightness twinkle needs an independent material per
+        // petal (so color + emissiveIntensity can diverge). Clone the
+        // shared cascade material; stencil state copies over with it.
+        // Emissive colour is locked to the base diffuse so modulating
+        // emissiveIntensity alone gives a warm glow without a hue shift.
+        const pbCfg         = cfg0.petalBrightness || {};
+        const pbSpeedVar    = pbCfg.speedVariance ?? 0;
         const addPetal = (geo, theta, baseR) => {
           const g = new THREE.Group();
           g.position.set(Math.cos(theta) * baseR, Math.sin(theta) * baseR, 0);
           g.rotation.z = theta;            // local +x → outward, +y → ring-tangent
-          const m = new THREE.Mesh(geo, mat);
+          const petalMat = mat.clone();
+          petalMat.emissive = mat.color.clone();
+          petalMat.emissiveIntensity = 0;
+          const m = new THREE.Mesh(geo, petalMat);
+          m.userData.petalBaseColor   = mat.color.clone();
+          m.userData.petalPhase       = Math.random() * Math.PI * 2;
+          m.userData.petalSpeedFactor = 1 + (Math.random() * 2 - 1) * pbSpeedVar;
           g.add(m);
           flower.add(g);
           petals.push(m);
@@ -362,14 +458,20 @@ export function addOverlay(logoMesh, meta) {
         flower.userData.pulsePeriod = basePeriod * (1 + jitter);
         flower.userData.phaseOffset = Math.random() * Math.PI * 2;
 
-        // Domino state — order computed lazily on the first post-stagger
-        // update so petals stay at rest during the init window. Negative
-        // initial stagger would fire immediately; randomise in [0,max)
-        // so neighbouring flowers don't all trigger on the same frame.
-        flower.userData.petals        = petals;
-        flower.userData.petalAngles   = petalAngles;
-        flower.userData.dominoOrder   = null;
-        flower.userData.dominoStart   = Math.random() * dominoInitMax;
+        // Domino state. Seeds = world-lower-left + world-lower-right petals
+        // (computed from the flower's base rotation so the wave originates at
+        // the bottom of each rosette regardless of how the fan is oriented).
+        // From those seeds we pre-bake per-petal step numbers: both seeds
+        // fire at step 0, then each next petal is the one angularly nearest
+        // to any already-flipped petal. `dominoStart` cascades deterministically
+        // across fan position (i) and cascade layer (j).
+        const seeds   = findLowerSeeds(petalAngles, wrapperRotation);
+        const chain   = computeSeedChain(petalAngles, seeds);
+        flower.userData.petals         = petals;
+        flower.userData.petalAngles    = petalAngles;
+        flower.userData.dominoSteps    = chain.steps;
+        flower.userData.dominoMaxStep  = chain.maxStep;
+        flower.userData.dominoStart    = i * fanStagger + j * cascadeStagger;
 
         stack.add(flower);
         cascadeLayers.push(flower);
@@ -508,6 +610,168 @@ export function addOverlay(logoMesh, meta) {
     }
   }
 
+  // ============ Brick-wall morph ============
+  // Snapshot each rosette petal's at-rest world transform ("rose home"),
+  // tile an inset copy of the silhouette with a staggered brick grid,
+  // greedily assign petals → nearest bricks, and build a flat morphGroup
+  // of ghost meshes that interpolate between the two states at runtime.
+  // Unassigned bricks get "filler" ghosts (big-outer petal) that only
+  // exist in brick mode; extra petals with no brick fade to zero scale.
+  const brickCfg      = cfg0.brickWall || {};
+  const brickEnabled  = brickCfg.enabled !== false;
+  const morphCycleLen = brickCfg.cycleLen ?? 27.0;
+  let morphGroup     = null;
+  let brickHexWall   = null;
+  let brickHexMeshes = [];
+  const ghosts = [];
+
+  if (brickEnabled && silhouette && silhouette[0] && silhouette[0].length >= 3) {
+    for (const w of wrappers) w.updateMatrixWorld(true);
+    logoMesh.updateMatrixWorld(true);
+    const logoInv = new THREE.Matrix4().copy(logoMesh.matrixWorld).invert();
+
+    // Rose-home poses — captured before pulse or domino state runs, so
+    // each transform is the petal's calm resting pose inside its
+    // rosette. Expressed in logoMesh-local coords (ghosts are added to
+    // logoMesh so that's the frame that applies to them).
+    const petalData = [];
+    for (const w of wrappers) {
+      for (const flower of w.userData.cascadeLayers) {
+        for (const petal of flower.userData.petals) {
+          petal.updateMatrixWorld(true);
+          const local = new THREE.Matrix4().multiplyMatrices(logoInv, petal.matrixWorld);
+          const pos  = new THREE.Vector3();
+          const quat = new THREE.Quaternion();
+          const scl  = new THREE.Vector3();
+          local.decompose(pos, quat, scl);
+          petalData.push({
+            geometry:  petal.geometry,
+            material:  petal.material,
+            rosePos:   pos,
+            roseQuat:  quat,
+            roseScale: scl.x,
+          });
+        }
+      }
+    }
+
+    // Hex honeycomb tiling inside the inset silhouette. Each slot gets a
+    // flat-top hexagonal mesh; petals (ghosts) fly out of those hex
+    // centers during the transit to morph into the flowers.
+    const wallInset = brickCfg.inset ?? 2.5;
+    const inner     = insetPolygon(silhouette[0], wallInset);
+    const hexR      = brickCfg.hexRadius ?? starSize * 0.25;
+    const hexDepth  = brickCfg.hexDepth  ?? starSize * 0.12;
+    const sizeVar   = brickCfg.sizeJitter ?? 0.20;
+    const slots     = buildHexSlots(inner, hexR);
+
+    morphGroup = new THREE.Group();
+    morphGroup.name = 'overlay-morph';
+    morphGroup.visible = false;
+    logoMesh.add(morphGroup);
+
+    const wallZ = maxZ + (cfg0.zOffset ?? 0.22);
+
+    // Shared hex geometry (flat-top). CylinderGeometry with 6 radial
+    // segments = hex prism; rotate its axis to Z then rotate 30° so a
+    // flat edge is on top. Depth is modest so hexes read as solid tiles
+    // rather than tall prisms.
+    const hexGeo = new THREE.CylinderGeometry(hexR, hexR, hexDepth, 6, 1);
+    hexGeo.rotateX(Math.PI / 2);
+    hexGeo.rotateZ(Math.PI / 6);
+
+    // Dedicated group for the hex wall. Hexes keep a STATIC size and
+    // instead do a domino-flip around their local +X axis (wave sweeps
+    // left-to-right across the wall). Opacity fade handles the
+    // brick↔rose hand-off so tiles don't pop.
+    const hexWall = new THREE.Group();
+    hexWall.name = 'brick-hex-wall';
+    hexWall.visible = false;
+    logoMesh.add(hexWall);
+
+    const hexMeshes = [];
+    const hexBaseColor = starMats[0].color.clone();
+    for (const slot of slots) {
+      const hMat = starMats[0].clone();
+      hMat.emissive = hexBaseColor.clone();
+      hMat.emissiveIntensity = 0;
+      hMat.transparent = true;         // needed for brickW-driven opacity
+      const mesh = new THREE.Mesh(hexGeo, hMat);
+      mesh.position.set(slot.x, slot.y, wallZ);
+      hexWall.add(mesh);
+      hexMeshes.push(mesh);
+    }
+
+    // Assign each hex a domino step index by spatial order — sort by X
+    // (then Y as tiebreaker) so the wave reads as a clean left-to-right
+    // sweep. flipStep is used at runtime to stagger the flips.
+    const sortedHexes = [...hexMeshes].sort((a, b) =>
+      (a.position.x - b.position.x) || (a.position.y - b.position.y));
+    for (let i = 0; i < sortedHexes.length; i++) {
+      sortedHexes[i].userData.flipStep = i;
+    }
+    const rand = () => Math.random() * 2 - 1; void rand;
+
+    // Pair each rosette petal with its nearest unused hex slot — the
+    // slot becomes that petal's emergence point during transit. Unused
+    // slots are fine; they just keep their hex and no petal flies out.
+    const slotUsed = new Array(slots.length).fill(false);
+    const ghostSlot = new Array(petalData.length).fill(-1);
+    for (let i = 0; i < petalData.length; i++) {
+      const px = petalData[i].rosePos.x, py = petalData[i].rosePos.y;
+      let bestS = -1, bestD = Infinity;
+      for (let s = 0; s < slots.length; s++) {
+        if (slotUsed[s]) continue;
+        const dx = slots[s].x - px, dy = slots[s].y - py;
+        const d = dx * dx + dy * dy;
+        if (d < bestD) { bestD = d; bestS = s; }
+      }
+      if (bestS >= 0) { ghostSlot[i] = bestS; slotUsed[bestS] = true; }
+    }
+
+    // Flat petal list so each ghost can read live rose pose at runtime.
+    const sourcePetals = [];
+    for (const w of wrappers) {
+      for (const flower of w.userData.cascadeLayers) {
+        for (const petal of flower.userData.petals) sourcePetals.push(petal);
+      }
+    }
+
+    // One ghost per rosette petal. Ghosts are invisible in brick mode
+    // (brickBaseScale = 0); during transit they grow from scale 0 at
+    // their assigned hex center and travel to their live rose pose.
+    // Petals without a hex slot stay at their rose position and fade.
+    for (let i = 0; i < petalData.length; i++) {
+      const pd      = petalData[i];
+      const slotIdx = ghostSlot[i];
+      const hasSlot = slotIdx >= 0;
+
+      const mesh = new THREE.Mesh(pd.geometry, pd.material);
+      morphGroup.add(mesh);
+
+      const brickPos = hasSlot
+        ? new THREE.Vector3(slots[slotIdx].x, slots[slotIdx].y, wallZ)
+        : pd.rosePos.clone();
+
+      ghosts.push({
+        mesh,
+        brickPos,
+        brickQuat:      new THREE.Quaternion(),
+        brickBaseScale: 0,
+        sourcePetal:    sourcePetals[i],
+        rosePos:        pd.rosePos,
+        roseQuat:       pd.roseQuat,
+        roseScale:      pd.roseScale,
+      });
+    }
+
+    // Stash the hex wall on the closure so updateOverlay can drive it.
+    // (Declared here so the update function can see it via `hexMeshesRef`
+    // captured above the function.)
+    brickHexWall    = hexWall;
+    brickHexMeshes  = hexMeshes;
+  }
+
   // Large 3D hexagon — a neutral canvas for future "looks". Held in its
   // own wrapper outside the fan-pulse loop so future animation hooks can
   // live below without fighting the fan's scale/spin.
@@ -597,76 +861,186 @@ export function addOverlay(logoMesh, meta) {
     logoMesh.add(hexWrapper);
   }
 
+  // Scratch objects reused every frame by the morph pass — avoids an
+  // allocation per ghost per frame.
+  const _qBase    = new THREE.Quaternion();
+  const _localMat = new THREE.Matrix4();
+  const _logoInv  = new THREE.Matrix4();
+  const _rPos     = new THREE.Vector3();
+  const _rQuat    = new THREE.Quaternion();
+  const _rScale   = new THREE.Vector3();
+
   function updateOverlay(t) {
     const cfg = ANIM.overlay;
     if (!cfg || cfg.enabled === false) {
       for (const w of wrappers) w.visible = false;
       if (hexWrapper) hexWrapper.visible = false;
+      if (morphGroup) morphGroup.visible = false;
       return;
     }
     const twoPi = Math.PI * 2;
+
+    // Brick-wall morph alpha (0 = brick, 1 = rosettes). Timings are
+    // [brickHoldEnd, morphUpEnd, roseHoldEnd, morphDownEnd] as fractions
+    // of the 27s cycle. Default splits it as 7s brick + 3s transit +
+    // 14s rose + 3s transit, so the rosette phase gets the lion's share
+    // while each state still has room for a floaty hand-off.
+    const morphTimes = brickCfg.timings || [7 / 27, 10 / 27, 24 / 27, 1.0];
+    let morphAlpha = 1;
+    if (morphGroup) {
+      const cyc = ((t % morphCycleLen) + morphCycleLen) % morphCycleLen;
+      const p   = cyc / morphCycleLen;
+      morphAlpha = smoothstep01(p, morphTimes[0], morphTimes[1])
+                 - smoothstep01(p, morphTimes[2], morphTimes[3]);
+    }
+    const inMorph = !!morphGroup && morphAlpha < 0.999;
+
+    // ---- Flower anim always runs ----
+    // Writes flower.scale + petal.rotation.x so petal.matrixWorld
+    // reflects the live animation whether or not the rosettes are
+    // currently being rendered. Ghosts read this live pose during
+    // transit, which keeps the brick↔rose hand-off seamless — the
+    // ghost at alpha≈1 sits exactly where the rosette will draw when
+    // it becomes visible.
     const mn = cfg.scaleMin;
     const mx = cfg.scaleMax;
-    const dominoCfg   = cfg.petalDomino || {};
-    const dominoOn    = dominoCfg.enabled !== false;
-    const trigger     = dominoCfg.triggerInterval ?? 0.08;
-    const fall        = dominoCfg.fallDuration    ?? 0.9;
-    const pauseBetween = dominoCfg.pause          ?? 1.5;
+    const dominoCfg    = cfg.petalDomino || {};
+    const dominoOn     = dominoCfg.enabled !== false;
+    const trigger      = dominoCfg.triggerInterval ?? 0.08;
+    const fall         = dominoCfg.fallDuration    ?? 0.9;
+    const pauseBetween = dominoCfg.pause           ?? 1.5;
+    const pbCfg   = cfg.petalBrightness || {};
+    const pbOn    = pbCfg.enabled !== false;
+    const pbBrMin = pbCfg.brightnessMin ?? 0.45;
+    const pbBrMax = pbCfg.brightnessMax ?? 1.35;
+    const pbEmMin = pbCfg.emissiveMin   ?? 0.0;
+    const pbEmMax = pbCfg.emissiveMax   ?? 0.8;
+    const pbPer   = Math.max(pbCfg.pulsePeriod ?? 3.8, 1e-3);
+    const pbDelay = pbCfg.startDelay   ?? 0;
+    const pbRamp  = Math.max(pbCfg.rampDuration ?? 0, 1e-3);
+    const pbEnv   = (() => {
+      const x = (t - pbDelay) / pbRamp;
+      if (x <= 0) return 0;
+      if (x >= 1) return 1;
+      return x * x * (3 - 2 * x);
+    })();
+
     for (const w of wrappers) {
-      w.visible = true;
+      w.visible = !inMorph;
       w.rotation.z = w.userData.baseRotation +
                      w.userData.spinDir * t * cfg.spinSpeed;
-      // Each cascade layer (flower) pulses on its own randomised period
-      // + phase, so the stack breathes asynchronously — no single
-      // global scale. Inside each flower, petals run an independent
-      // domino-wave rotation around their base-tangent axis.
       const flowers = w.userData.cascadeLayers;
-      for (let i = 0; i < flowers.length; i++) {
-        const flower = flowers[i];
-        const p = Math.max(flower.userData.pulsePeriod, 1e-3);
-        const phase = (t / p) * twoPi + flower.userData.phaseOffset;
+      for (let fi = 0; fi < flowers.length; fi++) {
+        const flower = flowers[fi];
+        const pp = Math.max(flower.userData.pulsePeriod, 1e-3);
+        const phase = (t / pp) * twoPi + flower.userData.phaseOffset;
         const k = 0.5 + 0.5 * Math.sin(phase);
         flower.scale.setScalar(mn + (mx - mn) * k);
 
         const petals = flower.userData.petals;
         const N = petals ? petals.length : 0;
         if (!dominoOn || N === 0) {
-          for (let q = 0; q < N; q++) petals[q].rotation.y = 0;
-          continue;
+          for (let q = 0; q < N; q++) petals[q].rotation.x = 0;
+        } else {
+          const rawElapsed = t - flower.userData.dominoStart;
+          if (rawElapsed < 0) {
+            for (let q = 0; q < N; q++) petals[q].rotation.x = 0;
+          } else {
+            const maxStep   = flower.userData.dominoMaxStep;
+            const cycleLen  = maxStep * trigger + fall;
+            const fullCycle = cycleLen + pauseBetween;
+            const elapsed   = rawElapsed % fullCycle;
+            const steps     = flower.userData.dominoSteps;
+            for (let p = 0; p < N; p++) {
+              const triggerTime = steps[p] * trigger;
+              const ph = (elapsed - triggerTime) / fall;
+              let angle = 0;
+              if (ph > 0 && ph < 1) {
+                const eased = 0.5 - 0.5 * Math.cos(ph * Math.PI);
+                angle = eased * twoPi;
+              }
+              petals[p].rotation.x = angle;
+            }
+          }
         }
-        let elapsed = t - flower.userData.dominoStart;
-        if (elapsed < 0) {
-          // Still in the init stagger — hold petals flat so the first
-          // frames read as a calm rosette before the wave kicks in.
-          for (let q = 0; q < N; q++) petals[q].rotation.y = 0;
-          continue;
-        }
-        const cycleLen = (N - 1) * trigger + fall;
-        if (!flower.userData.dominoOrder || elapsed >= cycleLen + pauseBetween) {
-          // Pick a fresh random start petal each cycle, then chain to
-          // the angularly closest unvisited petal from the most recent
-          // one (classic single-file domino).
-          const startIdx = Math.floor(Math.random() * N);
-          flower.userData.dominoOrder = computeDominoOrder(
-            flower.userData.petalAngles, startIdx, Math.random
-          );
-          flower.userData.dominoStart = t;
-          elapsed = 0;
-        }
-        const order = flower.userData.dominoOrder;
-        for (let q = 0; q < N; q++) {
-          const petalIdx = order[q];
-          const triggerTime = q * trigger;
-          const ph = (elapsed - triggerTime) / fall;
-          let angle = 0;
-          if (ph > 0 && ph < 1) angle = ph * twoPi;
-          petals[petalIdx].rotation.y = angle;
+
+        // Shimmer runs in both rose and brick modes — non-filler ghosts
+        // share materials with their source petals, so mutating petal
+        // colours here propagates to the wall as a bonus. Rose/brick
+        // flow is identical: lerp-to-pulse via pbEnv so the shimmer
+        // fades in after startDelay regardless of current mode.
+        if (pbOn) {
+          for (let q = 0; q < N; q++) {
+            const petal = petals[q];
+            const sf      = petal.userData.petalSpeedFactor || 1;
+            const pPhase  = (t / pbPer) * twoPi * sf + petal.userData.petalPhase;
+            const pK      = 0.5 + 0.5 * Math.sin(pPhase);
+            const brPulse = pbBrMin + (pbBrMax - pbBrMin) * pK;
+            const emPulse = pbEmMin + (pbEmMax - pbEmMin) * pK;
+            const br = 1 + (brPulse - 1) * pbEnv;
+            const em = emPulse * pbEnv;
+            petal.material.color.copy(petal.userData.petalBaseColor).multiplyScalar(br);
+            petal.material.emissiveIntensity = em;
+          }
         }
       }
     }
+
+    if (morphGroup)   morphGroup.visible   = inMorph;
+    if (brickHexWall) brickHexWall.visible = inMorph;
+
+    if (inMorph) {
+      // Force world-matrix updates on hidden wrappers so the ghost can
+      // read live rose pose — three.js skips matrix update on invisible
+      // objects by default, which would leave ghosts reading stale pose.
+      for (const w of wrappers) w.updateMatrixWorld(true);
+      logoMesh.updateMatrixWorld(true);
+      _logoInv.copy(logoMesh.matrixWorld).invert();
+
+      const ta     = morphAlpha;
+      const e      = 0.5 - 0.5 * Math.cos(ta * Math.PI);
+      const brickW = 1 - e;            // 1 at brick hold, 0 at rose hold
+      const bmn    = brickCfg.pulseMin ?? mn;
+      const bmx    = brickCfg.pulseMax ?? mx;
+
+      // Hex wall: each tile breathes in brick mode and shrinks away as
+      // the cycle hands off to rose. `brickW` handles the fade so hexes
+      // vanish smoothly while petals fly out of their centers.
+      for (const hex of brickHexMeshes) {
+        const pulseK    = 0.5 + 0.5 * Math.sin((t / hex.userData.pulsePeriod) * twoPi + hex.userData.pulsePhase);
+        const pulseFactor = bmn + (bmx - bmn) * pulseK;
+        hex.scale.setScalar(brickW * hex.userData.sizeJitter * pulseFactor);
+      }
+
+      // Ghosts: grow out of their hex slot (brickBaseScale=0) and
+      // travel to their live rose pose. Live pose is read from the
+      // rosette's petal.matrixWorld so the hand-off at alpha≈1 is
+      // seamless — ghost and rosette render the same transform.
+      for (const g of ghosts) {
+        let rScaleX;
+        if (g.sourcePetal) {
+          _localMat.multiplyMatrices(_logoInv, g.sourcePetal.matrixWorld);
+          _localMat.decompose(_rPos, _rQuat, _rScale);
+          rScaleX = _rScale.x;
+        } else {
+          _rPos.copy(g.rosePos);
+          _rQuat.copy(g.roseQuat);
+          rScaleX = g.roseScale;
+        }
+
+        g.mesh.position.lerpVectors(g.brickPos, _rPos, e);
+        g.mesh.scale.setScalar(g.brickBaseScale + (rScaleX - g.brickBaseScale) * e);
+        _qBase.copy(g.brickQuat).slerp(_rQuat, e);
+        g.mesh.quaternion.copy(_qBase);
+      }
+    }
+
     if (hexWrapper) {
-      hexWrapper.visible = cfg.hexagon ? cfg.hexagon.enabled !== false : true;
-      // Future "look" hooks go here — e.g. hexWrapper.rotation.z = t * ...
+      if (inMorph) {
+        hexWrapper.visible = false;
+      } else {
+        hexWrapper.visible = cfg.hexagon ? cfg.hexagon.enabled !== false : true;
+      }
     }
   }
 
