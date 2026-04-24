@@ -94,6 +94,39 @@ export const ANIM = {
     speedMax:        0.50,  // radians/sec (≈28.6°/sec)
   },
 
+  // Two translucent star fans anchored to the left and right edges,
+  // fanning inward (see src/3DOverlay.js). Each fan is a row of 12-pt
+  // rosettes on rays from an edge pivot; the wrapper pulses (scale
+  // breathes) and slowly spins. One side spins CW, the other CCW.
+  //   starCount    — stars per fan blade count
+  //   starSize     — rosette outer radius (main pattern uses 2.4, so
+  //                  1.2 = half-size)
+  //   angleSpread  — total fan angle, radians (π*0.55 ≈ 100°)
+  //   fanRadius    — distance from pivot to each star along its ray
+  //   zOffset      — depth above maxZ; between main patterns and gate
+  //   scaleMin/Max — wrapper scale at trough / peak of the pulse
+  //   pulsePeriod  — seconds for one full scale in-out
+  //   spinSpeed    — radians/sec; one side CW, the other CCW
+  //   opacity      — star alpha (0..1)
+  overlay: {
+    enabled:        true,
+    starCount:      1,
+    starSize:       4.0,
+    angleSpread:    Math.PI * 0.55,
+    fanRadius:      2.8,
+    zOffset:        0.22,
+    scaleMin:       0.7,
+    scaleMax:       1.1,
+    pulsePeriod:    6.0,
+    spinSpeed:      0.05,
+    opacity:        0.35,
+    previewXFactor: 1.2,  // preview: anchors overlay left of the model
+                          // (in maxR units past the hull centroid) so
+                          // geometry is inspectable without the main
+                          // pattern behind it. 1.0 = flush with hull
+                          // edge; >1 pulls it further out.
+  },
+
   // Radial cascade — infinite loop where each tile independently cycles
   // rest → exit → gap → entry → rest, phase-offset by its radius from
   // the pattern's fade center (outer-first). Most tiles are at rest at

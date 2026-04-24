@@ -16,7 +16,8 @@
 // 5. A directory picker appears — pick any folder (project root, Desktop,
 //    etc.). A `HighResOutput/` folder is created there if it doesn't
 //    already exist.
-// 6. The live canvas is replaced by a scaled preview of the capture and a
+// 6. The live canvas becomes the capture surface (resized to the export
+//    resolution, then downscaled by the browser to fill the window) and a
 //    progress overlay shows frame count + ETA. Expect roughly 6–12 minutes
 //    for 4K, 2–4 minutes for 1080p, depending on disk speed.
 // 7. When it finishes, the picked folder contains:
@@ -35,23 +36,28 @@
 // • Shift+E does nothing → the scene hasn't loaded yet, give it a second.
 // =======================================================================
 //
-// Deterministic offline export. Pauses the live loop, renders the scene
-// via the *existing* WebGLRenderer into a 4× multisampled WebGLRenderTarget
-// sized to the export resolution, reads pixels back into a 2D canvas, and
-// writes each frame as a PNG via the File System Access API while piping
-// it through a WebCodecs H.264 encoder + mp4-muxer into an MP4 loop.
+// Deterministic offline export. Pauses the live loop, resizes the existing
+// WebGL canvas to the export resolution, renders the scene into it each
+// frame (same pipeline as the live view — ACES tone mapping, output color
+// space, custom ShaderMaterial output), reads pixels back synchronously via
+// gl.readPixels into a 2D canvas, and writes each frame as a PNG via the
+// File System Access API while piping it through a WebCodecs H.264 encoder
+// + mp4-muxer into an MP4 loop.
 //
-// Rendering through the original renderer (instead of spinning up a second
-// one with preserveDrawingBuffer=true) is what keeps MSAA on — swapping to
-// a new WebGL context with preserveDrawingBuffer silently drops antialias
-// on many drivers, which made the moving cascade tiles shimmer.
+// Why render to the canvas instead of a WebGLRenderTarget: the render-target
+// path was muting the saturated honey tones — custom ShaderMaterials (the
+// galaxy) don't get tone-mapping/color-space chunks applied identically on
+// that path, and the highlights were clipping flat. Rendering to the live
+// canvas means the export pixels come out of the exact same shader pipeline
+// you see on localhost, so colours match. MSAA stays on because we keep the
+// existing context (created with antialias:true) — the earlier pitfall was
+// creating a *new* context with preserveDrawingBuffer=true, which silently
+// disables MSAA on many drivers and made the moving cascade tiles shimmer.
 //
 // Trigger: Shift+E (4K) or Shift+D (1080p), or call
 // `startExport({ width, height })` from devtools. Output names encode the
 // resolution so multiple runs into the same HighResOutput/ don't collide.
 // Requires Chrome or Edge (FSA API + WebCodecs mp4 support).
-
-import * as THREE from 'three';
 
 const FPS            = 60;
 const DURATION_SEC   = 85.0;         // 2× row-cascade cycle (42.5s each)
@@ -60,7 +66,6 @@ const PREROLL_SEC    = 10.0;         // warm up stateful spark systems
 const TOTAL_FRAMES   = Math.round(DURATION_SEC * FPS);   // 5100
 const PREROLL_FRAMES = Math.round(PREROLL_SEC * FPS);    // 600
 const DT             = 1 / FPS;
-const MSAA_SAMPLES   = 4;
 // Bitrate scales with pixel throughput — 50 Mbps at 4K60 ≈ 12.5 Mbps at 1080p60.
 const REF_PIXELS_PER_SEC = 3840 * 2160 * 60;
 const REF_BITRATE        = 50_000_000;
@@ -84,6 +89,19 @@ export async function startExport(bridge, opts = {}) {
 
   const { ctx, scene, camera, controls, tick, renderer } = bridge;
 
+  // Point-sprite materials bake `uPixelRatio` from the live canvas DPR, so
+  // rendering to a higher-res target keeps `gl_PointSize` in live-canvas
+  // pixels — particles end up covering a smaller fraction of the frame,
+  // which collapses the honey halo into the hot white core and reads as
+  // desaturation. Scale the uniform so sprites keep the same frame-relative
+  // size (and honey tone) at any export resolution.
+  const pointSpriteMats = [
+    ctx.particleMats?.emberMat,
+    ctx.particleMats?.whiteMat,
+    ...(ctx.sparkSystems ?? []).map(s => s?.points?.material),
+  ].filter(m => m?.uniforms?.uPixelRatio);
+  const savedPixelRatios = pointSpriteMats.map(m => m.uniforms.uPixelRatio.value);
+
   // 1. Directory picker + nested folders (resolution-tagged so runs coexist).
   let rootHandle;
   try {
@@ -103,21 +121,25 @@ export async function startExport(bridge, opts = {}) {
   ctx.paused = true;
   controls.enabled = false;
 
-  // 3. Multisampled render target — this is the key difference from v1.
-  //    `samples: 4` gives us 4× MSAA so the moving cascade tile edges stop
-  //    shimmering. `colorSpace: SRGBColorSpace` tells three.js to apply the
-  //    linear→sRGB encode in the shader so readback pixels are display-ready
-  //    (matches whatever the live canvas was outputting).
-  const target = new THREE.WebGLRenderTarget(WIDTH, HEIGHT, {
-    samples:   MSAA_SAMPLES,
-    type:      THREE.UnsignedByteType,
-    format:    THREE.RGBAFormat,
-    colorSpace: renderer.outputColorSpace ?? THREE.SRGBColorSpace,
-  });
+  // 3. Resize the live WebGL canvas to export resolution and render into
+  //    it directly. Rendering through a WebGLRenderTarget was losing the
+  //    saturated honey tone — custom ShaderMaterials (the galaxy) don't
+  //    get tone-mapping/color-space chunks auto-applied the same way on
+  //    the render-target path, so highlights clipped flat and the honey
+  //    halos read lighter. The canvas path uses the exact pipeline the
+  //    live view uses, so export colours match what's on localhost.
+  //    MSAA stays on because we use the existing context (antialias:true
+  //    was set at create time); creating a new context with
+  //    preserveDrawingBuffer is what silently dropped MSAA on the old
+  //    path — we're not doing that here.
+  const prevPixelRatio   = renderer.getPixelRatio();
+  const prevInnerWidth   = window.innerWidth;
+  const prevInnerHeight  = window.innerHeight;
+  renderer.setPixelRatio(1);
+  renderer.setSize(WIDTH, HEIGHT, false);   // false = don't touch CSS, canvas keeps filling the screen
 
-  // 2D canvas used both as capture source (toBlob / VideoFrame) and as the
-  // on-screen preview during export. The live canvas gets hidden while
-  // export runs and is restored in the finally block.
+  // 2D canvas used as encoder source (toBlob / VideoFrame). Not shown on
+  // screen — the live WebGL canvas itself is the preview now.
   const captureCanvas = document.createElement('canvas');
   captureCanvas.width  = WIDTH;
   captureCanvas.height = HEIGHT;
@@ -125,21 +147,19 @@ export async function startExport(bridge, opts = {}) {
   const pixelBuffer   = new Uint8Array(WIDTH * HEIGHT * 4);
   const imageData     = captureCtx.createImageData(WIDTH, HEIGHT);
   const rowBytes      = WIDTH * 4;
-
-  Object.assign(captureCanvas.style, {
-    position: 'fixed',
-    inset:    '0',
-    width:    '100vw',
-    height:   '100vh',
-    zIndex:   '1',
-  });
-  renderer.domElement.style.display = 'none';
-  document.body.appendChild(captureCanvas);
+  const gl = renderer.getContext();
 
   // 4. Camera aspect for export dimensions.
   const prevAspect = camera.aspect;
   camera.aspect = WIDTH / HEIGHT;
   camera.updateProjectionMatrix();
+
+  // Scale point-sprite sizes to match the live frame-relative size at
+  // export resolution. Using `innerHeight` (CSS px) rather than DPR keeps
+  // the ratio independent of the user's monitor: on any screen, particles
+  // occupy the same fraction of frame height as they do live.
+  const exportPixelRatio = HEIGHT / Math.max(window.innerHeight, 1);
+  pointSpriteMats.forEach(m => { m.uniforms.uPixelRatio.value = exportPixelRatio; });
 
   // 5. MP4 encoder + muxer (best-effort; PNG sequence still runs if this fails).
   let muxer = null, encoder = null;
@@ -188,16 +208,16 @@ export async function startExport(bridge, opts = {}) {
       }
     }
 
-    // 7. Capture loop — render to MSAA target, read pixels (flip Y),
+    // 7. Capture loop — render to the canvas, read pixels synchronously
+    //    via gl.readPixels (same tick, before any compositor swap so the
+    //    drawing buffer is still valid without preserveDrawingBuffer),
     //    drop into the 2D capture canvas, encode to PNG + H.264.
     for (let frame = 0; frame < TOTAL_FRAMES; frame++) {
       const t = START_T + frame * DT;
       tick(t, DT);
 
-      renderer.setRenderTarget(target);
       renderer.render(scene, camera);
-      renderer.readRenderTargetPixels(target, 0, 0, WIDTH, HEIGHT, pixelBuffer);
-      renderer.setRenderTarget(null);
+      gl.readPixels(0, 0, WIDTH, HEIGHT, gl.RGBA, gl.UNSIGNED_BYTE, pixelBuffer);
 
       // WebGL origin is bottom-left, Canvas2D is top-left. Flip row order.
       for (let y = 0; y < HEIGHT; y++) {
@@ -281,12 +301,11 @@ export async function startExport(bridge, opts = {}) {
     setOverlayText(overlay, `Export failed: ${e.message}. See console.`);
   } finally {
     // 9. Restore.
-    renderer.setRenderTarget(null);
-    target.dispose();
+    renderer.setPixelRatio(prevPixelRatio);
+    renderer.setSize(prevInnerWidth, prevInnerHeight);
     camera.aspect = prevAspect;
     camera.updateProjectionMatrix();
-    renderer.domElement.style.display = '';
-    captureCanvas.remove();
+    pointSpriteMats.forEach((m, i) => { m.uniforms.uPixelRatio.value = savedPixelRatios[i]; });
     controls.enabled = true;
     ctx.paused = false;
     running = false;

@@ -9,6 +9,7 @@ import { createScene, frameLogo } from './scene.js';
 import { createLights, updateLights } from './lights.js';
 import { loadLogo } from './logo.js';
 import { addPatternLayers } from './patterns-layer.js';
+import { addOverlay } from './3DOverlay.js';
 import { addParticles, updateParticles } from './particles.js';
 
 const { scene, camera, renderer, controls } = createScene();
@@ -26,6 +27,7 @@ const ctx = {
   updateRowCascade:   null,
   cascadeState:       null,
   updateRotations:    null,
+  updateOverlay:      null,
   lights,
   scene,
   camera,
@@ -44,6 +46,9 @@ loadLogo().then((logo) => {
   ctx.cascadeState     = patternResult.cascadeState;
   ctx.updateRotations  = patternResult.updateRotations;
 
+  const overlayResult = addOverlay(logo.logoMesh, logo.meta);
+  ctx.updateOverlay   = overlayResult.updateOverlay;
+
   scene.add(logo.model);
 
   // World matrices must be finalised before pattern fade shaders compute
@@ -51,6 +56,7 @@ loadLogo().then((logo) => {
   // panel-local coords correctly).
   scene.updateMatrixWorld(true);
   patternResult.patternsToRefresh.forEach(g => g.userData.refreshFade?.());
+  overlayResult.patternsToRefresh.forEach(g => g.userData.refreshFade?.());
 
   ctx.particleMats = addParticles(logo.logoMesh, renderer);
 
@@ -85,6 +91,7 @@ export function tick(t, dt) {
   // spark snap: sparks drift freely while rows are moving (their stroke
   // cloud is a load-time snapshot that doesn't follow row motion).
   if (ctx.updateRotations) ctx.updateRotations(t);
+  if (ctx.updateOverlay)   ctx.updateOverlay(t);
   if (ctx.updateRowCascade) ctx.updateRowCascade(t, dt);
   const snapScale = ctx.cascadeState ? ctx.cascadeState.active : 1;
   for (let i = 0; i < ctx.sparkSystems.length; i++) {
