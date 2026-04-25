@@ -10,9 +10,9 @@
 // 4. Press a keyboard shortcut to start a capture:
 //      Shift+E  →  4K      (3840×2160)
 //      Shift+D  →  1080p   (1920×1080)
-//    Or from devtools:  startExport()            (4K)
-//                       startExport1080p()       (1080p)
-//                       startExport({ width, height })   (custom)
+//    Or from devtools:  startExport()                    (4K, 1 cycle)
+//                       startExport1080p()               (1080p, 1 cycle)
+//                       startExport({ width, height, cycles })  (custom)
 // 5. A directory picker appears — pick any folder (project root, Desktop,
 //    etc.). A `HighResOutput/` folder is created there if it doesn't
 //    already exist.
@@ -24,7 +24,7 @@
 //        HighResOutput/
 //        ├── PNGsequence_<W>x<H>/
 //        │   ├── frame_00000.png
-//        │   └── … through frame_05099.png   (5100 frames = 85 s @ 60 fps)
+//        │   └── … one full cascade cycle worth of frames @ 60 fps
 //        └── logo_loop_<W>x<H>.mp4
 //    Run the shortcut again (same folder → overwrite, different folder →
 //    keep both) to record another pass.
@@ -55,15 +55,17 @@
 // disables MSAA on many drivers and made the moving cascade tiles shimmer.
 //
 // Trigger: Shift+E (4K) or Shift+D (1080p), or call
-// `startExport({ width, height })` from devtools. Output names encode the
-// resolution so multiple runs into the same HighResOutput/ don't collide.
-// Requires Chrome or Edge (FSA API + WebCodecs mp4 support).
+// `startExport({ width, height, cycles })` from devtools. Output names
+// encode the resolution so multiple runs into the same HighResOutput/
+// don't collide. Requires Chrome or Edge (FSA API + WebCodecs mp4 support).
+//
+// Duration is derived from ANIM.timings at export time so it always tracks
+// the current animation sequence. See `computeCycleSeconds` below.
+
+import { ANIM } from './config.js';
 
 const FPS            = 60;
-const DURATION_SEC   = 85.0;         // 2× row-cascade cycle (42.5s each)
-const START_T        = 10.0;         // ANIM.rowCascade.triggerDelay
 const PREROLL_SEC    = 10.0;         // warm up stateful spark systems
-const TOTAL_FRAMES   = Math.round(DURATION_SEC * FPS);   // 5100
 const PREROLL_FRAMES = Math.round(PREROLL_SEC * FPS);    // 600
 const DT             = 1 / FPS;
 // Bitrate scales with pixel throughput — 50 Mbps at 4K60 ≈ 12.5 Mbps at 1080p60.
@@ -71,6 +73,22 @@ const REF_PIXELS_PER_SEC = 3840 * 2160 * 60;
 const REF_BITRATE        = 50_000_000;
 
 let running = false;
+
+// Mirror of the period formula in src/patterns-layer.js — one full per-tile
+// cycle is `rest + out + gap + in`, where `gap` auto-extends to the overlay
+// morph total (brickHold + brickToRose + roseHold + roseToBrick) whenever
+// `playAll` is on. Keeping this in sync with patterns-layer means tweaking
+// any of those knobs in config immediately changes export length.
+function computeCycleSeconds() {
+  const t       = ANIM.timings ?? {};
+  const cascade = t.cascade   ?? {};
+  const overlay = t.overlay   ?? {};
+  const gap = t.playAll
+    ? (overlay.brickHold   || 0) + (overlay.brickToRose || 0)
+    + (overlay.roseHold    || 0) + (overlay.roseToBrick || 0)
+    : (cascade.gap || 0);
+  return (cascade.rest || 0) + (cascade.out || 0) + gap + (cascade.in || 0);
+}
 
 export async function startExport(bridge, opts = {}) {
   if (running) { console.warn('[export] already running'); return; }
@@ -86,6 +104,43 @@ export async function startExport(bridge, opts = {}) {
     2_000_000,
     Math.round((WIDTH * HEIGHT * FPS / REF_PIXELS_PER_SEC) * REF_BITRATE),
   );
+
+  // Derive duration + start time from ANIM.timings so the export always
+  // captures a clean `cycles` loops of the current animation. `cycles`
+  // defaults to 1 (the new 82s sequence at default config).
+  const cycles       = opts.cycles ?? 1;
+  const cycleSec     = computeCycleSeconds();
+  const DURATION_SEC = cycleSec * cycles;
+  const START_T      = ANIM.timings?.cascade?.triggerDelay ?? 10.0;
+  const TOTAL_FRAMES = Math.round(DURATION_SEC * FPS);
+  if (!(DURATION_SEC > 0)) {
+    alert(`Export: computed cycle length is ${DURATION_SEC}s — check ANIM.timings.`);
+    return;
+  }
+  console.log(
+    `[export] cycle=${cycleSec.toFixed(2)}s × ${cycles} → ${DURATION_SEC.toFixed(2)}s, ${TOTAL_FRAMES} frames`,
+  );
+
+  // Loop crossfade: the cascade + overlay morph loop cleanly on `cycleSec`,
+  // but non-periodic elements (logo breathing, pattern rotations, particle
+  // physics, per-petal shimmer) drift over the cycle and snap at the seam.
+  // Fade the first `CROSSFADE_FRAMES` into the last `CROSSFADE_FRAMES` so
+  // the tail visually "becomes" the head — the hard jump still exists
+  // mathematically at the loop point, but it's masked by the blend.
+  // `opts.crossfadeSec` overrides; set to 0 to disable.
+  const CROSSFADE_SEC    = opts.crossfadeSec ?? 0.5;
+  const CROSSFADE_FRAMES = Math.min(
+    Math.max(0, Math.round(CROSSFADE_SEC * FPS)),
+    Math.floor(TOTAL_FRAMES / 2),
+  );
+  // Snapshots of the first CROSSFADE_FRAMES frames, kept as Uint8ClampedArray
+  // clones of the (already-flipped) imageData.data. Memory: CROSSFADE_FRAMES
+  // × W × H × 4 bytes (~1 GB at 4K/0.5s, ~250 MB at 1080p/0.5s).
+  const fadeHead = [];
+  if (CROSSFADE_FRAMES > 0) {
+    const mb = (CROSSFADE_FRAMES * WIDTH * HEIGHT * 4 / (1024 * 1024)).toFixed(0);
+    console.log(`[export] crossfade ${CROSSFADE_SEC}s (${CROSSFADE_FRAMES} frames, ~${mb} MB buffered)`);
+  }
 
   const { ctx, scene, camera, controls, tick, renderer } = bridge;
 
@@ -227,6 +282,30 @@ export async function startExport(bridge, opts = {}) {
           y * rowBytes,
         );
       }
+
+      // Crossfade tail into head so the loop closes smoothly. Only the
+      // last CROSSFADE_FRAMES are altered; middle frames are raw. Cosine
+      // ease keeps the ramp soft at both ends of the fade.
+      if (CROSSFADE_FRAMES > 0
+          && frame >= TOTAL_FRAMES - CROSSFADE_FRAMES) {
+        const headIdx = frame - (TOTAL_FRAMES - CROSSFADE_FRAMES);
+        const tNorm   = (headIdx + 0.5) / CROSSFADE_FRAMES;
+        const alpha   = 0.5 - 0.5 * Math.cos(Math.PI * tNorm);
+        const invA    = 1 - alpha;
+        const data    = imageData.data;
+        const head    = fadeHead[headIdx];
+        for (let p = 0; p < data.length; p += 4) {
+          data[p    ] = invA * data[p    ] + alpha * head[p    ];
+          data[p + 1] = invA * data[p + 1] + alpha * head[p + 1];
+          data[p + 2] = invA * data[p + 2] + alpha * head[p + 2];
+        }
+      }
+
+      // Stash the (unblended) head frames so the tail can fade into them.
+      if (CROSSFADE_FRAMES > 0 && frame < CROSSFADE_FRAMES) {
+        fadeHead.push(new Uint8ClampedArray(imageData.data));
+      }
+
       captureCtx.putImageData(imageData, 0, 0);
 
       // PNG
