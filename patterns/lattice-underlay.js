@@ -17,7 +17,7 @@ function buildSolidHexGeometry(radius, depth) {
   });
 }
 
-function pointInPolygon(x, y, poly) {
+export function pointInPolygon(x, y, poly) {
   let inside = false;
   for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
     const xi = poly[i].x, yi = poly[i].y;

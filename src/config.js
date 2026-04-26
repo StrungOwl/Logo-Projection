@@ -36,6 +36,15 @@ export const ANIM = {
   // visible on their own. Gate frame stays put.
   patterns: { enabled: true },
 
+  // Active view mode — driven by the digit keys 0–5 (handled in main.js).
+  // 'all' plays today's synchronized sequence (cascade + flowers + sparks
+  // sync'd via ANIM.timings.playAll). Single-effect modes solo one layer
+  // on its own clock; the base scene (logo, gate frame, particles, lights)
+  // stays on underneath.
+  //   0 → 'all'  | 1 → 'pattern'  | 2 → 'hex'
+  //   3 → 'flowers'  | 4 → 'arch'  | 5 → 'flame' (placeholder)
+  viewMode: 'all',
+
   keyLight:          { intensityMin: 0.0,  intensityMax: 4.6,
                        colorAtMin: '#FF1400', colorAtMax: '#FFCC2E' },
   innerGlow:         { intensityMin: 40,   intensityMax: 260, color: '#FF6A18' },
@@ -78,21 +87,32 @@ export const ANIM = {
                    snapStrength: 18,
                    tangentialFactor: 1.1, speedVariance: 0.55, sizeVariance: 0.75,
                    color: '#FFD9A0', hueVariance: 0.08,
-                   pointSize: 0.1, trailSize: 55 },
+                   pointSize: 0.1, trailSize: 150 },
   latticeSparks: { count: 150, gravity: 4, maxSpeed: 6, damping: 1.5,
                    snapStrength: 8,
                    tangentialFactor: 1.1, speedVariance: 0.55, sizeVariance: 0.75,
                    color: '#FFE8C0', hueVariance: 0.08,
                    pointSize: 0.15, trailSize: 40 },
-  // Companion layer that streams straight to the centre — minimal swirl,
-  // delayed start so it lights up after the main spark layer is established,
-  // and dimmer so it reads as a secondary glow rather than competing.
-  centralSparks: { count: 130, gravity: 11, maxSpeed: 8, damping: 1.4,
-                   snapStrength: 14,
-                   tangentialFactor: 0.1, speedVariance: 0.4, sizeVariance: 0.5,
-                   color: '#FFF1D8', hueVariance: 0.04,
-                   pointSize: 0.09, trailSize: 50,
-                   startDelay: 4.0, brightness: 0.65 },
+  // Companion layer that follows the stroke lines like panelSparks but in
+  // white — delayed start so it lights up after the main spark layer is
+  // established, and dimmer so it reads as a secondary glow rather than
+  // competing.
+  centralSparks: { count: 55, gravity: 11, maxSpeed: 8, damping: 1.4,
+                   snapStrength: 18,
+                   tangentialFactor: 1.1, speedVariance: 0.4, sizeVariance: 0.5,
+                   color: '#FFFFFF', hueVariance: 0,
+                   pointSize: 0.13, trailSize: 150,
+                   startDelay: 2.0, startDelayMax: 18.0, brightness: 1.0 },
+
+  // Sparks for the procedural-brick arch (mode 4). Snap cloud is built from
+  // an invisible LineSegments layer cloned from each brick's edges, so
+  // sparks hop along brick outlines / mortar gaps the same way panelSparks
+  // hop along stroke lines.
+  archSparks:    { count: 90, gravity: 5, maxSpeed: 7, damping: 1.6,
+                   snapStrength: 18,
+                   tangentialFactor: 1.1, speedVariance: 0.55, sizeVariance: 0.75,
+                   color: '#FFD9A0', hueVariance: 0.08,
+                   pointSize: 0.12, trailSize: 150 },
 
   // Slow rotation on a random subset of rosettes ("flowers") and lattice
   // hexes. Each picked mesh gets a random phase offset and a signed angular
@@ -375,6 +395,63 @@ export const ANIM = {
       // closes (so they're already lit when the cascade returns).
       sparkFade:       0.8, // seconds for the fade in/out
     },
+  },
+
+  // -----------------------------------------------------------------------
+  // ARCH — procedural-brick effect that hugs the gate frame's inner ogee.
+  //   • Outer arch  — bricks long-on-Z (protruding toward camera), static.
+  //   • Inner arch  — same curve, slightly less Z protrusion, animated in
+  //                   via cascade (apex-first stagger by default).
+  //   • Floor fill  — bricks laid flat (long-on-X) running-bond, tiled
+  //                   under the arch springer line, point-in-polygon
+  //                   clipped to the gate frame interior.
+  // Each brick instance gets a deterministic seeded fault — vertex jitter
+  // on the non-mating front/back faces only, so neighbours never poke into
+  // each other. A small per-brick mortar shrink gives the joint look.
+  // -----------------------------------------------------------------------
+  arch: {
+    enabled: true,
+
+    brick: {
+      width:        7.0,    // long axis (length)
+      height:       2.75,   // short axis
+      depth:        4.25,   // Z-axis dimension on the arch / vertical on floor
+      mortarGap:    0.2,    // uniform per-brick shrink before fault, units
+      faultAmount:  0.06,   // max vertex displacement, fraction of brick depth
+      chamfer:      0.03,   // edge tuck, fraction of brick smallest dim
+    },
+
+    outerArch: {
+      enabled:      true,
+      insetExtra:   0.0,    // additional inset past gateFrameWidth, units
+    },
+
+    innerArch: {            // the cascading row (disabled — outline + fill is
+                            // now the default two-layer setup; re-enable if
+                            // you want a cascade row layered on top)
+      enabled:      false,
+      depthScale:   0.65,   // fraction of brick.depth — "slightly shorter on Z"
+      cascade: {
+        direction:     'apex-first', // or 'springer-first'
+        fallHeight:    5.0,          // start Y above rest pose, units
+        fallDuration:  1.2,          // per-brick fall duration, sec
+        stagger:       0.08,         // sec between adjacent bricks
+        triggerDelay:  3.0,          // sec after load before first cascade
+        repeatPeriod:  0,            // 0 = one-shot. >0 = re-fire every N sec.
+      },
+    },
+
+    floor: {
+      enabled:        true,
+      springerYFrac:  0.30,          // Y cut as fraction of (hullMaxY-hullMinY)
+      pattern:        'running-bond',// or 'stack'
+      rowOffset:      0.5,           // running-bond shift, fraction of brick.width
+      yLevel:         0.0,           // brick top Z relative to maxZ + frameDepth
+    },
+
+    color:           '#9A7544',
+    gradientDark:    '#5C4530',
+    gradientBright:  '#E0BE89',
   },
 };
 

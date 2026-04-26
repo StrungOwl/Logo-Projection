@@ -261,6 +261,17 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
   const fadeCX = cx + (patternFadeCenter?.[0] ?? 0);
   const fadeCY = cy + (patternFadeCenter?.[1] ?? 0);
   const wrappers = [];
+  // Per-viewMode visibility splits (main.js toggles these independently):
+  //   flowerRoots  — petal rosettes + morph-ghost group (the "rose" side
+  //                  of the brick↔rose morph; visible in modes 0/3).
+  //   hexRoots     — the bigger overlay brick-wall hexes that animate
+  //                  in/out (visible in modes 0/2/3 — mode 2 wants them
+  //                  alone; mode 3 wants them as transition states).
+  //   sharedMask   — the stencil mask both flowers and hexes test
+  //                  against; must be visible whenever either is on.
+  const flowerRoots = [];
+  const hexRoots = [];
+  let sharedMask = null;
 
   const outline = (silhouette && silhouette[0]) ? silhouette[0] : hull;
   if (!outline || outline.length < 3) {
@@ -333,6 +344,7 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
     maskMesh.position.z = maxZ;             // depthTest off — z is irrelevant
     maskMesh.renderOrder = -100;            // first in opaque pass
     logoMesh.add(maskMesh);
+    sharedMask = maskMesh;
   }
 
   const layerParts = [];
@@ -511,6 +523,7 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
     wrapper.userData.cascadeLayers = cascadeLayers;
     logoMesh.add(wrapper);
     wrappers.push(wrapper);
+    flowerRoots.push(wrapper);
   }
 
   // Right pivot: symmetric to the left. Midpoint of the longest right
@@ -692,6 +705,7 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
     morphGroup.name = 'overlay-morph';
     morphGroup.visible = false;
     logoMesh.add(morphGroup);
+    flowerRoots.push(morphGroup);
 
     const wallZ = maxZ + (cfg0.zOffset ?? 0.22);
 
@@ -711,6 +725,7 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
     hexWall.name = 'brick-hex-wall';
     hexWall.visible = false;
     logoMesh.add(hexWall);
+    hexRoots.push(hexWall);
 
     // Warm amber-red hue for the wall — distinct from the rosettes so
     // the brick↔rose hand-off reads as a colour shift too.
@@ -912,6 +927,7 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
       );
     }
     logoMesh.add(hexWrapper);
+    hexRoots.push(hexWrapper);
   }
 
   // Scratch objects reused every frame by the morph pass — avoids an
@@ -945,13 +961,29 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
     //            (playAllT < 0) the entire overlay is hidden so nothing
     //            renders while patterns are exiting / returning.
     const tov = (ANIM.timings && ANIM.timings.overlay) || {};
-    const tBrickHold   = tov.brickHold   ?? 15;
+    // Solo 'flowers' mode skips the brick hold so the rose petals loop
+    // back-to-back: fade in → hold (with domino) → fade out → repeat. No
+    // long invisible gap waiting for hidden bricks to "hold".
+    const tBrickHold   = (ANIM.viewMode === 'flowers') ? 0 : (tov.brickHold ?? 15);
     const tBrickToRose = tov.brickToRose ?? 5;
-    const tRoseHold    = tov.roseHold    ?? 15;
+    // Solo 'hex' mode skips the rose hold so the brick wall is the focus.
+    // The cycle becomes brick hold → fade out → fade in → loop, with only
+    // a single-frame invisibility at the morph midpoint.
+    const tRoseHold    = (ANIM.viewMode === 'hex') ? 0 : (tov.roseHold ?? 15);
     const tRoseToBrick = tov.roseToBrick ?? 5;
     const morphTotal   = tBrickHold + tBrickToRose + tRoseHold + tRoseToBrick;
 
-    const playAllOn = !!(ANIM.timings && ANIM.timings.playAll);
+    // playAll syncs only in 'all' viewMode — solo modes free-run with
+    // synthesized timings instead of reading cascadeState.playAllT (which
+    // is pinned at -1 in solo modes by patterns-layer.js).
+    const playAllOn = !!(ANIM.timings && ANIM.timings.playAll)
+                    && (!ANIM.viewMode || ANIM.viewMode === 'all');
+    // Solo modes 'hex' and 'flowers' synthesize a playAll-style cycle so
+    // the brick-wall entry/exit waves animate the same way they do in
+    // 'all' — the user sees the in/out transitions, just without the
+    // cascade syncing them to the pattern's all-at-center window.
+    const soloMode = ANIM.viewMode === 'hex' || ANIM.viewMode === 'flowers';
+    const wavesOn  = playAllOn || soloMode;
     let cyc;
     if (playAllOn) {
       const pT = cascadeState ? cascadeState.playAllT : -1;
@@ -977,7 +1009,17 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
       morphAlpha = smoothstep01(cyc, t1, t2)
                  - smoothstep01(cyc, t3, t3 + tRoseToBrick);
     }
-    const inMorph = !!morphGroup && morphAlpha < 0.999;
+    // Mode 'hex' is brick-only: clamp morphAlpha so the bricks never fade
+    // into the rose state. brickW stays 1, inMorph stays true, and the
+    // per-hex position/rotation update keeps running every frame so the
+    // entry/exit waves cycle cleanly.
+    if (ANIM.viewMode === 'hex') morphAlpha = 0;
+    let inMorph = !!morphGroup && morphAlpha < 0.999;
+    // Mode 'hex' override: force inMorph true whenever the hex wall exists
+    // so the per-hex position update keeps writing every frame. Without
+    // this, a brief inMorph=false at the morph boundary would freeze the
+    // hexes at whatever drift position they were last in.
+    if (ANIM.viewMode === 'hex' && brickHexWall) inMorph = true;
 
     // Per-hex stagger params — entry wave at window open, exit wave at
     // window close. Each hex's start time is keyed off `flipStep` so the
@@ -1133,7 +1175,7 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
         // (driven by `e`) takes effect.
         let edgeDrift = 0;
         let edgeFade  = 1;
-        if (playAllOn) {
+        if (wavesOn) {
           const stepFrac = step / stepDenom;
 
           // Entry wave — first hex (stepFrac=0) starts gliding at
@@ -1214,5 +1256,6 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
     }
   }
 
-  return { updateOverlay, patternsToRefresh: [] };
+  return { updateOverlay, patternsToRefresh: [],
+           flowerRoots, hexRoots, sharedMask };
 }

@@ -172,9 +172,14 @@ export async function startExport(bridge, opts = {}) {
   const overlay = buildOverlay();
   document.body.appendChild(overlay);
 
-  // 2. Pause live loop + freeze camera.
+  // 2. Pause live loop + freeze camera. Also pin viewMode to 'all' for the
+  // duration of the export so the captured video always shows the full
+  // synchronized sequence — independent of whichever solo mode (1–5) the
+  // user might have toggled in the live view.
   ctx.paused = true;
   controls.enabled = false;
+  const prevViewMode = ANIM.viewMode;
+  ANIM.viewMode = 'all';
 
   // 3. Resize the live WebGL canvas to export resolution and render into
   //    it directly. Rendering through a WebGLRenderTarget was losing the
@@ -387,6 +392,7 @@ export async function startExport(bridge, opts = {}) {
     pointSpriteMats.forEach((m, i) => { m.uniforms.uPixelRatio.value = savedPixelRatios[i]; });
     controls.enabled = true;
     ctx.paused = false;
+    ANIM.viewMode = prevViewMode;
     running = false;
     setTimeout(() => overlay.remove(), 6000);
   }

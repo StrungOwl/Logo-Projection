@@ -16,6 +16,7 @@ import { createIslamicPanel }   from '../patterns/islamic-tile.js';
 import { createLatticeUnderlay } from '../patterns/lattice-underlay.js';
 import { createGateFrame }       from '../patterns/gate-frame.js';
 import { createSparkSystem }     from '../patterns/stroke-sparks.js';
+import { createArch }            from '../patterns/arch.js';
 
 export function addPatternLayers(logoMesh, meta) {
   const { hull, silhouette, cx, cy, maxR, maxZ, patternFadeCenter } = meta;
@@ -182,6 +183,7 @@ export function addPatternLayers(logoMesh, meta) {
     z: 0.12,
   });
   panel.add(panelSparks.points);
+  panelSparks.host = 'panel';
 
   const latticeSparks = createSparkSystem({
     patternGroup: underlay,
@@ -202,6 +204,7 @@ export function addPatternLayers(logoMesh, meta) {
     z: 0.12,
   });
   underlay.add(latticeSparks.points);
+  latticeSparks.host = 'lattice';
 
   // Central companion layer — streams straight to centre, starts after the
   // main spark layer, dimmer.
@@ -222,12 +225,53 @@ export function addPatternLayers(logoMesh, meta) {
     pointSize:        ANIM.centralSparks.pointSize,
     trailSize:        ANIM.centralSparks.trailSize,
     startDelay:       ANIM.centralSparks.startDelay,
+    startDelayMax:    ANIM.centralSparks.startDelayMax,
     brightness:       ANIM.centralSparks.brightness,
     z: 0.13,
   });
   panel.add(centralSparks.points);
+  centralSparks.host = 'panel';
 
   sparkSystems.push(panelSparks, latticeSparks, centralSparks);
+
+  // Arch effect — procedural-brick ogee arch + cascade row + floor fill,
+  // built off the same inset silhouette the gate frame uses. Sits in front
+  // of the gate frame in Z. See patterns/arch.js for orientation logic.
+  const arch = createArch({
+    silhouette:     silhouettePolygons,
+    maxZ,
+    frameDepth:     0.5,
+    gateFrameWidth,
+  });
+  arch.group.position.set(cx, cy, 0);
+  logoMesh.add(arch.group);
+
+  // Sparks that hop along the arch's brick edges — same effect as the panel
+  // sparks but the snap cloud is built from an invisible LineSegments layer
+  // inside arch.group (see patterns/arch.js).
+  if (ANIM.archSparks) {
+    const archSparks = createSparkSystem({
+      patternGroup: arch.group,
+      fadeCenter: patternFadeCenter,
+      fadeOuter:  maxR * 0.55,
+      count:            ANIM.archSparks.count,
+      gravity:          ANIM.archSparks.gravity,
+      maxSpeed:         ANIM.archSparks.maxSpeed,
+      damping:          ANIM.archSparks.damping,
+      snapStrength:     ANIM.archSparks.snapStrength,
+      tangentialFactor: ANIM.archSparks.tangentialFactor,
+      speedVariance:    ANIM.archSparks.speedVariance,
+      sizeVariance:     ANIM.archSparks.sizeVariance,
+      color:            ANIM.archSparks.color,
+      hueVariance:      ANIM.archSparks.hueVariance,
+      pointSize:        ANIM.archSparks.pointSize,
+      trailSize:        ANIM.archSparks.trailSize,
+      z: arch.sparkZ ?? 0.12,
+    });
+    arch.group.add(archSparks.points);
+    archSparks.host = 'arch';
+    sparkSystems.push(archSparks);
+  }
 
   // ---------------------------------------------------------------------
   // Slow rotation for a random subset of rosettes and lattice hexes. Each
@@ -395,7 +439,11 @@ export function addPatternLayers(logoMesh, meta) {
     // toward transparent — so the brick wall reads as starting to come in
     // while the last patterns finish dissolving. Window length = morph
     // total. Outermost begins entry the moment the window closes.
-    const playAllOn = !!(ANIM.timings && ANIM.timings.playAll);
+    // playAll syncs cascade ↔ overlay only in 'all' view mode. Single-effect
+    // modes (pattern/hex/flowers/arch/flame) disable the sync window so each
+    // layer free-runs on its own clock.
+    const playAllOn = !!(ANIM.timings && ANIM.timings.playAll)
+                   && (!ANIM.viewMode || ANIM.viewMode === 'all');
     let gapDur, playAllWinStart = -1, playAllDur = 0;
     if (playAllOn) {
       const ovr = (ANIM.timings && ANIM.timings.overlay) || {};
@@ -499,5 +547,10 @@ export function addPatternLayers(logoMesh, meta) {
 
   return { strokeTimeUniforms, sparkSystems, patternsToRefresh,
            updateRowCascade, cascadeState, updateRotations,
-           patternLayers: [panel, underlay] };
+           panelGroup: panel,
+           latticeGroup: underlay,
+           gateFrameGroup: gate,
+           archGroup: arch.group,
+           updateArch: arch.update,
+           triggerArchCascade: arch.triggerCascade };
 }

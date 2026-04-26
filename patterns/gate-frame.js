@@ -65,7 +65,7 @@ function intersectLines(x1, y1, x2, y2, x3, y3, x4, y4) {
 // Walk a closed polygon by arc length and return `count` evenly-spaced
 // points around the perimeter, each with a position and an outward
 // tangent (pointing along the edge, CCW).
-function samplePerimeter(poly, count) {
+export function samplePerimeter(poly, count) {
   const segLens = [];
   let total = 0;
   for (let i = 0; i < poly.length; i++) {
@@ -98,7 +98,7 @@ function samplePerimeter(poly, count) {
 
 // Evenly-spaced samples along an open polyline (not a closed loop), centred
 // in each interval so no sample lands on either endpoint.
-function samplePolyline(pts, count) {
+export function samplePolyline(pts, count) {
   const segLens = [];
   let total = 0;
   for (let i = 0; i < pts.length - 1; i++) {
@@ -134,7 +134,7 @@ function samplePolyline(pts, count) {
 // yCut, walked in CCW order. Result starts at the ascending crossing point
 // and ends at the descending crossing point, with a flat gap left between
 // them. Entire-above / entire-below cases fall back sensibly.
-function clipArcAboveY(poly, yCut) {
+export function clipArcAboveY(poly, yCut) {
   const n = poly.length;
   const above = poly.map(p => p.y > yCut);
   let entryIdx = -1, exitIdx = -1;

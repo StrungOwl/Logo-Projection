@@ -191,12 +191,15 @@ export function createSparkSystem({
   tangentialFactor = 0,      // perpendicular-to-radial force as fraction of gravity;
                              // creates a per-spark swirl so sparks fan along outer
                              // strokes instead of diving straight to centre
+  speedVariance = 0,         // ±fraction per-spark scale on gravity + maxSpeed
+                             // (0.4 → each spark cruises at 0.6x..1.4x base)
   sizeVariance = 0,          // ±fraction around base pointSize (0.7 → ~0.3x..1.7x)
   color = 0xffd9a0,
   hueVariance = 0,           // ±fraction of hue wheel per spark (0.1 ≈ ±36°)
   pointSize = 0.45,
   trailSize = 5,
-  startDelay = 0,            // seconds to wait before this system starts updating
+  startDelay = 0,            // min per-spark wake delay (seconds)
+  startDelayMax = null,      // max per-spark wake delay; null → all wake at startDelay
   brightness = 1,            // scales final spark alpha (1 = same as base)
   z = 0.12,
 }) {
@@ -215,6 +218,10 @@ export function createSparkSystem({
   const life = new Float32Array(count);
   const lifeSpeed = new Float32Array(count);
   const sizeScale = new Float32Array(count);
+  // Per-spark speed scale — multiplies both gravity and maxSpeed so each
+  // spark accelerates AND tops out at a coherent fraction of the base. A
+  // 0.6x spark is slow start-to-finish; a 1.4x spark is fast throughout.
+  const speedScale = new Float32Array(count);
   const reached = new Uint8Array(count);
   // prevNearest: id of the vertex this spark was snapping to last frame.
   // When it changes, the spark has crossed a "junction" — we redirect its
@@ -257,6 +264,7 @@ export function createSparkSystem({
     life[i] = 0;
     lifeSpeed[i] = 0.35 + Math.random() * 0.35;   // ~1.8-3 s fade-in
     sizeScale[i] = Math.max(0.15, 1 + (Math.random() * 2 - 1) * sizeVariance);
+    speedScale[i] = Math.max(0.15, 1 + (Math.random() * 2 - 1) * speedVariance);
     reached[i] = 0;
     prevNearest[i] = -1;
     swirl[i] = Math.random() < 0.5 ? -1 : 1;
@@ -283,7 +291,16 @@ export function createSparkSystem({
     trailHead[i] = 0;
   }
 
-  for (let i = 0; i < count; i++) respawn(i);
+  // Per-spark wake time: sparks stay at their seed position (invisible —
+   // respawn() leaves alpha/size at 0) until elapsed >= wakeAt[i], then
+   // their physics begins. Lets the system fade in as a staggered stream
+   // instead of a synchronized burst.
+  const wakeSpread = Math.max(0, (startDelayMax ?? startDelay) - startDelay);
+  const wakeAt = new Float32Array(count);
+  for (let i = 0; i < count; i++) {
+    respawn(i);
+    wakeAt[i] = startDelay + Math.random() * wakeSpread;
+  }
 
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
@@ -346,13 +363,7 @@ export function createSparkSystem({
 
   let elapsed = 0;
   function update(dt) {
-    // Delayed start: hold sparks at their seed positions (life=0 keeps them
-    // invisible) until startDelay elapses, then begin normal physics so they
-    // fade in via the existing lifeSpeed mechanism.
-    if (startDelay > 0 && elapsed < startDelay) {
-      elapsed += dt;
-      return;
-    }
+    elapsed += dt;
 
     // Frame-rate-independent damping: vel *= exp(-damping * dt)
     const dampFactor = Math.exp(-damping * dt);
@@ -365,6 +376,10 @@ export function createSparkSystem({
     const snapBlend = 1 - Math.exp(-snapStrength * api.snapScale * dt);
 
     for (let i = 0; i < count; i++) {
+      // Per-spark wake gate. respawn() left this spark at its seed with
+      // alpha=size=0 in every trail slot, so skipping the body keeps it
+      // invisible until its turn.
+      if (elapsed < wakeAt[i]) continue;
       const x = px[i], y = py[i];
       const dx = fcx - x, dy = fcy - y;
       const distCentre = Math.hypot(dx, dy) + 1e-5;
@@ -373,14 +388,15 @@ export function createSparkSystem({
       // we taper it so sparks don't overshoot and ping-pong.
       const centreTaper = Math.min(1, distCentre / Math.max(innerFadeStart, 1));
       const radialX = dx / distCentre, radialY = dy / distCentre;
-      const gx = radialX * gravity * centreTaper;
-      const gy = radialY * gravity * centreTaper;
+      const grav = gravity * speedScale[i];
+      const gx = radialX * grav * centreTaper;
+      const gy = radialY * grav * centreTaper;
       // Tangential swirl: rotate the radial 90° (sign per spark) and scale by
       // tangentialFactor. Lets sparks travel sideways along outer strokes
       // before being pulled in — combined with the line-snap, the result
       // reads as flowing through traces on a circuit board.
-      const tFx = -radialY * gravity * tangentialFactor * swirl[i];
-      const tFy =  radialX * gravity * tangentialFactor * swirl[i];
+      const tFx = -radialY * grav * tangentialFactor * swirl[i];
+      const tFy =  radialX * grav * tangentialFactor * swirl[i];
 
       // Integrate velocity under gravity + damping (no snap in the velocity —
       // snap is applied as a POSITION blend below so it can't create
@@ -389,9 +405,10 @@ export function createSparkSystem({
       vy[i] = vy[i] * dampFactor + (gy + tFy) * dt;
 
       // Cap speed so nothing flies off the map after a long fall.
+      const sCap = maxSpeed * speedScale[i];
       const sp = Math.hypot(vx[i], vy[i]);
-      if (sp > maxSpeed) {
-        const k = maxSpeed / sp;
+      if (sp > sCap) {
+        const k = sCap / sp;
         vx[i] *= k; vy[i] *= k;
       }
 
@@ -409,26 +426,32 @@ export function createSparkSystem({
       // Fall back to absolute-nearest only when no inward candidate exists
       // within the search radius (i.e. the spark is deep enough that it
       // should just settle and retire).
-      let nearestId = findNearestVertex(cloud, nx, ny, 3, distCentre);
-      if (nearestId < 0) nearestId = findNearestVertex(cloud, nx, ny, 3);
-      if (nearestId >= 0) {
-        const tx = cloud.xs[nearestId], ty = cloud.ys[nearestId];
-        nx = nx + (tx - nx) * snapBlend;
-        ny = ny + (ty - ny) * snapBlend;
-        // Junction crossing — the spark's nearest vertex just changed, so
-        // it has effectively hopped onto a new trace. Redirect velocity
-        // along the bearing to the new vertex (preserving speed) so the
-        // spark turns sharply toward it instead of curving smoothly.
-        if (prevNearest[i] !== -1 && nearestId !== prevNearest[i]) {
-          const bdx = tx - nx, bdy = ty - ny;
-          const blen = Math.hypot(bdx, bdy);
-          if (blen > 1e-4) {
-            const speed = Math.hypot(vx[i], vy[i]);
-            vx[i] = (bdx / blen) * speed;
-            vy[i] = (bdy / blen) * speed;
+      // Stroke snap + junction redirect — skipped entirely when snapStrength
+      // is 0 so the system runs as a pure gravity field (used by the central
+      // companion layer, which streams straight to centre with no awareness
+      // of the pattern strokes).
+      if (snapStrength > 0) {
+        let nearestId = findNearestVertex(cloud, nx, ny, 3, distCentre);
+        if (nearestId < 0) nearestId = findNearestVertex(cloud, nx, ny, 3);
+        if (nearestId >= 0) {
+          const tx = cloud.xs[nearestId], ty = cloud.ys[nearestId];
+          nx = nx + (tx - nx) * snapBlend;
+          ny = ny + (ty - ny) * snapBlend;
+          // Junction crossing — the spark's nearest vertex just changed, so
+          // it has effectively hopped onto a new trace. Redirect velocity
+          // along the bearing to the new vertex (preserving speed) so the
+          // spark turns sharply toward it instead of curving smoothly.
+          if (prevNearest[i] !== -1 && nearestId !== prevNearest[i]) {
+            const bdx = tx - nx, bdy = ty - ny;
+            const blen = Math.hypot(bdx, bdy);
+            if (blen > 1e-4) {
+              const speed = Math.hypot(vx[i], vy[i]);
+              vx[i] = (bdx / blen) * speed;
+              vy[i] = (bdy / blen) * speed;
+            }
           }
+          prevNearest[i] = nearestId;
         }
-        prevNearest[i] = nearestId;
       }
 
       px[i] = nx;
