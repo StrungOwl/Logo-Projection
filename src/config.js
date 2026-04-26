@@ -74,16 +74,25 @@ export const ANIM = {
   // wheel from `color` at spawn time (0 = monochrome, 0.1 ≈ ±36°).
   // `trailSize` is the ring-buffer length of past positions drawn behind each
   // spark (load-only; reload after editing). Higher = longer tracer.
-  panelSparks:   { count: 220, gravity: 8, maxSpeed: 7, damping: 1.6,
-                   snapStrength: 10,
-                   tangentialFactor: 0.8, speedVariance: 0.55, sizeVariance: 0.75,
+  panelSparks:   { count: 220, gravity: 5, maxSpeed: 7, damping: 1.6,
+                   snapStrength: 18,
+                   tangentialFactor: 1.1, speedVariance: 0.55, sizeVariance: 0.75,
                    color: '#FFD9A0', hueVariance: 0.08,
-                   pointSize: 0.1, trailSize: 35 },
-  latticeSparks: { count: 150, gravity: 7, maxSpeed: 6, damping: 1.5,
-                   snapStrength: 3.5,
-                   tangentialFactor: 0.8, speedVariance: 0.55, sizeVariance: 0.75,
+                   pointSize: 0.1, trailSize: 55 },
+  latticeSparks: { count: 150, gravity: 4, maxSpeed: 6, damping: 1.5,
+                   snapStrength: 8,
+                   tangentialFactor: 1.1, speedVariance: 0.55, sizeVariance: 0.75,
                    color: '#FFE8C0', hueVariance: 0.08,
-                   pointSize: 0.15, trailSize: 25 },
+                   pointSize: 0.15, trailSize: 40 },
+  // Companion layer that streams straight to the centre — minimal swirl,
+  // delayed start so it lights up after the main spark layer is established,
+  // and dimmer so it reads as a secondary glow rather than competing.
+  centralSparks: { count: 130, gravity: 11, maxSpeed: 8, damping: 1.4,
+                   snapStrength: 14,
+                   tangentialFactor: 0.1, speedVariance: 0.4, sizeVariance: 0.5,
+                   color: '#FFF1D8', hueVariance: 0.04,
+                   pointSize: 0.09, trailSize: 50,
+                   startDelay: 4.0, brightness: 0.65 },
 
   // Slow rotation on a random subset of rosettes ("flowers") and lattice
   // hexes. Each picked mesh gets a random phase offset and a signed angular

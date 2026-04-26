@@ -188,11 +188,16 @@ export function createSparkSystem({
   maxSpeed = 9,              // panel-units/s — keeps sparks from flinging past centre
   damping = 1.4,             // velocity damping per second (higher = slower drift)
   snapStrength = 6,          // strength of the pull toward the nearest stroke vertex
+  tangentialFactor = 0,      // perpendicular-to-radial force as fraction of gravity;
+                             // creates a per-spark swirl so sparks fan along outer
+                             // strokes instead of diving straight to centre
   sizeVariance = 0,          // ±fraction around base pointSize (0.7 → ~0.3x..1.7x)
   color = 0xffd9a0,
   hueVariance = 0,           // ±fraction of hue wheel per spark (0.1 ≈ ±36°)
   pointSize = 0.45,
   trailSize = 5,
+  startDelay = 0,            // seconds to wait before this system starts updating
+  brightness = 1,            // scales final spark alpha (1 = same as base)
   z = 0.12,
 }) {
   const cloud = buildStrokeCloud(patternGroup, fadeCenter);
@@ -211,6 +216,14 @@ export function createSparkSystem({
   const lifeSpeed = new Float32Array(count);
   const sizeScale = new Float32Array(count);
   const reached = new Uint8Array(count);
+  // prevNearest: id of the vertex this spark was snapping to last frame.
+  // When it changes, the spark has crossed a "junction" — we redirect its
+  // velocity along the bearing to the new vertex for a circuit-board-style
+  // hard turn instead of letting momentum smear it across the gap.
+  const prevNearest = new Int32Array(count);
+  // swirl: ±1 per spark — sign of the tangential (perpendicular-to-radial)
+  // force. Picked once at spawn so each spark consistently spirals one way.
+  const swirl = new Int8Array(count);
 
   // Trail ring-buffer: trailSize positions per spark. Only the head slot gets
   // a fresh position each frame; older slots keep their stored x/y and just
@@ -245,6 +258,8 @@ export function createSparkSystem({
     lifeSpeed[i] = 0.35 + Math.random() * 0.35;   // ~1.8-3 s fade-in
     sizeScale[i] = Math.max(0.15, 1 + (Math.random() * 2 - 1) * sizeVariance);
     reached[i] = 0;
+    prevNearest[i] = -1;
+    swirl[i] = Math.random() < 0.5 ? -1 : 1;
     // Pick a per-spark colour — base hue shifted by ±hueVariance.
     if (hueVariance > 0) {
       const h = (baseHsl.h + (Math.random() * 2 - 1) * hueVariance + 1) % 1;
@@ -329,7 +344,16 @@ export function createSparkSystem({
 
   const api = { points, update: null, snapScale: 1, uOpacity: material.uniforms.uOpacity };
 
+  let elapsed = 0;
   function update(dt) {
+    // Delayed start: hold sparks at their seed positions (life=0 keeps them
+    // invisible) until startDelay elapses, then begin normal physics so they
+    // fade in via the existing lifeSpeed mechanism.
+    if (startDelay > 0 && elapsed < startDelay) {
+      elapsed += dt;
+      return;
+    }
+
     // Frame-rate-independent damping: vel *= exp(-damping * dt)
     const dampFactor = Math.exp(-damping * dt);
     // Position-blend snap rate. snapStrength is in "1/s" — over one second a
@@ -348,14 +372,21 @@ export function createSparkSystem({
       // Gravity: constant-magnitude pull toward fadeCenter. Near the centre
       // we taper it so sparks don't overshoot and ping-pong.
       const centreTaper = Math.min(1, distCentre / Math.max(innerFadeStart, 1));
-      const gx = (dx / distCentre) * gravity * centreTaper;
-      const gy = (dy / distCentre) * gravity * centreTaper;
+      const radialX = dx / distCentre, radialY = dy / distCentre;
+      const gx = radialX * gravity * centreTaper;
+      const gy = radialY * gravity * centreTaper;
+      // Tangential swirl: rotate the radial 90° (sign per spark) and scale by
+      // tangentialFactor. Lets sparks travel sideways along outer strokes
+      // before being pulled in — combined with the line-snap, the result
+      // reads as flowing through traces on a circuit board.
+      const tFx = -radialY * gravity * tangentialFactor * swirl[i];
+      const tFy =  radialX * gravity * tangentialFactor * swirl[i];
 
       // Integrate velocity under gravity + damping (no snap in the velocity —
       // snap is applied as a POSITION blend below so it can't create
       // spring-mass oscillations).
-      vx[i] = vx[i] * dampFactor + gx * dt;
-      vy[i] = vy[i] * dampFactor + gy * dt;
+      vx[i] = vx[i] * dampFactor + (gx + tFx) * dt;
+      vy[i] = vy[i] * dampFactor + (gy + tFy) * dt;
 
       // Cap speed so nothing flies off the map after a long fall.
       const sp = Math.hypot(vx[i], vy[i]);
@@ -384,6 +415,20 @@ export function createSparkSystem({
         const tx = cloud.xs[nearestId], ty = cloud.ys[nearestId];
         nx = nx + (tx - nx) * snapBlend;
         ny = ny + (ty - ny) * snapBlend;
+        // Junction crossing — the spark's nearest vertex just changed, so
+        // it has effectively hopped onto a new trace. Redirect velocity
+        // along the bearing to the new vertex (preserving speed) so the
+        // spark turns sharply toward it instead of curving smoothly.
+        if (prevNearest[i] !== -1 && nearestId !== prevNearest[i]) {
+          const bdx = tx - nx, bdy = ty - ny;
+          const blen = Math.hypot(bdx, bdy);
+          if (blen > 1e-4) {
+            const speed = Math.hypot(vx[i], vy[i]);
+            vx[i] = (bdx / blen) * speed;
+            vy[i] = (bdy / blen) * speed;
+          }
+        }
+        prevNearest[i] = nearestId;
       }
 
       px[i] = nx;
@@ -414,7 +459,7 @@ export function createSparkSystem({
         const slot = baseIdx + k;
         const age = ((trailHead[i] - k + trailSize) % trailSize) / trailSize;
         const trail = 1 - age;
-        alphas[slot] = intensity * trail * trail;
+        alphas[slot] = intensity * trail * trail * brightness;
         sizes[slot]  = pointSize * sizeScale[i] * (0.55 + 0.45 * trail);
       }
     }

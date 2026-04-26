@@ -203,7 +203,31 @@ export function addPatternLayers(logoMesh, meta) {
   });
   underlay.add(latticeSparks.points);
 
-  sparkSystems.push(panelSparks, latticeSparks);
+  // Central companion layer — streams straight to centre, starts after the
+  // main spark layer, dimmer.
+  const centralSparks = createSparkSystem({
+    patternGroup: panel,
+    fadeCenter: patternFadeCenter,
+    fadeOuter:  maxR * 0.55,
+    count:            ANIM.centralSparks.count,
+    gravity:          ANIM.centralSparks.gravity,
+    maxSpeed:         ANIM.centralSparks.maxSpeed,
+    damping:          ANIM.centralSparks.damping,
+    snapStrength:     ANIM.centralSparks.snapStrength,
+    tangentialFactor: ANIM.centralSparks.tangentialFactor,
+    speedVariance:    ANIM.centralSparks.speedVariance,
+    sizeVariance:     ANIM.centralSparks.sizeVariance,
+    color:            ANIM.centralSparks.color,
+    hueVariance:      ANIM.centralSparks.hueVariance,
+    pointSize:        ANIM.centralSparks.pointSize,
+    trailSize:        ANIM.centralSparks.trailSize,
+    startDelay:       ANIM.centralSparks.startDelay,
+    brightness:       ANIM.centralSparks.brightness,
+    z: 0.13,
+  });
+  panel.add(centralSparks.points);
+
+  sparkSystems.push(panelSparks, latticeSparks, centralSparks);
 
   // ---------------------------------------------------------------------
   // Slow rotation for a random subset of rosettes and lattice hexes. Each
