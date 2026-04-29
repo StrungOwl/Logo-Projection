@@ -449,45 +449,61 @@ export const ANIM = {
       yLevel:         0.0,           // brick top Z relative to maxZ + frameDepth
     },
 
-    // Stack of progressively-inset brick rings nested inside the outer
-    // arch row, giving the corbeled muqarnas look from the reference: each
-    // successive ring sits further inward (smaller polygon, inset by
-    // `insetStep` per step) and has a SHORTER brick on Z (`depthScale`
-    // shrinks per ring), so all rings share the same back plane (flush
-    // with the gate-frame front face) while their FRONT faces step
-    // backward into the wall — the eye reads it as a tunnel descending
-    // toward the central star void. Material darkens per ring (lerping
-    // toward `gradientDark`) and optionally drops opacity so the inner
-    // rings fade into the glow.
-    //   count           — number of recessed rings (in addition to the
-    //                     outer row). 0 disables.
-    //   insetStep       — extra inset distance per ring, units. Roughly
-    //                     one brick height keeps each ring nested flush
-    //                     against the outline of the previous one.
-    //   depthScaleStep  — multiplier applied to the brick's Z-extent per
-    //                     ring (ring r uses depthScaleStep^r). <1 makes
-    //                     inner rings shorter so their FRONT faces step
-    //                     backward into the wall.
-    //   sizeShrink      — multiplier on brick height/depth per ring; <1
-    //                     gives smaller brick cells deeper in.
-    //   colorMix        — fraction of (color → gradientDark) lerp at the
-    //                     innermost ring; intermediate rings interpolate
-    //                     linearly. 0 = no darkening.
-    //   opacityFalloff  — extra alpha drop at the innermost ring (linear
-    //                     from 0 at outer to opacityFalloff at inner).
-    //                     0 = stays opaque.
-    //   minPerimeter    — abort the recursion once the inset polygon's
-    //                     perimeter falls below this many units (so we
-    //                     stop before the polygon collapses to a point).
-    recessedRings: {
-      enabled:        true,
-      count:          5,
-      insetStep:      2.6,
-      depthScaleStep: 0.78,
-      sizeShrink:     0.92,
-      colorMix:       0.7,
-      opacityFalloff: 0.0,
-      minPerimeter:   12.0,
+    // Muqarnas vault — fields the arch interior with small pointed-arch
+    // CELL niches DUG INTO the wall depth. Tier 0 sits flush with the
+    // gate-frame front; each successive tier is recessed by `tierStepZ`
+    // into the wall (negative Z), so the cells appear carved into the
+    // model rather than protruding out toward the camera. Each cell is
+    // a 2D pointed-arch shape (flat base on the tier polygon, point
+    // facing radially inward toward the star) extruded by
+    // `cellThickness` on world-Z. Tier r+1's polygon is inset from
+    // tier r's by exactly `cellRadialDepth` (per-tier-shrunk) so cells
+    // nest tier-to-tier with no radial gap. Adjacent tiers are
+    // staggered by half a cell (`tierOffsetAlternate`) so the cell
+    // seams in neighbouring rings don't line up radially. Material
+    // darkens toward `gradientDark` per tier so the innermost tiers
+    // fade into the central glow.
+    //   tierCount         — number of tiers. 0 disables.
+    //   cellWidth         — cell extent along the polygon tangent.
+    //                       Smaller = more cells per tier (denser
+    //                       honeycomb). ~1/3 of cellRadialDepth reads
+    //                       as a tall narrow lancet.
+    //   cellRadialDepth   — cell extent radially (how far each pointed
+    //                       arch extends inward from its tier polygon).
+    //                       Also = inset distance to the next tier.
+    //   cellThickness     — extruded depth on world-Z, units. Kept
+    //                       small so the cells read as recessed niches
+    //                       rather than protruding pads — most of the
+    //                       depth read comes from `tierStepZ` between
+    //                       tiers, not from each cell's own thickness.
+    //   cellShrink        — multiplier on all three cell dims per tier
+    //                       (tier r uses cellShrink^r). <1 gives
+    //                       smaller cells deeper in.
+    //   tierStepZ         — extra Z recession per tier, units. With
+    //                       8 tiers at 0.30, the deepest tier's front
+    //                       sits ~2.4 units behind the gate-frame
+    //                       front — within the gate's 1.5-unit
+    //                       thickness plus a bite of the logo body.
+    //   colorMix          — fraction of (color → gradientDark) lerp at
+    //                       the innermost tier; linear ramp.
+    //   opacityFalloff    — extra alpha drop at the innermost tier
+    //                       (linear from 0 at outer). 0 = opaque.
+    //   tierOffsetAlternate — true: every other tier rotates its cell
+    //                       start by half a cell so seams stagger.
+    //   minPerimeter      — bail out of tier recursion once the inset
+    //                       polygon drops below this perimeter length.
+    muqarnas: {
+      enabled:             true,
+      tierCount:           8,
+      cellWidth:           1.4,
+      cellRadialDepth:     1.6,
+      cellThickness:       0.45,
+      cellShrink:          0.94,
+      tierStepZ:           0.30,
+      colorMix:            0.85,
+      opacityFalloff:      0.0,
+      tierOffsetAlternate: true,
+      minPerimeter:        6.0,
     },
 
     color:           '#9A7544',

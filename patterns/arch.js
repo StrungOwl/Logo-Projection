@@ -145,6 +145,125 @@ function outwardNormal2D(tx, ty) {
   return { x: ty, y: -tx };
 }
 
+// Closed polygon of the arch top — `clipArcAboveY` returns an OPEN
+// polyline (the arc above the cut, with a flat gap at yCut). We close
+// it by adding a horizontal bottom edge, producing a CCW closed polygon
+// suitable for inset / sample / point-in-polygon. Used so the muqarnas
+// tiles only the dome region above the springer line, not the full
+// silhouette (which would include the SDG side flares).
+function closedArcAboveY(poly, yCut) {
+  const arc = clipArcAboveY(poly, yCut);
+  if (arc.length < 2) return [];
+  // arc starts at the ascending crossing (left foot) and ends at the
+  // descending crossing (right foot) — both at y=yCut. Walking the arc
+  // forward then back along the cut closes the polygon. We don't add an
+  // extra bottom segment because the start and end already span the cut.
+  // Just return the arc as a closed loop (treat last → first as the
+  // bottom edge).
+  return arc.slice();
+}
+
+// Polygon perimeter length.
+function polyPerimeter(poly) {
+  let p = 0;
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i], b = poly[(i + 1) % poly.length];
+    p += Math.hypot(b.x - a.x, b.y - a.y);
+  }
+  return p;
+}
+
+// -----------------------------------------------------------------------
+// Pointed-arch cell — extruded 2D shape used as the per-cell muqarnas
+// niche. The 2D shape lives in local-XY with:
+//   local-X spans 0 .. length  (the cell's radial axis; pointed end at +X)
+//   local-Y spans -width/2 .. +width/2  (the cell's tangential width)
+// The shape has a flat BASE at X=0 (sits on the tier polygon) and a
+// pointed TIP at X=length (faces radially inward toward the star). The
+// extrusion runs along local-Z by `thickness` and is centred on z=0 so
+// the mesh's position.z lands at the cell's middle-thickness.
+// -----------------------------------------------------------------------
+function makeArchCellGeometry(length, width, thickness) {
+  const shape = new THREE.Shape();
+  const halfW = width * 0.5;
+  // Flat base on the polygon (X=0), then the two side walls curve up to
+  // a point at (length, 0). Quadratic control points pulled in toward
+  // the tip so the silhouette reads as a pointed lancet rather than a
+  // round semicircle.
+  shape.moveTo(0, -halfW);
+  shape.lineTo(0,  halfW);
+  shape.quadraticCurveTo(length * 0.65,  halfW, length, 0);
+  shape.quadraticCurveTo(length * 0.65, -halfW, 0,    -halfW);
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth:        thickness,
+    bevelEnabled: false,
+    curveSegments: 8,
+  });
+  // Centre the extrusion on z=0 so position.z is the cell's mid-thickness.
+  geo.translate(0, 0, -thickness * 0.5);
+  return geo;
+}
+
+// -----------------------------------------------------------------------
+// Muqarnas tier — places small pointed-arch cells along a polygon's
+// perimeter. Each cell is oriented so:
+//   local-X → world radial-INWARD  (cell's tip points toward star)
+//   local-Y → polygon tangent      (cell width along curve)
+//   local-Z → world +Z             (cell thickness, perpendicular to wall)
+// The cell's base (X=0 in shape coords) sits on the tier polygon, so the
+// tip extends inward by `cellRadial`. Inset the polygon by `cellRadial`
+// to obtain the next tier's polygon — cells then nest tier-to-tier with
+// no radial gap. Each tier's `zCenter` parks the cells' mid-thickness
+// at a chosen depth, and tiers step deeper into the wall per `tierStepZ`
+// so the cells appear DUG INTO the wall (not protruding out toward the
+// camera) — which is what the reference muqarnas vault does.
+//
+// `startOffset` rotates the sample start position around the loop so
+// adjacent tiers can stagger by half a cell (brick-course offset).
+// -----------------------------------------------------------------------
+function placeMuqarnasTier({ polygon, cellW, cellRadial, cellThick,
+                             zCenter, startOffset, material,
+                             group }) {
+  let perim = 0;
+  for (let i = 0; i < polygon.length; i++) {
+    const a = polygon[i], b = polygon[(i + 1) % polygon.length];
+    perim += Math.hypot(b.x - a.x, b.y - a.y);
+  }
+  const sampleCount = Math.max(6, Math.round(perim / cellW));
+  let samples = samplePerimeter(polygon, sampleCount);
+  samples = smoothTangents(samples);
+
+  // startOffset: rotate sample list so cells of this tier start at a
+  // shifted angular position (used to stagger alternate tiers by half a
+  // cell — see tierOffsetAlternate in the config).
+  if (startOffset && samples.length > 1) {
+    const shift = Math.round(startOffset * samples.length) % samples.length;
+    if (shift > 0) {
+      samples = samples.slice(shift).concat(samples.slice(0, shift));
+    }
+  }
+
+  const geo = makeArchCellGeometry(cellRadial, cellW, cellThick);
+
+  const localX = new THREE.Vector3();
+  const localY = new THREE.Vector3();
+  const localZ = new THREE.Vector3(0, 0, 1);
+
+  for (let i = 0; i < samples.length; i++) {
+    const s = samples[i];
+    const out = outwardNormal2D(s.tx, s.ty);
+    // Radial INWARD = -outward.
+    localX.set(-out.x, -out.y, 0).normalize();
+    localY.set( s.tx,   s.ty,  0).normalize();
+    const mesh = new THREE.Mesh(geo, material);
+    // Cell's base (shape X=0) lands on the polygon sample; the tip then
+    // extends inward by cellRadial along localX.
+    mesh.position.set(s.x, s.y, zCenter);
+    mesh.quaternion.copy(basisQuat(localX, localY, localZ));
+    group.add(mesh);
+  }
+}
+
 // Walk the full closed perimeter of the gate-frame inner aperture and
 // return uniformly-spaced samples around the entire loop. Used by the
 // outline brick layer so bricks wrap continuously around the aperture
@@ -360,72 +479,76 @@ export function createArch({ silhouette, maxZ, frameDepth = 0.5,
     });
   }
 
-  // --- Recessed rings (corbeled muqarnas inlay) ---
-  // Each ring is nested inside the previous one, with the brick's BACK face
-  // anchored to the gate-frame front (gateFrontZ) and a progressively
-  // smaller depthScale shrinking the Z-extent so the FRONT face steps back
-  // into the wall. Material darkens per ring (lerping toward gradientDark)
-  // so the deepest rings fade visually toward the central star void.
-  // Sparks pick these up automatically via the edge-harvest pass below.
-  const ringsCfg = cfg.recessedRings || {};
-  if (ringsCfg.enabled !== false && (ringsCfg.count || 0) > 0) {
+  // --- Muqarnas tiers ---
+  // Stack of pointed-arch cell rings stepping inward (radially) and
+  // BACKWARD (in -Z, dug into the wall thickness) toward the central
+  // star void. Tier 0 sits flush with the gate-frame front; each
+  // successive tier's cells are recessed by `tierStepZ`, so the eye
+  // reads the tiers as a vault descending into the model body. Each
+  // tier polygon is inset by exactly the cell's radial size so cells
+  // nest tier-to-tier without gaps. Adjacent tiers are angularly
+  // offset by half a cell so seams stagger like brick courses. Material
+  // darkens per tier toward `gradientDark`, so the innermost tiers fade
+  // into the central glow. Sparks pick these up via the edge-harvest
+  // pass below.
+  const muqCfg = cfg.muqarnas || {};
+  if (muqCfg.enabled !== false && (muqCfg.tierCount || 0) > 0) {
     const baseColor = new THREE.Color(cfg.color || '#9A7544');
     const darkColor = new THREE.Color(cfg.gradientDark || '#5C4530');
-    let ringPoly = curve.perimeterPoly;
-    for (let r = 1; r <= ringsCfg.count; r++) {
-      ringPoly = insetPolygon(ringPoly, ringsCfg.insetStep || 2.5);
-
-      // Bail out once the polygon has collapsed too far to carry bricks.
+    let polygon = curve.perimeterPoly;
+    for (let r = 0; r < muqCfg.tierCount; r++) {
+      // Bail out if the polygon has collapsed.
       let perim = 0;
-      for (let i = 0; i < ringPoly.length; i++) {
-        const a = ringPoly[i], b = ringPoly[(i + 1) % ringPoly.length];
+      for (let i = 0; i < polygon.length; i++) {
+        const a = polygon[i], b = polygon[(i + 1) % polygon.length];
         perim += Math.hypot(b.x - a.x, b.y - a.y);
       }
-      if (perim < (ringsCfg.minPerimeter || 12)) break;
+      if (perim < (muqCfg.minPerimeter || 8)) break;
 
-      // Per-ring brick cross-section shrink (height + depth). `width`
-      // stays at brickCfg.width — depthScale below shrinks the actual
-      // world-Z extent.
-      const shrink = Math.pow(ringsCfg.sizeShrink || 1.0, r);
-      const ringBrickCfg = {
-        ...brickCfg,
-        height: brickCfg.height * shrink,
-        depth:  brickCfg.depth  * shrink,
-      };
+      // Per-tier cell sizes. cellShrink^r squeezes all three dims.
+      const shrink     = Math.pow(muqCfg.cellShrink || 1.0, r);
+      const cellW      = (muqCfg.cellWidth       || 1.8) * shrink;
+      const cellRadial = (muqCfg.cellRadialDepth || 2.0) * shrink;
+      const cellThick  = (muqCfg.cellThickness   || 0.6) * shrink;
 
-      const sampleCount = Math.max(8, Math.round(perim / brickCfg.width));
-      let samples = samplePerimeter(ringPoly, sampleCount);
-      samples = smoothTangents(samples);
+      // Tier z: front face at gateFrontZ for r=0, stepping deeper into
+      // the wall by `tierStepZ` per tier. Cell mesh is centred on
+      // mid-thickness, so position.z = frontFace - cellThick/2.
+      const tierStep  = muqCfg.tierStepZ || 0.35;
+      const tierFront = gateFrontZ - r * tierStep;
+      const zCenter   = tierFront - cellThick * 0.5;
 
-      // depthScale^r shrinks each ring's Z-extent. zCenter places the
-      // brick so its BACK face sits on gateFrontZ — every ring shares the
-      // same back plane, and only the front face steps backward.
-      const depthScale = Math.pow(ringsCfg.depthScaleStep || 1.0, r);
-      const ringZCenter = gateFrontZ + brickCfg.width * depthScale * 0.5;
-
-      // Material — lerp toward gradientDark by `colorMix` at the
-      // innermost ring; alpha drops linearly if `opacityFalloff` set.
-      const t = ringsCfg.count > 1 ? r / ringsCfg.count : 1;
-      const mixT     = Math.min(1, t * (ringsCfg.colorMix || 0));
-      const ringColor = baseColor.clone().lerp(darkColor, mixT);
-      const alphaDrop = (ringsCfg.opacityFalloff || 0) * t;
-      const ringMat = new THREE.MeshStandardMaterial({
-        color:     ringColor,
-        metalness: 0.15,
-        roughness: 0.8,
-        transparent: alphaDrop > 0,
-        opacity:   1 - alphaDrop,
+      // Material darkens toward gradientDark; deeper tiers more so.
+      const t        = muqCfg.tierCount > 1 ? r / (muqCfg.tierCount - 1) : 0;
+      const mixT     = Math.min(1, t * (muqCfg.colorMix || 0));
+      const tierCol  = baseColor.clone().lerp(darkColor, mixT);
+      const aDrop    = (muqCfg.opacityFalloff || 0) * t;
+      const tierMat  = new THREE.MeshStandardMaterial({
+        color:       tierCol,
+        metalness:   0.15,
+        roughness:   0.85,
+        transparent: aDrop > 0,
+        opacity:     1 - aDrop,
       });
 
-      placeArchRow({
-        samples,
-        brickCfg:   ringBrickCfg,
-        depthScale,
-        zCenter:    ringZCenter,
-        material:   ringMat,
+      // Stagger every other tier by half a cell so cell seams in
+      // adjacent tiers don't line up radially.
+      const startOffset = (muqCfg.tierOffsetAlternate && (r % 2 === 1)) ? 0.5 : 0;
+
+      placeMuqarnasTier({
+        polygon,
+        cellW,
+        cellRadial,
+        cellThick,
+        zCenter,
+        startOffset,
+        material: tierMat,
         group,
-        seedOffset: 1000 + r * 1000,
       });
+
+      // Next tier sits flush against this tier's inner edge — inset by
+      // exactly the cell's radial size.
+      polygon = insetPolygon(polygon, cellRadial);
     }
   }
 
