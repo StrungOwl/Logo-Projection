@@ -17,8 +17,9 @@ import { createLatticeUnderlay } from '../patterns/lattice-underlay.js';
 import { createGateFrame }       from '../patterns/gate-frame.js';
 import { createSparkSystem }     from '../patterns/stroke-sparks.js';
 import { createArch }            from '../patterns/arch.js';
+import { createFlame }           from '../patterns/flame.js';
 
-export function addPatternLayers(logoMesh, meta) {
+export function addPatternLayers(logoMesh, meta, renderer) {
   const { hull, silhouette, cx, cy, maxR, maxZ, patternFadeCenter } = meta;
   const strokeTimeUniforms = [];
   const sparkSystems = [];
@@ -144,7 +145,7 @@ export function addPatternLayers(logoMesh, meta) {
   const gate = createGateFrame({
     hull: gateOutline,
     frameWidth: gateFrameWidth,
-    frameDepth: 0.5,
+    frameDepth: 1.5,
     lipWidth: 0.3,
     lipDepth: 0.22,
     bossCount: 56,
@@ -240,7 +241,7 @@ export function addPatternLayers(logoMesh, meta) {
   const arch = createArch({
     silhouette:     silhouettePolygons,
     maxZ,
-    frameDepth:     0.5,
+    frameDepth:     1.5,
     gateFrameWidth,
   });
   arch.group.position.set(cx, cy, 0);
@@ -272,6 +273,18 @@ export function addPatternLayers(logoMesh, meta) {
     archSparks.host = 'arch';
     sparkSystems.push(archSparks);
   }
+
+  // ---------------------------------------------------------------------
+  // Flame effect — fills the main central cutout of the logo. Hidden
+  // unless ANIM.viewMode === 'flame' (gated in src/main.js). Carries its
+  // own update fn for the body shader, sparks, and flickering point light.
+  // ---------------------------------------------------------------------
+  const flame = createFlame({
+    logoMesh,
+    meta,
+    renderer,
+  });
+  logoMesh.add(flame.group);
 
   // ---------------------------------------------------------------------
   // Slow rotation for a random subset of rosettes and lattice hexes. Each
@@ -552,5 +565,8 @@ export function addPatternLayers(logoMesh, meta) {
            gateFrameGroup: gate,
            archGroup: arch.group,
            updateArch: arch.update,
-           triggerArchCascade: arch.triggerCascade };
+           triggerArchCascade: arch.triggerCascade,
+           flameGroup:   flame.group,
+           updateFlame:  flame.update,
+           flameLight:   flame.light };
 }

@@ -42,7 +42,7 @@ export const ANIM = {
   // on its own clock; the base scene (logo, gate frame, particles, lights)
   // stays on underneath.
   //   0 → 'all'  | 1 → 'pattern'  | 2 → 'hex'
-  //   3 → 'flowers'  | 4 → 'arch'  | 5 → 'flame' (placeholder)
+  //   3 → 'flowers'  | 4 → 'arch'  | 5 → 'flame'
   viewMode: 'all',
 
   keyLight:          { intensityMin: 0.0,  intensityMax: 4.6,
@@ -452,6 +452,205 @@ export const ANIM = {
     color:           '#9A7544',
     gradientDark:    '#5C4530',
     gradientBright:  '#E0BE89',
+  },
+
+  // -----------------------------------------------------------------------
+  // FLAME — fills the main central cutout of the logo with a volumetric,
+  // organic flame (mode 5 only). Three coordinated layers:
+  //   • Body  — extruded mesh of the cutout shape, custom shader using
+  //             domain-warped fbm noise for the licking, organic look.
+  //             Vertical gradient (yellow → orange → deep red) with
+  //             continuous chromatic shimmer + rare brighter flares
+  //             (blue/green/purple) confined to the hot zone at the base.
+  //   • Sparks — GPU points rising along the flame height; denser toward
+  //             the upper portion. Loop independently per-particle.
+  //   • Light — flickering THREE.PointLight at the flame's hot zone,
+  //             intensity + colour modulated by the same flare envelope.
+  //             Illuminates the inner walls of the cutout (StandardMaterial
+  //             on the logo) for the "fire glow" reaction.
+  //
+  // Flame is hidden in every mode except 'flame'. Galaxy backdrop stays
+  // visible behind it but lerps toward a black-sky-with-stars (`uStarryMode`)
+  // while flame mode is active.
+  // -----------------------------------------------------------------------
+  flame: {
+    // Z extent of the flame volume relative to the model's front face
+    // (maxZ). Negative = recessed into the cutout hole; positive = flames
+    // lick forward through the cutout toward the camera.
+    zBack:   -2.5,
+    zFront:   1.0,
+
+    // Vertical taper toward the vanishing point. Higher = flame narrows
+    // faster as it rises. Low values keep the bell area bright; high
+    // values squeeze brightness into the bottom point.
+    taperPower: 0.85,
+
+    // Color stops along the height (0=bottom, 1=at vanishing point).
+    colorBottom: '#FFE066',  // bright yellow at the hot base
+    colorMid:    '#FF8A20',  // orange middle band
+    colorTop:    '#A41A0F',  // deep red at the cool tip
+
+    // Domain-warped fbm parameters. The model's mesh-local coords run
+    // ~80x80 units across the cutout, so noiseScale needs to be small
+    // enough that the noise doesn't tile too tightly inside the body.
+    noiseScale:   0.08,   // larger = finer detail
+    noiseSpeed:   3.5,    // mesh-units/sec the noise scrolls upward
+    warpStrength: 2.4,    // how strongly the noise self-warps
+    threshLow:    0.05,   // raw-noise threshold band — anything below
+    threshHigh:   0.32,   // threshLow is invisible, threshHigh fully bright.
+                          // The vertical taper is applied as a final
+                          // alpha multiplier AFTER this threshold so the
+                          // bottom of the flame stays uniformly visible
+                          // while only the tip fades.
+
+    // Edge softening band as fraction of cutout half-width.
+    edgeSoftness: 0.30,
+
+    // Narrow vertical column the flame body actually occupies, expressed
+    // as a fraction of the cutout's half-width. The cutout polygon is
+    // very wide (the inner-star bay), so without this mask the flame
+    // sprawls across the whole cavity and reads as a gradient bar
+    // instead of a flame. The column tapers from `bodyHalfWidthBase` at
+    // the bottom to `bodyHalfWidthTop` near the vanishing point, giving
+    // a pointed candle-flame silhouette.
+    //   columnWobble    — fbm-driven horizontal sway of the column's
+    //                     centerline, fraction of cutout half-width
+    //   widthNoiseAmt   — fbm-driven per-row width modulation, ±fraction
+    //                     of the local column half-width (gives organic
+    //                     curling silhouette instead of straight sides)
+    //   widthNoiseFreq  — vertical frequency of the width noise
+    //   columnEdgeSoft  — soft-edge fraction at the column boundary
+    //                     (separate from `edgeSoftness` which still
+    //                     fades against the cutout polygon edges)
+    bodyHalfWidthBase: 0.13,
+    bodyHalfWidthTop:  0.035,
+    columnWobble:      0.06,
+    widthNoiseAmt:     0.55,
+    widthNoiseFreq:    0.18,
+    columnEdgeSoft:    0.45,
+
+    // Bottom fade — height fraction over which the flame ramps in from
+    // invisible (at the polygon's bottom Y) to full intensity. Real
+    // flames don't have a hard bright base — the wick is dark and the
+    // body starts a little above it.
+    bottomFadeFrac: 0.12,
+
+    // Vertical headroom past the pattern's vanishing point. The cutout
+    // polygon extends above the vanishing point (the inner-star tips),
+    // and that space is normally unused because the flame's t-mapping
+    // ends at vpY. Lifting the effective top by this fraction of the
+    // polygon's above-vpY span stretches the flame taller without
+    // changing the cutout geometry. 0 = stop at vpY (old behaviour),
+    // 1 = stretch all the way to the polygon's max Y.
+    topExtendFrac: 0.45,
+
+    // Overall multiplier applied to the flame body. With additive
+    // blending values >1 saturate after ACES tonemapping, giving the
+    // bright saturated-yellow core characteristic of real flame.
+    brightness: 3.5,
+    opacity:    1.0,
+
+    // Multiplier applied to all base-scene warm lights (key, innerGlow,
+    // front/rear pattern, rim, fill, ambient) while in flame mode. Drops
+    // the existing orange wash so the flame's own light dominates. Set
+    // to 1.0 to keep base lights at full strength alongside the flame.
+    baseLightDim: 0.06,
+
+    // Multiplier on logo material's `envMapIntensity` in flame mode.
+    // Default 1.0 lets the metallic logo reflect the neutral-grey env
+    // even in flame mode, washing the body warm-grey. Drop to a small
+    // value so the body goes nearly black between flame-light flicker
+    // peaks, letting the flame's PointLight be the visible source of
+    // illumination on the surrounding logo.
+    envMapIntensity: 0.05,
+
+    // Continuous low-amplitude chromatic shimmer on the hot zone — gives
+    // the base a constant flickering blue/cool tint without a single
+    // strong flash. Confined to t < yMax (height fraction).
+    shimmer: {
+      enabled:   true,
+      intensity: 0.18,
+      yMax:      0.40,
+      speed:     1.3,
+    },
+
+    // Rare brighter chromatic flares — randomly picked colours from the
+    // palette flash up in the hot zone with a smooth ramp envelope. Same
+    // colour also tints the point light for that flare's duration so the
+    // surrounding glow shifts cool with the flame.
+    flares: {
+      enabled:   true,
+      rate:      0.35,   // average flares per second (Bernoulli)
+      duration:  1.6,    // each flare's life, seconds (envelope)
+      intensity: 0.85,   // peak amount the flare colour overrides base
+      yMax:      0.50,   // flares only show below this height fraction
+      palette: ['#3DB7FF', '#41E0B8', '#A668FF', '#5BFF7E', '#7AC0FF'],
+    },
+
+    // Sparks rising from the flame.
+    //   count       — total particles in the system (load-only)
+    //   cycleDuration — average lifetime; per-particle ±lifeVariance
+    //   spawnYMin/Max — vertical band sparks emit from (height fractions)
+    //   riseDistance — how far above their spawn Y they reach at end of life
+    //   pointSize   — base px size at unit depth (load-only)
+    sparks: {
+      count:         55,         // load-only; keeps sparks readable
+                                 // without overpowering the body.
+      cycleDuration: 3.6,
+      lifeVariance:  0.5,
+      spawnYMin:     0.05,       // stay in the lower half so sparks
+      spawnYMax:     0.55,       // visually rise FROM the flame body.
+      riseDistance:  18.0,       // mesh-units; the cutout's vertical
+                                 // span is ~78 units, so sparks rise
+                                 // ~23 % of the body height before
+                                 // dying — long enough to read as
+                                 // climbing past the vanishing point.
+      swayAmount:    1.6,
+      swayFreq:      1.1,
+      pointSize:     14.0,
+      sizeVariance:  0.6,
+      bodyColor:     '#FFD68A',
+      coreColor:     '#FFFAE0',
+      brightness:    0.55,
+    },
+
+    // Flickering point light at the flame's hot zone. Position is computed
+    // in flame-local coords from the cutout extents.
+    //   yFraction  — 0=bottom of cutout, 1=vanishing-point Y
+    //   intensityMin/Max — base flicker bounds
+    //   flareIntensityBoost — extra intensity added during a chromatic flare
+    //   flickerSpeed/Jitter — sine + stochastic noise frequencies
+    //   coolColor — light tints toward this when a flare is active
+    light: {
+      enabled:    true,
+      yFraction:  0.20,
+      // Light Z relative to maxZ. Negative = INSIDE the cutout volume so
+      // only the inner walls of the hole are lit; the outer front face
+      // (normal +z) keeps a strong negative dot-product with the
+      // light-to-face vector and stays unlit (FrontSide rendering only
+      // illuminates the camera-facing side, not the back, so the front
+      // face's outer surface is unaffected by lights placed behind it).
+      zOffsetFromFront: -2.0,
+      intensityMin: 30,
+      intensityMax: 110,
+      flareIntensityBoost: 140,
+      flickerSpeed:  2.4,
+      flickerJitter: 0.55,
+      color:        '#FF7A22',
+      coolColor:    '#5DAEFF',
+      decay:        1.6,
+    },
+
+    // Galaxy starry-night mode. When viewMode === 'flame' the galaxy
+    // shader lerps `uStarryMode` toward 1: nebula + warm core glow fade
+    // out, deep-space goes pure black, and an extra dense star layer
+    // fades in. `fadeSpeed` is 1/sec. `brightness` overrides the
+    // galaxy's `uBrightness` uniform while flame mode is active so the
+    // backdrop is darker and the flame body reads clearly against it.
+    galaxyStarry: {
+      fadeSpeed:  1.5,
+      brightness: 0.18,
+    },
   },
 };
 

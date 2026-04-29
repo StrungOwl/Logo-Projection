@@ -39,6 +39,9 @@ const ctx = {
   archGroup:          null,
   updateArch:         null,
   triggerArchCascade: null,
+  flameGroup:         null,
+  updateFlame:        null,
+  flameLight:         null,
   lights,
   scene,
   camera,
@@ -50,7 +53,7 @@ loadLogo().then((logo) => {
   ctx.galaxyMat     = logo.galaxyMat;
   ctx.logoMaterials = logo.logoMaterials;
 
-  const patternResult = addPatternLayers(logo.logoMesh, logo.meta);
+  const patternResult = addPatternLayers(logo.logoMesh, logo.meta, renderer);
   ctx.strokeTimeUniforms.push(...patternResult.strokeTimeUniforms);
   ctx.sparkSystems.push(...patternResult.sparkSystems);
   ctx.updateRowCascade   = patternResult.updateRowCascade;
@@ -62,6 +65,9 @@ loadLogo().then((logo) => {
   ctx.archGroup          = patternResult.archGroup;
   ctx.updateArch         = patternResult.updateArch;
   ctx.triggerArchCascade = patternResult.triggerArchCascade;
+  ctx.flameGroup         = patternResult.flameGroup;
+  ctx.updateFlame        = patternResult.updateFlame;
+  ctx.flameLight         = patternResult.flameLight;
 
   // cascadeState is passed in so the overlay can sync its brick↔petals
   // morph to the cascade's all-at-center window when ANIM.timings.playAll
@@ -93,7 +99,15 @@ loadLogo().then((logo) => {
 export function tick(t, dt) {
   if (ctx.galaxyMat) {
     ctx.galaxyMat.uniforms.uTime.value       = t * ANIM.galaxy.timeScale;
-    ctx.galaxyMat.uniforms.uBrightness.value = ANIM.galaxy.brightness;
+    // In flame mode, lerp uBrightness toward the configured override so
+    // the backdrop is dimmer and the flame body reads clearly against
+    // mostly-black sky-with-stars.
+    const galStarry = ctx.galaxyMat.uniforms.uStarryMode.value;
+    const flameBg = (ANIM.flame && ANIM.flame.galaxyStarry && ANIM.flame.galaxyStarry.brightness);
+    const targetBright = (flameBg !== undefined)
+      ? ANIM.galaxy.brightness * (1 - galStarry) + flameBg * galStarry
+      : ANIM.galaxy.brightness;
+    ctx.galaxyMat.uniforms.uBrightness.value = targetBright;
   }
 
   if (ctx.particleMats) updateParticles(ctx.particleMats, t);
@@ -101,12 +115,12 @@ export function tick(t, dt) {
   // View-mode + master-toggle gating. The base scene (logo galaxy, gate
   // frame, particles, lights) stays on across every mode. Each effect
   // family is shown only in 'all' or its own solo mode.
-  //   0 → 'all'      panel + lattice + flower-overlay (NO arch)
+  //   0 → 'all'      panel + lattice + flower-overlay (NO arch, NO flame)
   //   1 → 'pattern'  panel + lattice underlay (front-pattern combo)
   //   2 → 'hex'      overlay BIG hex bricks only (entry/rotation/exit)
   //   3 → 'flowers'  full flower overlay (hex bricks → roses → bricks)
   //   4 → 'arch'     procedural-brick arch
-  //   5 → 'flame'    placeholder, hides all effect layers
+  //   5 → 'flame'    volumetric flame in the central cutout + starry sky
   // `ANIM.patterns.enabled === false` is the legacy kill switch — when
   // off, panel + lattice stay hidden regardless of view mode.
   const mode = ANIM.viewMode || 'all';
@@ -116,9 +130,24 @@ export function tick(t, dt) {
   const showHexBrick = (mode === 'all' || mode === 'hex');
   const showFlowers  = (mode === 'all' || mode === 'flowers');
   const showArch     = (mode === 'arch');
+  const showFlame    = (mode === 'flame');
   if (ctx.panelGroup)   ctx.panelGroup.visible   = showPanel;
   if (ctx.latticeGroup) ctx.latticeGroup.visible = showLattice;
   if (ctx.archGroup)    ctx.archGroup.visible    = showArch;
+  if (ctx.flameGroup)   ctx.flameGroup.visible   = showFlame;
+  // Three.js checks light.visible directly when collecting scene lights —
+  // hiding the parent group does NOT remove the light from the shader's
+  // light list. Set it explicitly so the flame's PointLight only colours
+  // the inner cutout walls while flame mode is active.
+  if (ctx.flameLight)   ctx.flameLight.visible   = showFlame;
+  // Hide the ember + white particle streams in flame mode. They emit
+  // from the inner-star outline and would visually clutter / compete
+  // with the flame body in the same negative-space region.
+  if (ctx.particleMats) {
+    const showParticles = !showFlame;
+    if (ctx.particleMats.emberPoints) ctx.particleMats.emberPoints.visible = showParticles;
+    if (ctx.particleMats.whitePoints) ctx.particleMats.whitePoints.visible = showParticles;
+  }
   for (let i = 0; i < ctx.overlayFlowerRoots.length; i++) {
     ctx.overlayFlowerRoots[i].visible = showFlowers;
   }
@@ -138,7 +167,17 @@ export function tick(t, dt) {
     const k01 = 0.5 + 0.5 * Math.sin(phase);
     const factor = lb.brightnessMin + (lb.brightnessMax - lb.brightnessMin) * k01;
     ctx.baseColorScratch.set(COLORS.logo.base).multiplyScalar(factor);
-    for (let i = 0; i < ctx.logoMaterials.length; i++) ctx.logoMaterials[i].color.copy(ctx.baseColorScratch);
+    // In flame mode, drop envMapIntensity heavily so the metallic env
+    // reflection doesn't wash the body warm-grey on its own — the
+    // flame's own point light should be the dominant illumination on
+    // the logo body, with the body going dark between flicker peaks.
+    const envI = (ANIM.viewMode === 'flame')
+      ? ((ANIM.flame && ANIM.flame.envMapIntensity) ?? 0.08)
+      : 1.0;
+    for (let i = 0; i < ctx.logoMaterials.length; i++) {
+      ctx.logoMaterials[i].color.copy(ctx.baseColorScratch);
+      ctx.logoMaterials[i].envMapIntensity = envI;
+    }
   }
 
   for (let i = 0; i < ctx.strokeTimeUniforms.length; i++) ctx.strokeTimeUniforms[i].value = t;
@@ -150,6 +189,21 @@ export function tick(t, dt) {
   if (ctx.updateRowCascade) ctx.updateRowCascade(t, dt);
   if (ctx.updateOverlay)    ctx.updateOverlay(t);
   if (ctx.updateArch)       ctx.updateArch(t, dt);
+  // Flame body shader, sparks, and flickering point light — runs every
+  // frame regardless of mode so the flame keeps "warming up" off-screen
+  // (no first-frame popping in when switching to mode 5).
+  if (ctx.updateFlame)      ctx.updateFlame(t, dt);
+
+  // Galaxy starry-night blend — lerps toward 1 in flame mode (black sky
+  // + denser flickering stars), toward 0 otherwise (warm nebula). Eased
+  // exponentially using the configured fadeSpeed (1/sec).
+  if (ctx.galaxyMat && ctx.galaxyMat.uniforms.uStarryMode) {
+    const targetStarry = (mode === 'flame') ? 1.0 : 0.0;
+    const fadeSpeed = (ANIM.flame && ANIM.flame.galaxyStarry && ANIM.flame.galaxyStarry.fadeSpeed) || 1.5;
+    const blend = 1 - Math.exp(-fadeSpeed * dt);
+    const u = ctx.galaxyMat.uniforms.uStarryMode;
+    u.value += (targetStarry - u.value) * blend;
+  }
   // updateOverlay re-asserts brickHexWall.visible based on its morph phase
   // each frame, which in mode 'flowers' would re-enable the bricks during
   // the brick hold. Re-apply the mode 'flowers' suppression after the

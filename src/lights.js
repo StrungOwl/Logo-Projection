@@ -47,13 +47,24 @@ export function createLights(scene) {
 // Called every frame — reads live values from ANIM so devtools tweaks
 // take effect immediately. Key sweeps red→amber and glow/front-pattern
 // swell anti-phase; rim drifts on offset phase.
+//
+// In flame mode the warm scene lights are dimmed to a small fraction
+// (configurable via ANIM.flame.baseLightDim) so the flame's own point
+// light + galaxy stars dominate the illumination — otherwise the
+// existing innerGlow + key light wash the inner-cutout area in bright
+// orange and make the flame body invisible.
 export function updateLights(lights, t) {
   const pulse   = Math.sin(t * ANIM.pulseSpeed);
   const pulse01 = 0.5 + 0.5 * pulse;
   const warm    = 1.0 - pulse01;
 
+  const flameMode = ANIM.viewMode === 'flame';
+  const dim = flameMode
+    ? ((ANIM.flame && ANIM.flame.baseLightDim) ?? 0.06)
+    : 1.0;
+
   const kl = ANIM.keyLight;
-  lights.keyLight.intensity = Math.max(0.0, kl.intensityMin + (kl.intensityMax - kl.intensityMin) * pulse01);
+  lights.keyLight.intensity = Math.max(0.0, kl.intensityMin + (kl.intensityMax - kl.intensityMin) * pulse01) * dim;
   const [klMinR, klMinG, klMinB] = hexToRgb(kl.colorAtMin);
   const [klMaxR, klMaxG, klMaxB] = hexToRgb(kl.colorAtMax);
   lights.keyLight.color.setRGB(
@@ -63,20 +74,20 @@ export function updateLights(lights, t) {
   );
 
   const ig = ANIM.innerGlow;
-  lights.innerGlow.intensity = ig.intensityMin + (ig.intensityMax - ig.intensityMin) * warm;
+  lights.innerGlow.intensity = (ig.intensityMin + (ig.intensityMax - ig.intensityMin) * warm) * dim;
   lights.innerGlow.color.set(ig.color);
 
   const fp = ANIM.frontPatternLight;
-  lights.frontPatternLight.intensity = fp.intensityMin + (fp.intensityMax - fp.intensityMin) * warm;
+  lights.frontPatternLight.intensity = (fp.intensityMin + (fp.intensityMax - fp.intensityMin) * warm) * dim;
   lights.frontPatternLight.color.set(fp.color);
 
   const rl = ANIM.rimLight;
   const rimPulse01 = 0.5 + 0.5 * Math.sin(t * ANIM.pulseSpeed + rl.phaseOffset);
-  lights.rimLight.intensity = rl.intensityMin + (rl.intensityMax - rl.intensityMin) * rimPulse01;
+  lights.rimLight.intensity = (rl.intensityMin + (rl.intensityMax - rl.intensityMin) * rimPulse01) * dim;
   lights.rimLight.color.set(rl.color);
 
-  lights.ambientLight.intensity    = ANIM.ambientIntensity;
-  lights.fillLight.intensity       = ANIM.fillIntensity;
-  lights.rearPatternLight.intensity = ANIM.rearPatternIntensity;
+  lights.ambientLight.intensity    = ANIM.ambientIntensity * dim;
+  lights.fillLight.intensity       = ANIM.fillIntensity * dim;
+  lights.rearPatternLight.intensity = ANIM.rearPatternIntensity * dim;
   lights.rearPatternLight.color.set(ANIM.rearPatternColor);
 }

@@ -21,6 +21,11 @@ export function createGalaxyMaterial() {
       uMinY:       { value: -1.0 },
       uFadeHeight: { value: 1.0 },
       uBrightness: { value: ANIM.galaxy.brightness },
+      // Starry-night blend (0..1). Lerped toward 1 by main.js while
+      // viewMode === 'flame' — fades the nebula + warm core glow out and
+      // brings up an extra dense, flicker-heavy star layer over a black
+      // background so the flame reads against a clear night sky.
+      uStarryMode: { value: 0.0 },
     },
     vertexShader: `
       varying vec3 vLocalPos;
@@ -38,6 +43,7 @@ export function createGalaxyMaterial() {
       uniform float uMinY;
       uniform float uFadeHeight;
       uniform float uBrightness;
+      uniform float uStarryMode;
       varying vec3 vLocalPos;
       varying vec3 vNormal;
 
@@ -106,14 +112,15 @@ export function createGalaxyMaterial() {
         nebula = mix(nebula, nebRust, smoothstep(0.55, 0.95, n2));
 
         // Denser starfield — extra layers and lower thresholds so more
-        // cells seed a star.
+        // cells seed a star. Sharpness drives the visual size of each
+        // star (lower = bigger glow).
         float stars = 0.0;
-        stars += starLayer(vLocalPos.xy, 0.55, 0.78, 14.0) * 1.2;
-        stars += starLayer(vLocalPos.xy, 1.10, 0.84, 18.0) * 1.0;
-        stars += starLayer(vLocalPos.xy, 2.20, 0.88, 22.0) * 0.8;
-        stars += starLayer(vLocalPos.xy, 4.20, 0.92, 26.0) * 0.55;
-        stars += starLayer(vLocalPos.xy, 7.50, 0.95, 30.0) * 0.4;
-        stars += starLayer(vLocalPos.xy, 12.0, 0.97, 34.0) * 0.28;
+        stars += starLayer(vLocalPos.xy, 0.55, 0.78,  9.0) * 1.4;
+        stars += starLayer(vLocalPos.xy, 1.10, 0.84, 12.0) * 1.15;
+        stars += starLayer(vLocalPos.xy, 2.20, 0.88, 15.0) * 0.9;
+        stars += starLayer(vLocalPos.xy, 4.20, 0.92, 19.0) * 0.65;
+        stars += starLayer(vLocalPos.xy, 7.50, 0.95, 23.0) * 0.45;
+        stars += starLayer(vLocalPos.xy, 12.0, 0.97, 28.0) * 0.32;
 
         vec3 color = deepSpace;
         color += nebula * nebulaDensity * 0.55;
@@ -131,6 +138,25 @@ export function createGalaxyMaterial() {
         // Inner rim ring of brighter heat right at the silhouette edge
         float edgeRing = smoothstep(0.85, 1.0, dCenter) * (1.0 - smoothstep(1.0, 1.05, dCenter));
         color += vec3(1.0, 0.55, 0.18) * edgeRing * 1.5;
+
+        // Starry-night palette — sampled in parallel so we can lerp between
+        // the warm-nebula look and the black sky based on uStarryMode.
+        // Extra dense star layers + a stronger overall star multiplier give
+        // the "many flickering stars" feel during flame mode.
+        if (uStarryMode > 0.001) {
+          float extraStars = 0.0;
+          extraStars += starLayer(vLocalPos.xy, 1.40, 0.86, 11.0) * 0.95;
+          extraStars += starLayer(vLocalPos.xy, 2.80, 0.90, 15.0) * 0.7;
+          extraStars += starLayer(vLocalPos.xy, 5.40, 0.94, 20.0) * 0.45;
+          extraStars += starLayer(vLocalPos.xy, 9.00, 0.97, 26.0) * 0.28;
+          vec3 starrySky = vec3(0.0);
+          // Stars muted in flame mode so the flame is the dominant
+          // bright element; the sky reads as "black with flicker"
+          // rather than "active starfield".
+          starrySky += vec3(1.0, 0.95, 0.85) * stars * 0.95;
+          starrySky += vec3(0.92, 0.97, 1.00) * extraStars * 0.7;
+          color = mix(color, starrySky, uStarryMode);
+        }
 
         // Darken side faces so the logo's 3D depth still reads
         float facing = abs(vNormal.z);

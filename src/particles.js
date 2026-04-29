@@ -278,20 +278,24 @@ function whiteTarget(halfExtent, frontZ) {
 
 // Attach ember + white particle systems onto the logo mesh. Returns the
 // two materials so main.js can push uTime / hot-swap color & brightness
-// each frame.
+// each frame, plus the two Points objects so main.js can hide them in
+// view modes (e.g. flame) where the ember/white particle streams would
+// compete with the mode's own visual.
 export function addParticles(logoMesh, renderer) {
   const { segments, frontZ, halfExtent } = extractStarSegments(logoMesh);
   const sampleOutline = makeOutlineSampler(segments);
 
   const emberMat = buildParticleMaterial(renderer, ANIM.emberParticles);
   const emberGeo = buildParticleGeometry(sampleOutline, halfExtent, frontZ, emberPassage, makeEmberTargetFn());
-  logoMesh.add(new THREE.Points(emberGeo, emberMat));
+  const emberPoints = new THREE.Points(emberGeo, emberMat);
+  logoMesh.add(emberPoints);
 
   const whiteMat = buildParticleMaterial(renderer, ANIM.whiteParticles);
   const whiteGeo = buildParticleGeometry(sampleOutline, halfExtent, frontZ, whitePassage, whiteTarget);
-  logoMesh.add(new THREE.Points(whiteGeo, whiteMat));
+  const whitePoints = new THREE.Points(whiteGeo, whiteMat);
+  logoMesh.add(whitePoints);
 
-  return { emberMat, whiteMat };
+  return { emberMat, whiteMat, emberPoints, whitePoints };
 }
 
 // Per-frame update — hot-swaps color/cycle/brightness so devtools edits
