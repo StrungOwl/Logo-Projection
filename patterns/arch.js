@@ -360,6 +360,75 @@ export function createArch({ silhouette, maxZ, frameDepth = 0.5,
     });
   }
 
+  // --- Recessed rings (corbeled muqarnas inlay) ---
+  // Each ring is nested inside the previous one, with the brick's BACK face
+  // anchored to the gate-frame front (gateFrontZ) and a progressively
+  // smaller depthScale shrinking the Z-extent so the FRONT face steps back
+  // into the wall. Material darkens per ring (lerping toward gradientDark)
+  // so the deepest rings fade visually toward the central star void.
+  // Sparks pick these up automatically via the edge-harvest pass below.
+  const ringsCfg = cfg.recessedRings || {};
+  if (ringsCfg.enabled !== false && (ringsCfg.count || 0) > 0) {
+    const baseColor = new THREE.Color(cfg.color || '#9A7544');
+    const darkColor = new THREE.Color(cfg.gradientDark || '#5C4530');
+    let ringPoly = curve.perimeterPoly;
+    for (let r = 1; r <= ringsCfg.count; r++) {
+      ringPoly = insetPolygon(ringPoly, ringsCfg.insetStep || 2.5);
+
+      // Bail out once the polygon has collapsed too far to carry bricks.
+      let perim = 0;
+      for (let i = 0; i < ringPoly.length; i++) {
+        const a = ringPoly[i], b = ringPoly[(i + 1) % ringPoly.length];
+        perim += Math.hypot(b.x - a.x, b.y - a.y);
+      }
+      if (perim < (ringsCfg.minPerimeter || 12)) break;
+
+      // Per-ring brick cross-section shrink (height + depth). `width`
+      // stays at brickCfg.width — depthScale below shrinks the actual
+      // world-Z extent.
+      const shrink = Math.pow(ringsCfg.sizeShrink || 1.0, r);
+      const ringBrickCfg = {
+        ...brickCfg,
+        height: brickCfg.height * shrink,
+        depth:  brickCfg.depth  * shrink,
+      };
+
+      const sampleCount = Math.max(8, Math.round(perim / brickCfg.width));
+      let samples = samplePerimeter(ringPoly, sampleCount);
+      samples = smoothTangents(samples);
+
+      // depthScale^r shrinks each ring's Z-extent. zCenter places the
+      // brick so its BACK face sits on gateFrontZ — every ring shares the
+      // same back plane, and only the front face steps backward.
+      const depthScale = Math.pow(ringsCfg.depthScaleStep || 1.0, r);
+      const ringZCenter = gateFrontZ + brickCfg.width * depthScale * 0.5;
+
+      // Material — lerp toward gradientDark by `colorMix` at the
+      // innermost ring; alpha drops linearly if `opacityFalloff` set.
+      const t = ringsCfg.count > 1 ? r / ringsCfg.count : 1;
+      const mixT     = Math.min(1, t * (ringsCfg.colorMix || 0));
+      const ringColor = baseColor.clone().lerp(darkColor, mixT);
+      const alphaDrop = (ringsCfg.opacityFalloff || 0) * t;
+      const ringMat = new THREE.MeshStandardMaterial({
+        color:     ringColor,
+        metalness: 0.15,
+        roughness: 0.8,
+        transparent: alphaDrop > 0,
+        opacity:   1 - alphaDrop,
+      });
+
+      placeArchRow({
+        samples,
+        brickCfg:   ringBrickCfg,
+        depthScale,
+        zCenter:    ringZCenter,
+        material:   ringMat,
+        group,
+        seedOffset: 1000 + r * 1000,
+      });
+    }
+  }
+
   // --- Inner cascade arch row ---
   let cascadeBricks = [];
   let cascadeStartTime = null;

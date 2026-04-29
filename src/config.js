@@ -43,7 +43,7 @@ export const ANIM = {
   // stays on underneath.
   //   0 → 'all'  | 1 → 'pattern'  | 2 → 'hex'
   //   3 → 'flowers'  | 4 → 'arch'  | 5 → 'flame'
-  viewMode: 'flame',
+  viewMode: 'arch',
 
   keyLight:          { intensityMin: 0.0,  intensityMax: 4.6,
                        colorAtMin: '#FF1400', colorAtMax: '#FFCC2E' },
@@ -449,6 +449,47 @@ export const ANIM = {
       yLevel:         0.0,           // brick top Z relative to maxZ + frameDepth
     },
 
+    // Stack of progressively-inset brick rings nested inside the outer
+    // arch row, giving the corbeled muqarnas look from the reference: each
+    // successive ring sits further inward (smaller polygon, inset by
+    // `insetStep` per step) and has a SHORTER brick on Z (`depthScale`
+    // shrinks per ring), so all rings share the same back plane (flush
+    // with the gate-frame front face) while their FRONT faces step
+    // backward into the wall — the eye reads it as a tunnel descending
+    // toward the central star void. Material darkens per ring (lerping
+    // toward `gradientDark`) and optionally drops opacity so the inner
+    // rings fade into the glow.
+    //   count           — number of recessed rings (in addition to the
+    //                     outer row). 0 disables.
+    //   insetStep       — extra inset distance per ring, units. Roughly
+    //                     one brick height keeps each ring nested flush
+    //                     against the outline of the previous one.
+    //   depthScaleStep  — multiplier applied to the brick's Z-extent per
+    //                     ring (ring r uses depthScaleStep^r). <1 makes
+    //                     inner rings shorter so their FRONT faces step
+    //                     backward into the wall.
+    //   sizeShrink      — multiplier on brick height/depth per ring; <1
+    //                     gives smaller brick cells deeper in.
+    //   colorMix        — fraction of (color → gradientDark) lerp at the
+    //                     innermost ring; intermediate rings interpolate
+    //                     linearly. 0 = no darkening.
+    //   opacityFalloff  — extra alpha drop at the innermost ring (linear
+    //                     from 0 at outer to opacityFalloff at inner).
+    //                     0 = stays opaque.
+    //   minPerimeter    — abort the recursion once the inset polygon's
+    //                     perimeter falls below this many units (so we
+    //                     stop before the polygon collapses to a point).
+    recessedRings: {
+      enabled:        true,
+      count:          5,
+      insetStep:      2.6,
+      depthScaleStep: 0.78,
+      sizeShrink:     0.92,
+      colorMix:       0.7,
+      opacityFalloff: 0.0,
+      minPerimeter:   12.0,
+    },
+
     color:           '#9A7544',
     gradientDark:    '#5C4530',
     gradientBright:  '#E0BE89',
@@ -695,6 +736,62 @@ export const ANIM = {
     // peaks, letting the flame's PointLight be the visible source of
     // illumination on the surrounding logo.
     envMapIntensity: 0.05,
+
+    // Rim events — a thin ribbon along the inner-star cutout polygon
+    // hosts two occasional gate-tracing effects, each with its own
+    // Bernoulli-rate trigger:
+    //
+    //   • CHASE  — a Gaussian "pulse tongue" travels once around the
+    //              perimeter from a launch point (the rim vertex
+    //              closest to the flame's column base) over `duration`
+    //              seconds, then dies. Reads as fire chasing around
+    //              the gate.
+    //   • IGNITE — a Gaussian glow centred on the same launch point
+    //              whose spread radius expands outward in both
+    //              directions until it covers the whole rim, then
+    //              fades. Reads as the gate momentarily catching fire.
+    //
+    // Both fire independently — the same envelope drives a single
+    // event from start → peak → fade, then the rate roll resets.
+    //
+    //   thickness     — ribbon width (mesh units). Sits on the front
+    //                   face of the flame slab so it reads against
+    //                   the logo regardless of camera angle.
+    //   pulse.rate    — per-second Bernoulli probability. 0.05 ≈ one
+    //                   chase every ~20s.
+    //   pulse.duration— seconds the pulse takes to traverse the rim.
+    //                   Shorter = faster fire chase.
+    //   pulse.width   — Gaussian half-width as fraction of perimeter
+    //                   (0.06 = the tongue spans ~6 % of the loop).
+    //   pulse.color   — hex tongue colour.
+    //   pulse.intensity — peak alpha multiplier.
+    //   ignite.rate   — per-second Bernoulli probability for ignite.
+    //   ignite.duration — total seconds, attack+sustain+decay.
+    //   ignite.maxSpread — final Gaussian radius as fraction of
+    //                   perimeter. 0.55 is the practical cap (covers
+    //                   the whole loop without seam artefacts).
+    //   ignite.color  — hex glow colour.
+    //   ignite.intensity — peak alpha multiplier.
+    rim: {
+      enabled:   true,
+      thickness: 3.0,            // load-only; reload after editing
+      pulse: {
+        enabled:   true,
+        rate:      0.18,         // ~once every 5–6s (was 0.05)
+        duration:  6.0,          // longer dwell (was 4.5)
+        width:     0.10,         // wider tongue, easier to spot (was 0.05)
+        color:     '#FFE8B0',    // hot warm-white — contrasts the body
+        intensity: 3.5,          // hard peak (was 1.6)
+      },
+      ignite: {
+        enabled:   true,
+        rate:      0.08,         // ~once every 12s (was 0.025)
+        duration:  5.0,          // longer fade (was 3.5)
+        maxSpread: 0.55,
+        color:     '#FF8830',    // saturated orange — pops vs. amber body
+        intensity: 2.6,          // hard peak (was 1.3)
+      },
+    },
 
     // Multiplicative-blend "shadow halo" that darkens the background in
     // the dark gaps between bright flame tongues — adds contrast against

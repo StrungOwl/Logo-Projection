@@ -760,6 +760,222 @@ function buildFlameShadow({ cutoutLoop, vpX, vpY, minY, maxY, halfWidth, zBack, 
 }
 
 // -----------------------------------------------------------------------
+// FLAME RIM — a thin ribbon hugging the inner-star cutout polygon, used
+// for occasional gate-tracing events:
+//
+//   • CHASE   — a Gaussian "pulse tongue" travels around the perimeter
+//               from a launch arc-length (closest rim vertex to the
+//               flame's column base) over `pulse.duration` seconds.
+//               Reads as fire chasing around the inner gate.
+//   • IGNITE  — a Gaussian glow centred on the same launch point with
+//               a spread radius that EXPANDS over the envelope's first
+//               half (radiating outward in both directions until it
+//               fills the whole rim) then fades. Reads as the gate
+//               momentarily catching fire.
+//
+// Both events are independent — they have their own Bernoulli-rate
+// triggers, durations, colours, intensities, envelopes — and the
+// shader sums them so they can overlap. The ribbon is two vertices
+// per polygon vertex (one ON the polygon edge, one offset OUTWARD by
+// `thickness`) connected by triangles, with each vertex carrying the
+// cumulative arc-length from polygon[0] as a vertex attribute. The
+// fragment shader normalises arc-length to [0,1] and computes
+// circle-aware Gaussian distances to the pulse and ignite centres.
+// -----------------------------------------------------------------------
+function buildFlameRim({ cutoutLoop, zCenter, vpX, minY, cfg }) {
+  const N = cutoutLoop.length;
+  if (N < 3) return null;
+  const rcfg = cfg.rim || {};
+  const thickness = rcfg.thickness ?? 1.4;
+
+  // Detect winding direction via signed-area shoelace so outward
+  // normals point AWAY from the polygon interior regardless of how
+  // the cutout extractor returned its vertex order.
+  let signedArea = 0;
+  for (let i = 0; i < N; i++) {
+    const cur  = cutoutLoop[i];
+    const next = cutoutLoop[(i + 1) % N];
+    signedArea += cur.x * next.y - next.x * cur.y;
+  }
+  const ccw = signedArea > 0;
+
+  // Compute outward normals at each vertex by averaging the two
+  // adjacent edge perpendiculars. CCW polygons get (dy, -dx); CW
+  // polygons get (-dy, dx).
+  const normals = new Array(N);
+  for (let i = 0; i < N; i++) {
+    const prev = cutoutLoop[(i - 1 + N) % N];
+    const cur  = cutoutLoop[i];
+    const next = cutoutLoop[(i + 1) % N];
+    const e1x = cur.x - prev.x,  e1y = cur.y - prev.y;
+    const e2x = next.x - cur.x,  e2y = next.y - cur.y;
+    let n1x, n1y, n2x, n2y;
+    if (ccw) { n1x =  e1y; n1y = -e1x; n2x =  e2y; n2y = -e2x; }
+    else     { n1x = -e1y; n1y =  e1x; n2x = -e2y; n2y =  e2x; }
+    const l1 = Math.hypot(n1x, n1y) || 1;
+    const l2 = Math.hypot(n2x, n2y) || 1;
+    n1x /= l1; n1y /= l1; n2x /= l2; n2y /= l2;
+    let nx = (n1x + n2x) * 0.5;
+    let ny = (n1y + n2y) * 0.5;
+    const l = Math.hypot(nx, ny) || 1;
+    normals[i] = { x: nx / l, y: ny / l };
+  }
+
+  // Cumulative arc-length per vertex, plus the closing edge so the
+  // perimeter wraps cleanly.
+  const arcLen = new Float32Array(N);
+  for (let i = 1; i < N; i++) {
+    const prev = cutoutLoop[i - 1];
+    const cur  = cutoutLoop[i];
+    arcLen[i] = arcLen[i - 1] + Math.hypot(cur.x - prev.x, cur.y - prev.y);
+  }
+  const closingDist = Math.hypot(
+    cutoutLoop[0].x - cutoutLoop[N - 1].x,
+    cutoutLoop[0].y - cutoutLoop[N - 1].y,
+  );
+  const perimeter = arcLen[N - 1] + closingDist;
+
+  // Two vertices per polygon vertex (inner = on the polygon, outer =
+  // offset outward by `thickness`). vSide attribute distinguishes them
+  // for thickness fade in the shader.
+  const positions  = new Float32Array(N * 2 * 3);
+  const aArcLength = new Float32Array(N * 2);
+  const aSide      = new Float32Array(N * 2);
+  for (let i = 0; i < N; i++) {
+    const v = cutoutLoop[i];
+    const n = normals[i];
+    const inner = i * 2;
+    const outer = i * 2 + 1;
+    positions[inner * 3]     = v.x;
+    positions[inner * 3 + 1] = v.y;
+    positions[inner * 3 + 2] = zCenter;
+    positions[outer * 3]     = v.x + n.x * thickness;
+    positions[outer * 3 + 1] = v.y + n.y * thickness;
+    positions[outer * 3 + 2] = zCenter;
+    aArcLength[inner] = arcLen[i];
+    aArcLength[outer] = arcLen[i];
+    aSide[inner] = 0;
+    aSide[outer] = 1;
+  }
+  // Two triangles per edge of the polygon. We deliberately SKIP the
+  // closing edge (i === N - 1, connecting vertex N-1 back to vertex 0)
+  // because that segment is the synthetic chord extractInnerCutout
+  // adds to seal the open bay — it doesn't correspond to any actual
+  // logo edge, and drawing it shows a horizontal "bottom line" across
+  // the bay's neck. Leaving the rim as an open ribbon along the bay's
+  // real edges reads correctly. The chase pulse + ignite envelopes
+  // still use the full perimeter for arc-length, so the pulse simply
+  // disappears as it crosses the chord region and reappears on the
+  // other side.
+  const indices = [];
+  for (let i = 0; i < N - 1; i++) {
+    const a = i;
+    const b = i + 1;
+    const aIn = a * 2,     aOut = a * 2 + 1;
+    const bIn = b * 2,     bOut = b * 2 + 1;
+    indices.push(aIn, aOut, bOut);
+    indices.push(aIn, bOut, bIn);
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position',   new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute('aArcLength', new THREE.BufferAttribute(aArcLength, 1));
+  geometry.setAttribute('aSide',      new THREE.BufferAttribute(aSide, 1));
+  geometry.setIndex(indices);
+
+  // Pre-compute the launch arc-length (fraction in [0,1]) — the rim
+  // vertex closest to the flame's column base. Pulse + ignite events
+  // start here so they emanate FROM the flame.
+  let bestI = 0, bestD = Infinity;
+  const lx = vpX, ly = minY;
+  for (let i = 0; i < N; i++) {
+    const v = cutoutLoop[i];
+    const d = (v.x - lx) * (v.x - lx) + (v.y - ly) * (v.y - ly);
+    if (d < bestD) { bestD = d; bestI = i; }
+  }
+  const launchS = arcLen[bestI] / Math.max(perimeter, 0.001);
+
+  const uniforms = {
+    uPerimeter:    { value: perimeter },
+    uPulsePhase:   { value: 0 },
+    uPulseWidth:   { value: rcfg.pulse?.width ?? 0.06 },
+    uPulseEnv:     { value: 0 },
+    uPulseColor:   { value: new THREE.Vector3(...hexToRgb(rcfg.pulse?.color ?? '#FFB840')) },
+    uIgniteCenter: { value: launchS },
+    uIgniteSpread: { value: 0 },
+    uIgniteEnv:    { value: 0 },
+    uIgniteColor:  { value: new THREE.Vector3(...hexToRgb(rcfg.ignite?.color ?? '#FFD060')) },
+  };
+
+  const material = new THREE.ShaderMaterial({
+    uniforms,
+    transparent: true,
+    depthWrite:  false,
+    depthTest:   true,
+    side:        THREE.DoubleSide,
+    blending:    THREE.AdditiveBlending,
+    vertexShader: `
+      attribute float aArcLength;
+      attribute float aSide;
+      varying float vS;       // arc-length [0..1]
+      varying float vSide;    // 0 at polygon edge, 1 at outer ribbon edge
+      uniform float uPerimeter;
+      void main() {
+        vS    = aArcLength / max(uPerimeter, 0.001);
+        vSide = aSide;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform float uPulsePhase;
+      uniform float uPulseWidth;
+      uniform float uPulseEnv;
+      uniform vec3  uPulseColor;
+      uniform float uIgniteCenter;
+      uniform float uIgniteSpread;
+      uniform float uIgniteEnv;
+      uniform vec3  uIgniteColor;
+      varying float vS;
+      varying float vSide;
+
+      // Shortest distance between two arc-length fractions on a closed loop.
+      float circDist(float a, float b) {
+        float d = abs(a - b);
+        return min(d, 1.0 - d);
+      }
+
+      void main() {
+        // Chase pulse — Gaussian centred on uPulsePhase, wraps at the seam.
+        float dPulse = circDist(vS, uPulsePhase);
+        float pulseG = exp(-pow(dPulse / max(uPulseWidth, 0.001), 2.0));
+
+        // Ignite — Gaussian centred on uIgniteCenter; uIgniteSpread is
+        // the radius of the bell. As spread grows the glow expands
+        // outward in both directions until it covers the whole rim.
+        float dIgnite = circDist(vS, uIgniteCenter);
+        float igniteG = exp(-pow(dIgnite / max(uIgniteSpread, 0.001), 2.0));
+
+        // Across-thickness fade: brightest at the polygon edge (vSide=0),
+        // softens outward.
+        float sideFade = 1.0 - smoothstep(0.0, 1.0, vSide);
+
+        float pAmt = pulseG  * uPulseEnv;
+        float iAmt = igniteG * uIgniteEnv;
+        vec3 col = uPulseColor * pAmt + uIgniteColor * iAmt;
+        float alpha = (pAmt + iAmt) * sideFade;
+        if (alpha <= 0.001) discard;
+        gl_FragColor = vec4(col, alpha);
+      }
+    `,
+  });
+
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.frustumCulled = false;
+  mesh.renderOrder = 8;     // sit on top of body + secondary
+  return { mesh, uniforms, perimeter, launchS };
+}
+
+// -----------------------------------------------------------------------
 // SPARKS — GPU points looping independently along the flame height.
 // Each particle has a fixed spawn (x, y) within the cutout and rises
 // upward over its lifetime, with sinusoidal sway. Loop modelled after
@@ -1021,6 +1237,11 @@ export function createFlame({ logoMesh, meta, renderer }) {
   }
   // Convert mesh-local -> flame-local (flame group sits at (cx, cy, 0)).
   const cutoutLoop = cutoutMeshLocal.map(p => ({ x: p.x - cx, y: p.y - cy }));
+  // Snapshot the polygon BEFORE the stretch below — the rim ribbon
+  // needs to follow the logo's actual inner-star edges, not the
+  // stretched flame polygon. Deep copy so the body's stretching can't
+  // mutate the rim's geometry source.
+  const cutoutLoopForRim = cutoutLoop.map(p => ({ x: p.x, y: p.y }));
 
   // Stretch the polygon's lower portion downward so its visible bottom
   // reaches the logo silhouette's bottom (`meta.bbox.min.y`) rather
@@ -1109,6 +1330,30 @@ export function createFlame({ logoMesh, meta, renderer }) {
   const sparks = buildSparks({ cutoutLoop, vpX, vpY, minY, maxY, zBack, zFront, renderer });
   if (sparks) group.add(sparks.points);
 
+  // Rim — sits at the front of the flame slab so the chase pulse +
+  // radial ignite read clearly against the logo's front face. Built
+  // from the UNSTRETCHED cutout (cutoutLoopForRim) so the ribbon
+  // follows the logo's actual inner-star edges rather than the
+  // stretched-downward polygon the body uses. The rim's y position is
+  // counter-translated each frame to cancel out the flame group's
+  // y-offset (so the rim stays glued to the logo even when the flame
+  // is nudged up).
+  let rim = null;
+  if (cfg.rim && cfg.rim.enabled) {
+    // Recompute the launch reference point using the unstretched
+    // polygon's actual lower extent, not the stretched-flame minY.
+    let rimMinY = Infinity;
+    for (const p of cutoutLoopForRim) if (p.y < rimMinY) rimMinY = p.y;
+    rim = buildFlameRim({
+      cutoutLoop: cutoutLoopForRim,
+      zCenter: zFront - 0.05,
+      vpX,
+      minY: rimMinY,
+      cfg,
+    });
+    if (rim) group.add(rim.mesh);
+  }
+
   // Light
   const light = buildLight({ vpX, minY, maxY, maxZ });
   if (light) group.add(light);
@@ -1132,13 +1377,27 @@ export function createFlame({ logoMesh, meta, renderer }) {
   const paletteA = new THREE.Color();
   const paletteB = new THREE.Color();
 
+  // ----- Rim event state -----
+  // Independent envelopes for the chase pulse and the radial ignite.
+  // Each event is one-shot: triggered by a Bernoulli-rate check, runs
+  // for `duration` seconds, then resets so it can fire again.
+  let pulseStart  = -1, pulseEnd  = -1;
+  let igniteStart = -1, igniteEnd = -1;
+  const pulseColorVec  = new THREE.Vector3();
+  const igniteColorVec = new THREE.Vector3();
+
   function update(t, dt) {
     // Body shader time
     body.uniforms.uTime.value = t;
 
     // Hot-swap the Y nudge so devtools edits to ANIM.flame.yOffsetFrac
     // take effect immediately.
-    group.position.y = cy + (ANIM.flame.yOffsetFrac ?? 0) * cutoutHeight;
+    const yOffsetCurrent = (ANIM.flame.yOffsetFrac ?? 0) * cutoutHeight;
+    group.position.y = cy + yOffsetCurrent;
+    // Counter-translate the rim so it stays anchored to the logo's
+    // inner-star edges regardless of the flame group's nudge — the
+    // rim is supposed to trace the gate, not float with the flame.
+    if (rim) rim.mesh.position.y = -yOffsetCurrent;
 
     // Spark uniforms — hot-swap so devtools edits to ANIM.flame.sparks.*
     // take effect immediately (count + spawn pos are load-only).
@@ -1332,6 +1591,79 @@ export function createFlame({ logoMesh, meta, renderer }) {
         light.color.copy(lerpedLightColor);
       } else {
         light.color.copy(baseLightColor);
+      }
+    }
+
+    // ----- Rim events -----
+    // Chase pulse: Gaussian tongue travels around the rim from launchS
+    // to launchS+1 (one full lap) over duration. Envelope ramps up
+    // fast then trails off long, like a meteor.
+    // Ignite: Gaussian glow centred on launchS whose spread radius
+    // expands over the envelope's first half (so it radiates outward
+    // and "fills" the rim) then fades.
+    if (rim) {
+      const rcfg = bcfg.rim || {};
+      const rPulse  = rcfg.pulse  || {};
+      const rIgnite = rcfg.ignite || {};
+
+      // Trigger chase pulse
+      if (rPulse.enabled !== false && rPulse.rate > 0 && t > pulseEnd) {
+        if (Math.random() < rPulse.rate * dt) {
+          pulseStart = t;
+          pulseEnd   = t + (rPulse.duration ?? 4.0);
+          if (rPulse.color) {
+            const c = new THREE.Color(rPulse.color);
+            pulseColorVec.set(c.r, c.g, c.b);
+            rim.uniforms.uPulseColor.value.copy(pulseColorVec);
+          }
+        }
+      }
+      // Drive chase pulse
+      if (t >= pulseStart && t <= pulseEnd) {
+        const dur = Math.max((rPulse.duration ?? 4.0), 0.01);
+        const u   = (t - pulseStart) / dur;
+        // Phase travels one full lap — launchS at u=0, launchS+1 at u=1.
+        const phase = (rim.launchS + u) % 1;
+        rim.uniforms.uPulsePhase.value = (phase + 1) % 1;
+        rim.uniforms.uPulseWidth.value = rPulse.width ?? 0.06;
+        // Fast attack, long tail.
+        const env = u < 0.10 ? (u / 0.10)
+                              : Math.max(0, 1.0 - (u - 0.10) / 0.90);
+        rim.uniforms.uPulseEnv.value = env * (rPulse.intensity ?? 1.5);
+      } else {
+        rim.uniforms.uPulseEnv.value = 0;
+      }
+
+      // Trigger ignite
+      if (rIgnite.enabled !== false && rIgnite.rate > 0 && t > igniteEnd) {
+        if (Math.random() < rIgnite.rate * dt) {
+          igniteStart = t;
+          igniteEnd   = t + (rIgnite.duration ?? 3.5);
+          if (rIgnite.color) {
+            const c = new THREE.Color(rIgnite.color);
+            igniteColorVec.set(c.r, c.g, c.b);
+            rim.uniforms.uIgniteColor.value.copy(igniteColorVec);
+          }
+          // Always re-anchor centre at launch — flame is the source.
+          rim.uniforms.uIgniteCenter.value = rim.launchS;
+        }
+      }
+      // Drive ignite
+      if (t >= igniteStart && t <= igniteEnd) {
+        const dur = Math.max((rIgnite.duration ?? 3.5), 0.01);
+        const u   = (t - igniteStart) / dur;
+        // Spread radius grows from a tiny seed at u=0 to maxSpread at
+        // u=0.5 (the "ignition" half), then holds while the envelope
+        // decays. Capped at 0.55 so the Gaussian's two ends meet
+        // naturally without artefacts at the seam.
+        const maxSpread = Math.min(rIgnite.maxSpread ?? 0.55, 0.55);
+        const spread = 0.005 + maxSpread * Math.min(u * 2.0, 1.0);
+        const env = u < 0.30 ? (u / 0.30)
+                              : Math.max(0, 1.0 - (u - 0.30) / 0.70);
+        rim.uniforms.uIgniteSpread.value = spread;
+        rim.uniforms.uIgniteEnv.value    = env * (rIgnite.intensity ?? 1.2);
+      } else {
+        rim.uniforms.uIgniteEnv.value = 0;
       }
     }
 
