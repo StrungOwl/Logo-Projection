@@ -115,12 +115,12 @@ export function createGalaxyMaterial() {
         // cells seed a star. Sharpness drives the visual size of each
         // star (lower = bigger glow).
         float stars = 0.0;
-        stars += starLayer(vLocalPos.xy, 0.55, 0.78,  9.0) * 1.4;
-        stars += starLayer(vLocalPos.xy, 1.10, 0.84, 12.0) * 1.15;
-        stars += starLayer(vLocalPos.xy, 2.20, 0.88, 15.0) * 0.9;
-        stars += starLayer(vLocalPos.xy, 4.20, 0.92, 19.0) * 0.65;
-        stars += starLayer(vLocalPos.xy, 7.50, 0.95, 23.0) * 0.45;
-        stars += starLayer(vLocalPos.xy, 12.0, 0.97, 28.0) * 0.32;
+        stars += starLayer(vLocalPos.xy, 0.55, 0.78,  5.5) * 1.7;
+        stars += starLayer(vLocalPos.xy, 1.10, 0.84,  7.5) * 1.35;
+        stars += starLayer(vLocalPos.xy, 2.20, 0.88, 10.0) * 1.05;
+        stars += starLayer(vLocalPos.xy, 4.20, 0.92, 13.0) * 0.8;
+        stars += starLayer(vLocalPos.xy, 7.50, 0.95, 16.0) * 0.55;
+        stars += starLayer(vLocalPos.xy, 12.0, 0.97, 20.0) * 0.4;
 
         vec3 color = deepSpace;
         color += nebula * nebulaDensity * 0.55;
@@ -145,16 +145,16 @@ export function createGalaxyMaterial() {
         // the "many flickering stars" feel during flame mode.
         if (uStarryMode > 0.001) {
           float extraStars = 0.0;
-          extraStars += starLayer(vLocalPos.xy, 1.40, 0.86, 11.0) * 0.95;
-          extraStars += starLayer(vLocalPos.xy, 2.80, 0.90, 15.0) * 0.7;
-          extraStars += starLayer(vLocalPos.xy, 5.40, 0.94, 20.0) * 0.45;
-          extraStars += starLayer(vLocalPos.xy, 9.00, 0.97, 26.0) * 0.28;
+          extraStars += starLayer(vLocalPos.xy, 1.40, 0.86,  7.0) * 1.15;
+          extraStars += starLayer(vLocalPos.xy, 2.80, 0.90, 10.0) * 0.85;
+          extraStars += starLayer(vLocalPos.xy, 5.40, 0.94, 14.0) * 0.6;
+          extraStars += starLayer(vLocalPos.xy, 9.00, 0.97, 19.0) * 0.4;
           vec3 starrySky = vec3(0.0);
-          // Stars muted in flame mode so the flame is the dominant
-          // bright element; the sky reads as "black with flicker"
-          // rather than "active starfield".
-          starrySky += vec3(1.0, 0.95, 0.85) * stars * 0.95;
-          starrySky += vec3(0.92, 0.97, 1.00) * extraStars * 0.7;
+          // Multipliers compensate for the dim galaxy uBrightness in
+          // flame mode (~0.18) — without the boost the stars almost
+          // disappear after the final color * uBrightness multiply.
+          starrySky += vec3(1.0, 0.95, 0.85) * stars * 4.0;
+          starrySky += vec3(0.92, 0.97, 1.00) * extraStars * 3.0;
           color = mix(color, starrySky, uStarryMode);
         }
 

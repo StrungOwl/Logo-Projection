@@ -43,7 +43,7 @@ export const ANIM = {
   // stays on underneath.
   //   0 → 'all'  | 1 → 'pattern'  | 2 → 'hex'
   //   3 → 'flowers'  | 4 → 'arch'  | 5 → 'flame'
-  viewMode: 'all',
+  viewMode: 'flame',
 
   keyLight:          { intensityMin: 0.0,  intensityMax: 4.6,
                        colorAtMin: '#FF1400', colorAtMax: '#FFCC2E' },
@@ -486,9 +486,54 @@ export const ANIM = {
     taperPower: 0.85,
 
     // Color stops along the height (0=bottom, 1=at vanishing point).
-    colorBottom: '#FFE066',  // bright yellow at the hot base
+    // These are the *static* fallback values used when colorDrift is
+    // disabled. With drift enabled, these get overwritten each frame
+    // by the active palette crossfade and only get used during the
+    // brief moment a palette interpolation crosses their value.
+    colorBottom: '#FFB840',  // warm amber at the hot base — kept off pure
+                             // white so the additive blend + brightness
+                             // multiplier doesn't blow the base to a flat
+                             // white blob. Push back toward '#FFE066' for
+                             // a hotter, whiter core.
     colorMid:    '#FF8A20',  // orange middle band
     colorTop:    '#A41A0F',  // deep red at the cool tip
+
+    // Slow palette drift on the main flame body. Cycles through a list
+    // of {bottom, mid, top} hex palettes, smooth-crossfading between
+    // adjacent entries. The list is intentionally biased: most entries
+    // are the warm white→amber→red gradient with subtle analogous
+    // shifts, so the flame *reads as fire most of the time* and only
+    // occasionally drifts toward the coral/magenta accents for variety.
+    //
+    //   enabled       — master toggle; off = use the static colorBottom
+    //                   /Mid/Top above
+    //   cycleDuration — seconds for one full traversal of the palette
+    //                   list (so each palette takes duration/N seconds
+    //                   at the centre of its dwell)
+    //   palettes      — list of {bottom, mid, top} hex stops. Repeating
+    //                   the same palette at adjacent indices weights
+    //                   the cycle to dwell longer on it.
+    colorDrift: {
+      enabled:       true,
+      cycleDuration: 110,
+      palettes: [
+        // Warm amber default — listed twice in a row so the flame
+        // dwells here longest before drifting on.
+        { bottom: '#FFB840', mid: '#FF8A20', top: '#A41A0F' },
+        { bottom: '#FFB840', mid: '#FF8A20', top: '#A41A0F' },
+        // Hotter / whiter base — shifts the hot zone toward white.
+        { bottom: '#FFD060', mid: '#FF7A18', top: '#8C0A0A' },
+        // Red-shifted — base + mid push redder; the warm-amber default
+        // sits next to this on either side so the cycle eases in/out
+        // of red rather than slamming.
+        { bottom: '#FF6A20', mid: '#D04A0E', top: '#5C0E08' },
+        // Back to amber default — second long dwell on the way around.
+        { bottom: '#FFB840', mid: '#FF8A20', top: '#A41A0F' },
+        // Coral / pink-shifted — analogous accent (warm pink toward
+        // magenta, but never crossing into cold blue territory).
+        { bottom: '#FFB070', mid: '#E0526A', top: '#601020' },
+      ],
+    },
 
     // Domain-warped fbm parameters. The model's mesh-local coords run
     // ~80x80 units across the cutout, so noiseScale needs to be small
@@ -522,18 +567,96 @@ export const ANIM = {
     //   columnEdgeSoft  — soft-edge fraction at the column boundary
     //                     (separate from `edgeSoftness` which still
     //                     fades against the cutout polygon edges)
-    bodyHalfWidthBase: 0.13,
-    bodyHalfWidthTop:  0.035,
-    columnWobble:      0.06,
-    widthNoiseAmt:     0.55,
-    widthNoiseFreq:    0.18,
+    bodyHalfWidthBase: 0.18,
+    bodyHalfWidthTop:  0.005,
+    columnWobble:      0.04,
+    widthNoiseAmt:     0.42,
+    widthNoiseFreq:    0.14,
     columnEdgeSoft:    0.45,
 
     // Bottom fade — height fraction over which the flame ramps in from
-    // invisible (at the polygon's bottom Y) to full intensity. Real
-    // flames don't have a hard bright base — the wick is dark and the
-    // body starts a little above it.
-    bottomFadeFrac: 0.12,
+    // invisible (at the polygon's bottom Y) to full intensity. The main
+    // flame extends all the way to the bottom of the cutout polygon
+    // with only a short ramp; the blue secondary uses NormalBlending so
+    // it draws ON TOP of the orange at its column rather than adding
+    // (which would blow the overlap to white) — so we don't need a
+    // wide bottom fade on the orange to "make room" for blue any more.
+    bottomFadeFrac: 0.04,
+
+    // Rounded bottom — radius (as a t-fraction) of the half-circle dome
+    // that shapes the flame's lower edge. 0 = flat horizontal bottom;
+    // higher values pull the column-edge pixels' visible bottom upward
+    // while keeping the column-center bottom anchored at t=0, giving a
+    // domed/teardrop base.
+    bottomRoundFrac: 0.10,
+
+    // Optional Gaussian "waist" pinch — narrows the column at a chosen
+    // height fraction so the flame necks in between the bright base and
+    // the upper body. Used here to squeeze the yellow→orange transition
+    // zone so the hot core flares out, then the column pinches before
+    // fanning back up into the orange body.
+    //   waistY     — height fraction where the pinch is centered
+    //   waistAmt   — pinch strength (0 = no pinch, 1 = column closes to
+    //                ~5 % width at the waist). 0 disables.
+    //   waistWidth — Gaussian half-width of the pinch (in t units).
+    waistY:     0.22,
+    waistAmt:   0.55,
+    waistWidth: 0.18,
+
+    // Second narrow waist higher up — independent Gaussian pinch used
+    // to keep the column off the inner-star polygon's neck (the spot
+    // in the upper-middle where the cutout silhouette pinches in and
+    // the flame would otherwise touch the logo). Tune `waist2Y` to the
+    // height of the polygon's narrowest point and `waist2Amt` to the
+    // pinch depth needed. Set `waist2Amt: 0` to disable this second
+    // pinch entirely.
+    waist2Y:     0.62,
+    waist2Amt:   0.40,
+    waist2Width: 0.10,
+
+    // Movement diversity — slowly modulates ALL motion uniforms
+    // (noise scroll, column wobble, width-noise amplitude, branching
+    // speed, spark sway) by a single scale that beats between
+    // `minScale` and 1.0 over `cycleDuration` seconds. Result: the
+    // flame oscillates between near-still moments where the noise
+    // pattern barely moves and active moments where it licks fast. The
+    // light flicker, palette drift, and hue oscillation are NOT scaled
+    // — those stay on their own clocks so the flame never feels frozen.
+    //
+    //   enabled       — master toggle
+    //   cycleDuration — seconds for one slow→fast→slow beat
+    //   minScale      — scale during the deepest still moment. 0 would
+    //                   freeze noise scroll entirely; 0.10 keeps a
+    //                   barely-perceptible drift so the flame still
+    //                   reads as alive
+    movement: {
+      enabled:       true,
+      cycleDuration: 38,
+      minScale:      0.10,
+    },
+
+    // Branching — a slow noise gates whether the flame splits into two
+    // columns offset from the main centerline. When the noise is calm,
+    // the columns coincide (one flame). When the noise spikes (above
+    // `presenceThresh`), the columns spread by up to `separation`
+    // (fraction of the cutout's half-width), giving a "the flame
+    // branched apart" read. As the noise relaxes, they merge back.
+    // Disabled on the secondary blue flame.
+    //   enabled         — master toggle
+    //   separation      — peak split distance, fraction of cutout half-
+    //                     width. 0=no branching even at noise peaks
+    //   freqY           — vertical frequency of the branch noise
+    //   speed           — time-evolution rate of the branch noise; low
+    //                     values give slow, deliberate branches
+    //   presenceThresh  — abs-noise level above which branching kicks
+    //                     in (0..1). Higher = rarer branches
+    branching: {
+      enabled:        true,
+      separation:     0.55,
+      freqY:          0.04,
+      speed:          0.05,
+      presenceThresh: 0.55,
+    },
 
     // Vertical headroom past the pattern's vanishing point. The cutout
     // polygon extends above the vanishing point (the inner-star tips),
@@ -544,10 +667,19 @@ export const ANIM = {
     // 1 = stretch all the way to the polygon's max Y.
     topExtendFrac: 0.45,
 
+    // Rigid vertical offset applied to the entire flame group (body +
+    // secondary blue + sparks + light), expressed as a fraction of the
+    // cutout's vertical extent. Positive shifts everything UP. Use this
+    // to nudge the flame's resting position within the cutout without
+    // changing the cutout geometry or the t-mapping shape.
+    yOffsetFrac: 0.06,
+
     // Overall multiplier applied to the flame body. With additive
     // blending values >1 saturate after ACES tonemapping, giving the
-    // bright saturated-yellow core characteristic of real flame.
-    brightness: 3.5,
+    // bright saturated-yellow core characteristic of real flame. Kept
+    // moderate so the hot core stays visibly amber/orange instead of
+    // blowing out to a flat white.
+    brightness: 2.4,
     opacity:    1.0,
 
     // Multiplier applied to all base-scene warm lights (key, innerGlow,
@@ -563,6 +695,22 @@ export const ANIM = {
     // peaks, letting the flame's PointLight be the visible source of
     // illumination on the surrounding logo.
     envMapIntensity: 0.05,
+
+    // Multiplicative-blend "shadow halo" that darkens the background in
+    // the dark gaps between bright flame tongues — adds contrast against
+    // the galaxy backdrop so the bright bits read sharper. Same noise
+    // field + column mask as the body, but the output is `1 - body
+    // intensity` projected as a darken multiplier.
+    //   intensity  — peak darkening (0 = no effect, 1 = pure black gaps)
+    //   haloScale  — column-width multiplier; >1 widens the shadow past
+    //                the visible flame edges so the dark halo wraps it
+    //   yMax       — height fraction over which the shadow tapers off
+    shadow: {
+      enabled:   true,
+      intensity: 0.72,
+      haloScale: 1.7,
+      yMax:      0.90,
+    },
 
     // Continuous low-amplitude chromatic shimmer on the hot zone — gives
     // the base a constant flickering blue/cool tint without a single
@@ -607,11 +755,16 @@ export const ANIM = {
                                  // climbing past the vanishing point.
       swayAmount:    1.6,
       swayFreq:      1.1,
-      pointSize:     14.0,
+      pointSize:     54.0,
       sizeVariance:  0.6,
       bodyColor:     '#FFD68A',
       coreColor:     '#FFFAE0',
-      brightness:    0.55,
+      brightness:    2.4,
+      // Forward z-pop during a chromatic flare — sparks shoot toward the
+      // camera by up to this many mesh units while the flare envelope is
+      // active, ending up visibly in FRONT of the logo. Synced with
+      // ANIM.flame.flares (same envelope drives both). 0 disables.
+      flareForward:  4.5,
     },
 
     // Flickering point light at the flame's hot zone. Position is computed
@@ -641,6 +794,102 @@ export const ANIM = {
       decay:        1.6,
     },
 
+    // Secondary flame — a small saturated-blue flame that sits at the
+    // base of the main flame, like the hot blue core of a candle. Reuses
+    // the same shader and same cutout polygon; only the colour stops,
+    // width, and height range differ. Any field present here overrides
+    // the corresponding main-flame value when the secondary's uniforms
+    // are pushed each frame; missing fields fall through to the main
+    // flame's value (so e.g. shimmer/flare settings inherit unless you
+    // explicitly override them here).
+    //   heightFraction — top of the secondary, expressed as a fraction
+    //                    of the distance from the cutout bottom up to
+    //                    the pattern's vanishing point. 0.33 = the
+    //                    secondary occupies the lower third of that
+    //                    span; the top fades out at this Y.
+    //   bodyHalfWidthBase / bodyHalfWidthTop — column half-widths,
+    //                    matching the main flame's units (fraction of
+    //                    the cutout's half-width). Smaller = thinner.
+    //   colorBottom / colorMid / colorTop — saturated blue palette.
+    secondary: {
+      enabled:           true,
+      heightFraction:    0.33,
+      // Animate the small flame's top Y over time. Two beating sines
+      // give a non-repeating-feeling drift; the heightFrac that
+      // determines the secondary's top sits at `heightFraction` plus
+      // a wander of ±`amount`. The result is clamped so the small
+      // flame can never disappear or punch through the main flame's
+      // tip.
+      //   enabled       — master toggle
+      //   amount        — half-range of the wander (added to and
+      //                   subtracted from `heightFraction`). 0.20
+      //                   means the secondary roams between
+      //                   ~heightFraction-0.20 and ~heightFraction+0.20
+      //   cycleDuration — seconds for one beat of the slowest sine.
+      //                   Long values give very gradual drift.
+      heightAnimation: {
+        enabled:       true,
+        amount:        0.18,
+        cycleDuration: 14,
+      },
+      // Narrower than main (which is 0.18 / 0.05) so the blue column
+      // sits visibly inside the orange one. Width noise + wobble are
+      // also dialed down so the blue doesn't poke past the orange's
+      // perimeter on its width-modulation peaks.
+      bodyHalfWidthBase: 0.07,
+      bodyHalfWidthTop:  0.020,
+      widthNoiseAmt:     0.30,
+      columnWobble:      0.025,
+      colorBottom: '#5FBEFF',  // saturated cyan-blue at the hot base
+      colorMid:    '#1A55FF',  // saturated electric blue mid-band
+      colorTop:    '#0A1FA8',  // deep saturated blue at the cool tip
+      brightness:    2.2,      // moderate — saturated blue with normal
+                               // blending; doesn't need to overpower
+                               // anything since it draws on top
+      opacity:       1.0,
+      // Long bottom fade so the very base of the blue column dims
+      // out — the wick area dark, body lifts off it.
+      bottomFadeFrac: 0.22,
+      topExtendFrac:  0.0,
+      // Disable shimmer + flares on the secondary so it stays a clean
+      // saturated blue without warm-tinted shimmer / palette flashes.
+      shimmer: { enabled: false, intensity: 0, yMax: 0.4, speed: 1.3 },
+      flares:  { enabled: false, rate: 0, duration: 1.0,
+                 intensity: 0, yMax: 0.5, palette: [] },
+
+      // Slow hue oscillation — wanders the HOT (bottom + mid) stops in a
+      // narrow band around `baseHue` so the inside of the small flame
+      // wavers warm-blue ↔ cyan ↔ violet without ever leaving the blue
+      // half of the wheel. The OUTLINE (colorTop) is intentionally not
+      // overwritten — it stays locked to the static `colorTop` above
+      // (a saturated deep blue) so the flame's silhouette always reads
+      // as blue regardless of what the hot core is doing.
+      //
+      //   duration   — seconds for one full sine cycle. Long values
+      //                give very slow drift; short values give visible
+      //                rolling colour change.
+      //   baseHue    — HSL hue (0..1) the oscillation centres on.
+      //                0.62 ≈ saturated electric blue.
+      //   hueRange   — half-width of the hue oscillation, in HSL units.
+      //                0.10 = ±36° around `baseHue` (stays blue-violet
+      //                ↔ blue ↔ cyan). Push to 0.20 for noticeable
+      //                excursions toward green / magenta.
+      //   saturation — HSL saturation for the bottom + mid stops.
+      //   lightness* — HSL lightness for each stop.
+      //   midHueOffset — hue offset for the mid band relative to the
+      //                  bottom, keeping a visible gradient.
+      hueRotation: {
+        enabled:         true,
+        duration:        180,
+        baseHue:         0.62,
+        hueRange:        0.10,
+        saturation:      0.92,
+        lightnessBottom: 0.62,
+        lightnessMid:    0.46,
+        midHueOffset:    0.04,
+      },
+    },
+
     // Galaxy starry-night mode. When viewMode === 'flame' the galaxy
     // shader lerps `uStarryMode` toward 1: nebula + warm core glow fade
     // out, deep-space goes pure black, and an extra dense star layer
@@ -649,7 +898,7 @@ export const ANIM = {
     // backdrop is darker and the flame body reads clearly against it.
     galaxyStarry: {
       fadeSpeed:  1.5,
-      brightness: 0.18,
+      brightness: 0.32,
     },
   },
 };

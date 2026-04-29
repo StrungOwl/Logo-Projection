@@ -24,6 +24,18 @@ import * as THREE from 'three';
 import { ANIM } from '../src/config.js';
 import { hexToRgb } from '../src/util/color.js';
 
+// Merge a secondary-flame override block onto the main-flame cfg. Top-
+// level fields override directly. Nested blocks (shimmer, flares) are
+// shallow-merged so the secondary can disable shimmer without having
+// to redeclare every shimmer field. Returns a fresh object — does not
+// mutate either input.
+function mergeFlameCfg(main, override) {
+  const out = { ...main, ...override };
+  out.shimmer = { ...main.shimmer, ...(override.shimmer || {}) };
+  out.flares  = { ...main.flares,  ...(override.flares  || {}) };
+  return out;
+}
+
 // -----------------------------------------------------------------------
 // extractInnerCutout — pulls the central "inner star" outline directly
 // off the model's mesh edges (via EdgesGeometry @ 30°), bypasses the
@@ -234,7 +246,7 @@ function rdpOpen(pts, tol) {
 // -----------------------------------------------------------------------
 // FLAME BODY — extruded cutout shape + domain-warped fbm shader.
 // -----------------------------------------------------------------------
-function buildFlameBody({ cutoutLoop, vpX, vpY, minY, maxY, halfWidth, zBack, zFront }) {
+function buildFlameBody({ cutoutLoop, vpX, vpY, minY, maxY, halfWidth, zBack, zFront, cfg }) {
   const shape = new THREE.Shape();
   shape.moveTo(cutoutLoop[0].x, cutoutLoop[0].y);
   for (let i = 1; i < cutoutLoop.length; i++) {
@@ -252,7 +264,6 @@ function buildFlameBody({ cutoutLoop, vpX, vpY, minY, maxY, halfWidth, zBack, zF
   });
   geo.translate(0, 0, zBack);
 
-  const cfg = ANIM.flame;
   // Lift the top of the t-mapping above the vanishing point so the flame
   // visibly reaches into the polygon's headroom (the inner-star tips) —
   // makes it read taller without changing geometry.
@@ -283,6 +294,17 @@ function buildFlameBody({ cutoutLoop, vpX, vpY, minY, maxY, halfWidth, zBack, zF
     uWidthNoiseFreq:  { value: cfg.widthNoiseFreq },
     uColEdgeSoft:     { value: cfg.columnEdgeSoft },
     uBottomFadeFrac:  { value: cfg.bottomFadeFrac },
+    uBottomRoundFrac: { value: cfg.bottomRoundFrac ?? 0 },
+    uWaistY:          { value: cfg.waistY ?? 0.25 },
+    uWaistAmt:        { value: cfg.waistAmt ?? 0 },
+    uWaistWidth:      { value: cfg.waistWidth ?? 0.18 },
+    uWaist2Y:         { value: cfg.waist2Y ?? 0.60 },
+    uWaist2Amt:       { value: cfg.waist2Amt ?? 0 },
+    uWaist2Width:     { value: cfg.waist2Width ?? 0.10 },
+    uBranchSep:           { value: cfg.branching?.separation     ?? 0   },
+    uBranchFreqY:         { value: cfg.branching?.freqY          ?? 0.05 },
+    uBranchSpeed:         { value: cfg.branching?.speed          ?? 0.18 },
+    uBranchPresenceThresh:{ value: cfg.branching?.presenceThresh ?? 0.55 },
     uBrightness:      { value: cfg.brightness },
     uOpacity:         { value: cfg.opacity },
     uFlareColor:      { value: new THREE.Vector3(0, 0, 0) },
@@ -333,6 +355,17 @@ function buildFlameBody({ cutoutLoop, vpX, vpY, minY, maxY, halfWidth, zBack, zF
       uniform float uWidthNoiseFreq;
       uniform float uColEdgeSoft;
       uniform float uBottomFadeFrac;
+      uniform float uBottomRoundFrac;
+      uniform float uWaistY;
+      uniform float uWaistAmt;
+      uniform float uWaistWidth;
+      uniform float uWaist2Y;
+      uniform float uWaist2Amt;
+      uniform float uWaist2Width;
+      uniform float uBranchSep;
+      uniform float uBranchFreqY;
+      uniform float uBranchSpeed;
+      uniform float uBranchPresenceThresh;
       uniform float uBrightness;
       uniform float uOpacity;
       uniform vec3  uFlareColor;
@@ -402,6 +435,21 @@ function buildFlameBody({ cutoutLoop, vpX, vpY, minY, maxY, halfWidth, zBack, zF
         // silhouette curls organically instead of running as straight
         // sides. Width tapers from base → top so the flame points.
         float colHalfFrac = mix(uColHalfBase, uColHalfTop, tClamp);
+        // Optional Gaussian "waist" pinch at uWaistY — multiplicative
+        // narrowing of the column at a chosen height fraction. Used to
+        // squeeze the flame in the yellow→orange transition zone so the
+        // bright base flares out then necks in before fanning back up.
+        float wDx = (tClamp - uWaistY) / max(uWaistWidth, 0.001);
+        float waistFactor = 1.0 - uWaistAmt * exp(-wDx * wDx);
+        colHalfFrac *= max(waistFactor, 0.05);
+        // Second narrower waist higher up — used to keep the column off
+        // the inner-star polygon's neck (where the cutout pinches in
+        // and the flame would otherwise touch the logo silhouette).
+        // Independent height/amount/width so the lower waist isn't
+        // affected.
+        float w2Dx = (tClamp - uWaist2Y) / max(uWaist2Width, 0.001);
+        float waist2Factor = 1.0 - uWaist2Amt * exp(-w2Dx * w2Dx);
+        colHalfFrac *= max(waist2Factor, 0.05);
         float wobbleN = fbm2(vec2(11.7, vLocalPos.y * 0.14 - uTime * 1.5));
         float xCenter = uVanishingX
                       + (wobbleN - 0.5) * 2.0 * uColWobble * uHalfWidth;
@@ -409,8 +457,30 @@ function buildFlameBody({ cutoutLoop, vpX, vpY, minY, maxY, halfWidth, zBack, zF
                                   vLocalPos.z * 0.25 + 4.1));
         float widthScale = 1.0 + (widthN - 0.5) * 2.0 * uWidthNoiseAmt;
         float colHalfWidth = uHalfWidth * colHalfFrac * max(widthScale, 0.15);
-        float xRel = (vLocalPos.x - xCenter) / max(colHalfWidth, 0.001);
-        float xFade = 1.0 - smoothstep(1.0 - uColEdgeSoft, 1.0, abs(xRel));
+
+        // Branching — a slow noise gates whether the column splits into
+        // two centers offset by ±branchSep from xCenter. When branchAmp
+        // is 0 the columns coincide (one flame); as it ramps up the
+        // centers spread apart and the flame visibly bifurcates. The
+        // gating uses |branchN-0.5| above a threshold so most of the
+        // time only the central column is active.
+        float branchN = fbm2(vec2(vLocalPos.y * uBranchFreqY + uTime * uBranchSpeed,
+                                   uTime * uBranchSpeed * 0.6));
+        float branchAmp = smoothstep(uBranchPresenceThresh, 1.0,
+                                      abs(branchN - 0.5) * 2.0);
+        float branchHalfSep = branchAmp * uBranchSep * uHalfWidth;
+        float xRel1 = (vLocalPos.x - (xCenter - branchHalfSep)) / max(colHalfWidth, 0.001);
+        float xRel2 = (vLocalPos.x - (xCenter + branchHalfSep)) / max(colHalfWidth, 0.001);
+        float xFade1 = 1.0 - smoothstep(1.0 - uColEdgeSoft, 1.0, abs(xRel1));
+        float xFade2 = 1.0 - smoothstep(1.0 - uColEdgeSoft, 1.0, abs(xRel2));
+        // Take whichever column "owns" this pixel — preserves the soft
+        // edge on each side without flattening the centre when the
+        // columns merge.
+        float xFade = max(xFade1, xFade2);
+        // For the rounded-bottom dome, use the closer column's xRel so
+        // each branch gets its own dome instead of one huge dome
+        // spanning both.
+        float xRel = abs(xRel1) < abs(xRel2) ? xRel1 : xRel2;
 
         // Threshold the raw noise (uniform across the body), then
         // combine with vertical + horizontal soft fades. (Earlier
@@ -425,12 +495,18 @@ function buildFlameBody({ cutoutLoop, vpX, vpY, minY, maxY, halfWidth, zBack, zF
         intensity *= smoothstep(1.05, 0.85, t);   // top fade — flame
                                                   // dies out at vanishing
                                                   // point.
-        intensity *= smoothstep(0.0, max(uBottomFadeFrac, 0.001), t);
-                                                  // bottom fade — wick
-                                                  // area is dark, body
-                                                  // ramps in over the
-                                                  // first uBottomFadeFrac
-                                                  // of height.
+        // Rounded bottom — instead of a flat horizontal fade at t=0,
+        // shape the bottom edge into a half-circle dome of t-radius
+        // uBottomRoundFrac. Column-center pixels reach full intensity
+        // earliest; column-edge pixels (xRel near 1) fade in last,
+        // giving a domed/teardrop bottom rather than a hard cut. The
+        // fade band of width uBottomFadeFrac softens the dome's edge.
+        float xRound = clamp(abs(xRel), 0.0, 1.0);
+        float bottomDome = uBottomRoundFrac
+                         * (1.0 - sqrt(max(0.0, 1.0 - xRound * xRound)));
+        intensity *= smoothstep(bottomDome,
+                                bottomDome + max(uBottomFadeFrac, 0.001),
+                                t);
 
         if (intensity <= 0.001) discard;
 
@@ -481,6 +557,205 @@ function buildFlameBody({ cutoutLoop, vpX, vpY, minY, maxY, halfWidth, zBack, zF
 
   const mesh = new THREE.Mesh(geo, material);
   mesh.renderOrder = 6;
+  return { mesh, uniforms, vpY, maxY };
+}
+
+// Push live config values into a body's uniforms each frame. `cfg` is
+// the live block to read from (ANIM.flame for the main flame; a merged
+// override block for the secondary). The body's stored vpY/maxY are
+// used to recompute uVanishingY from the live topExtendFrac.
+function applyBodyUniforms(body, cfg) {
+  const u = body.uniforms;
+  u.uNoiseScale.value     = cfg.noiseScale;
+  u.uNoiseSpeed.value     = cfg.noiseSpeed;
+  u.uWarpStrength.value   = cfg.warpStrength;
+  u.uTaperPower.value     = cfg.taperPower;
+  u.uEdgeSoft.value       = cfg.edgeSoftness;
+  u.uThreshLow.value      = cfg.threshLow;
+  u.uThreshHigh.value     = cfg.threshHigh;
+  u.uColHalfBase.value    = cfg.bodyHalfWidthBase;
+  u.uColHalfTop.value     = cfg.bodyHalfWidthTop;
+  u.uColWobble.value      = cfg.columnWobble;
+  u.uWidthNoiseAmt.value  = cfg.widthNoiseAmt;
+  u.uWidthNoiseFreq.value = cfg.widthNoiseFreq;
+  u.uColEdgeSoft.value    = cfg.columnEdgeSoft;
+  u.uBottomFadeFrac.value = cfg.bottomFadeFrac;
+  u.uBottomRoundFrac.value = cfg.bottomRoundFrac ?? 0;
+  u.uWaistY.value         = cfg.waistY ?? 0.25;
+  u.uWaistAmt.value       = cfg.waistAmt ?? 0;
+  u.uWaistWidth.value     = cfg.waistWidth ?? 0.18;
+  u.uWaist2Y.value        = cfg.waist2Y ?? 0.60;
+  u.uWaist2Amt.value      = cfg.waist2Amt ?? 0;
+  u.uWaist2Width.value    = cfg.waist2Width ?? 0.10;
+  const br = cfg.branching || {};
+  u.uBranchSep.value           = (br.enabled === false) ? 0 : (br.separation     ?? 0);
+  u.uBranchFreqY.value         = br.freqY          ?? 0.05;
+  u.uBranchSpeed.value         = br.speed          ?? 0.18;
+  u.uBranchPresenceThresh.value = br.presenceThresh ?? 0.55;
+  const teFrac = cfg.topExtendFrac ?? 0;
+  u.uVanishingY.value = body.vpY + Math.max(0, body.maxY - body.vpY) * teFrac;
+  u.uBrightness.value = cfg.brightness;
+  u.uOpacity.value    = cfg.opacity;
+  u.uShimmerEnabled.value   = cfg.shimmer.enabled ? 1 : 0;
+  u.uShimmerIntensity.value = cfg.shimmer.intensity;
+  u.uShimmerYMax.value      = cfg.shimmer.yMax;
+  u.uShimmerSpeed.value     = cfg.shimmer.speed;
+  u.uColorBottom.value.fromArray(hexToRgb(cfg.colorBottom));
+  u.uColorMid.value.fromArray(hexToRgb(cfg.colorMid));
+  u.uColorTop.value.fromArray(hexToRgb(cfg.colorTop));
+  u.uFlareYMax.value = cfg.flares.yMax;
+}
+
+// -----------------------------------------------------------------------
+// FLAME SHADOW — sibling slab using the SAME extruded cutout shape and
+// SAME domain-warped fbm sample as buildFlameBody, but with multiplicative
+// blending so the noise-driven dark gaps between visible flame tongues
+// project as DARKER pixels onto whatever lies behind (the galaxy backdrop
+// + inner cutout walls). Adds contrast — bright flame tongues now sit
+// against a darkened halo instead of un-modified background.
+// -----------------------------------------------------------------------
+function buildFlameShadow({ cutoutLoop, vpX, vpY, minY, maxY, halfWidth, zBack, zFront, cfg }) {
+  const shape = new THREE.Shape();
+  shape.moveTo(cutoutLoop[0].x, cutoutLoop[0].y);
+  for (let i = 1; i < cutoutLoop.length; i++) {
+    shape.lineTo(cutoutLoop[i].x, cutoutLoop[i].y);
+  }
+  shape.closePath();
+
+  const zDepth = Math.max(0.1, zFront - zBack);
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: zDepth,
+    bevelEnabled: false,
+    curveSegments: 24,
+  });
+  geo.translate(0, 0, zBack);
+
+  const sh = cfg.shadow || {};
+  const uniforms = {
+    uTime:            { value: 0 },
+    uBottomY:         { value: minY },
+    uVanishingY:      { value: vpY },
+    uVanishingX:      { value: vpX },
+    uHalfWidth:       { value: halfWidth },
+    uNoiseScale:      { value: cfg.noiseScale },
+    uNoiseSpeed:      { value: cfg.noiseSpeed },
+    uWarpStrength:    { value: cfg.warpStrength },
+    uThreshLow:       { value: cfg.threshLow },
+    uThreshHigh:      { value: cfg.threshHigh },
+    uColHalfBase:     { value: cfg.bodyHalfWidthBase },
+    uColHalfTop:      { value: cfg.bodyHalfWidthTop },
+    uWaistY:          { value: cfg.waistY ?? 0.25 },
+    uWaistAmt:        { value: cfg.waistAmt ?? 0 },
+    uWaistWidth:      { value: cfg.waistWidth ?? 0.18 },
+    uWaist2Y:         { value: cfg.waist2Y ?? 0.60 },
+    uWaist2Amt:       { value: cfg.waist2Amt ?? 0 },
+    uWaist2Width:     { value: cfg.waist2Width ?? 0.10 },
+    uHaloScale:       { value: sh.haloScale ?? 1.6 },
+    uShadowIntensity: { value: sh.intensity ?? 0.55 },
+    uShadowYMax:      { value: sh.yMax      ?? 0.85 },
+  };
+
+  const material = new THREE.ShaderMaterial({
+    uniforms,
+    transparent: true,
+    depthWrite:  false,
+    depthTest:   true,
+    side:        THREE.DoubleSide,
+    blending:    THREE.MultiplyBlending,
+    vertexShader: `
+      varying vec3 vLocalPos;
+      void main() {
+        vLocalPos = position;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform float uTime;
+      uniform float uBottomY;
+      uniform float uVanishingY;
+      uniform float uVanishingX;
+      uniform float uHalfWidth;
+      uniform float uNoiseScale;
+      uniform float uNoiseSpeed;
+      uniform float uWarpStrength;
+      uniform float uThreshLow;
+      uniform float uThreshHigh;
+      uniform float uColHalfBase;
+      uniform float uColHalfTop;
+      uniform float uWaistY;
+      uniform float uWaistAmt;
+      uniform float uWaistWidth;
+      uniform float uWaist2Y;
+      uniform float uWaist2Amt;
+      uniform float uWaist2Width;
+      uniform float uHaloScale;
+      uniform float uShadowIntensity;
+      uniform float uShadowYMax;
+      varying vec3 vLocalPos;
+
+      float hash21(vec2 p) {
+        return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+      }
+      float vnoise2(vec2 p) {
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        vec2 u = f * f * (3.0 - 2.0 * f);
+        return mix(mix(hash21(i),                  hash21(i + vec2(1.0, 0.0)), u.x),
+                   mix(hash21(i + vec2(0.0, 1.0)), hash21(i + vec2(1.0, 1.0)), u.x), u.y);
+      }
+      float fbm2(vec2 p) {
+        float v = 0.0;
+        float a = 0.5;
+        for (int i = 0; i < 4; i++) {
+          v += a * vnoise2(p);
+          p = p * 2.05 + vec2(17.0, 31.0);
+          a *= 0.5;
+        }
+        return v;
+      }
+
+      void main() {
+        float yRange = max(uVanishingY - uBottomY, 0.001);
+        float t = (vLocalPos.y - uBottomY) / yRange;
+        if (t < 0.0 || t > uShadowYMax) discard;
+
+        // Same column mask as the body, slightly inflated by uHaloScale
+        // so the shadow extends past the visible flame edges (the dark
+        // halo wraps the flame).
+        float colHalfFrac = mix(uColHalfBase, uColHalfTop, t);
+        float wDx = (t - uWaistY) / max(uWaistWidth, 0.001);
+        float waistFactor = 1.0 - uWaistAmt * exp(-wDx * wDx);
+        colHalfFrac *= max(waistFactor, 0.05);
+        float w2Dx = (t - uWaist2Y) / max(uWaist2Width, 0.001);
+        float waist2Factor = 1.0 - uWaist2Amt * exp(-w2Dx * w2Dx);
+        colHalfFrac *= max(waist2Factor, 0.05);
+        float colHalfWidth = uHalfWidth * colHalfFrac * uHaloScale;
+        float xRel = (vLocalPos.x - uVanishingX) / max(colHalfWidth, 0.001);
+        float xFade = 1.0 - smoothstep(0.7, 1.0, abs(xRel));
+
+        // Same domain-warped fbm as the body.
+        vec2 sp = (vec2(vLocalPos.x, vLocalPos.y - uTime * uNoiseSpeed)
+                   + vec2(vLocalPos.z * 0.6, vLocalPos.z * 0.2)) * uNoiseScale;
+        vec2 q = vec2(fbm2(sp), fbm2(sp + vec2(5.2, 1.3)));
+        float n = fbm2(sp + uWarpStrength * q);
+
+        // Shadow strongest where the body would be DIM (low n). Inverse
+        // of the body's intensity gating so dark gaps between bright
+        // tongues become darkened halo pixels.
+        float bodyIntensity = smoothstep(uThreshLow, uThreshHigh, n);
+        float shadowMask = (1.0 - bodyIntensity) * xFade;
+        // Trail off above the visible flame.
+        shadowMask *= 1.0 - smoothstep(uShadowYMax * 0.7, uShadowYMax, t);
+
+        float shadow = clamp(shadowMask * uShadowIntensity, 0.0, 0.95);
+        float c = 1.0 - shadow;   // 1 = no effect, 0 = black via multiplicative blend
+        gl_FragColor = vec4(c, c, c, 1.0);
+      }
+    `,
+  });
+
+  const mesh = new THREE.Mesh(geo, material);
+  mesh.renderOrder = 5;          // before body (6) so body's additive draw layers over it
   return { mesh, uniforms };
 }
 
@@ -594,6 +869,12 @@ function buildSparks({ cutoutLoop, vpX, vpY, minY, maxY, zBack, zFront, renderer
     uCoreColor:     { value: new THREE.Vector3(...hexToRgb(cfg.coreColor)) },
     uBrightness:    { value: cfg.brightness },
     uOpacity:       { value: 1.0 },
+    // Driven by the chromatic-flare envelope (0..1). Multiplied by
+    // uFlareForward and added to each spark's z so the whole spark
+    // population pops forward in front of the logo for the duration of
+    // a flare. Set to 0 outside flares.
+    uFlareBoost:    { value: 0 },
+    uFlareForward:  { value: cfg.flareForward ?? 3.0 },
   };
 
   const material = new THREE.ShaderMaterial({
@@ -611,6 +892,8 @@ function buildSparks({ cutoutLoop, vpX, vpY, minY, maxY, zBack, zFront, renderer
       uniform float uSwayFreq;
       uniform float uPointSize;
       uniform float uVanishingY;
+      uniform float uFlareBoost;
+      uniform float uFlareForward;
       attribute float aRandom;
       attribute float aLife;
       attribute float aSize;
@@ -631,6 +914,11 @@ function buildSparks({ cutoutLoop, vpX, vpY, minY, maxY, zBack, zFront, renderer
         // Horizontal sway — sinusoidal, phase from aRandom.
         pos.x += sin(uTime * uSwayFreq + aRandom * 31.4) * uSwayAmount * t;
         pos.z += cos(uTime * uSwayFreq * 0.7 + aRandom * 17.3) * uSwayAmount * 0.5 * t;
+        // Flare burst — push sparks toward the camera while a chromatic
+        // flare envelope is active so they appear in front of the logo.
+        // Per-particle weight gives the burst slight stagger instead of
+        // a single solid plane of sparks marching forward.
+        pos.z += uFlareBoost * uFlareForward * (0.6 + 0.4 * aRandom);
 
         vec4 mv = modelViewMatrix * vec4(pos, 1.0);
         gl_Position = projectionMatrix * mv;
@@ -716,6 +1004,8 @@ export function createFlame({ logoMesh, meta, renderer }) {
   const { patternFadeCenter, cx, cy, maxZ } = meta;
   const group = new THREE.Group();
   group.name = 'flame';
+  // Y is finalised below once the cutout extents are known (so yOffsetFrac
+  // can express the nudge as a fraction of the cutout height).
   group.position.set(cx, cy, 0);
   group.visible = false;
 
@@ -731,6 +1021,31 @@ export function createFlame({ logoMesh, meta, renderer }) {
   }
   // Convert mesh-local -> flame-local (flame group sits at (cx, cy, 0)).
   const cutoutLoop = cutoutMeshLocal.map(p => ({ x: p.x - cx, y: p.y - cy }));
+
+  // Stretch the polygon's lower portion downward so its visible bottom
+  // reaches the logo silhouette's bottom (`meta.bbox.min.y`) rather
+  // than stopping where the inner-star bay's neck closes. Vertices
+  // above the pattern fade center are untouched; vertices below get
+  // pulled down proportionally so the bottom-most vertex lands at the
+  // bbox bottom. The flame's vertical column is centered on the fade
+  // center anyway, so widening the polygon's bottom tip doesn't change
+  // what's visible — only the y-range the flame occupies.
+  {
+    const targetBottomY = meta.bbox.min.y - cy;
+    const pivotY = patternFadeCenter[1];
+    let curMinY = Infinity;
+    for (const p of cutoutLoop) if (p.y < curMinY) curMinY = p.y;
+    if (curMinY > targetBottomY && pivotY > curMinY) {
+      const oldDrop = pivotY - curMinY;
+      const newDrop = pivotY - targetBottomY;
+      const scale = newDrop / oldDrop;
+      for (const p of cutoutLoop) {
+        if (p.y < pivotY) {
+          p.y = pivotY - (pivotY - p.y) * scale;
+        }
+      }
+    }
+  }
 
   // Cutout extents (flame-local).
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
@@ -750,9 +1065,45 @@ export function createFlame({ logoMesh, meta, renderer }) {
   const zBack  = maxZ + cfg.zBack;
   const zFront = maxZ + cfg.zFront;
 
-  // Body
-  const body = buildFlameBody({ cutoutLoop, vpX, vpY, minY, maxY, halfWidth, zBack, zFront });
+  // Shadow halo — multiplicative-blend slab that darkens the background
+  // in the dark gaps between bright noise tongues. Drawn first so the
+  // body's additive pass paints over it.
+  let shadow = null;
+  if (cfg.shadow && cfg.shadow.enabled) {
+    shadow = buildFlameShadow({ cutoutLoop, vpX, vpY, minY, maxY, halfWidth, zBack, zFront, cfg });
+    group.add(shadow.mesh);
+  }
+
+  // Main body
+  const body = buildFlameBody({ cutoutLoop, vpX, vpY, minY, maxY, halfWidth, zBack, zFront, cfg });
   group.add(body.mesh);
+
+  // Secondary blue body — small saturated-blue flame at the base, like
+  // the hot inner core of a candle. Same shader + same cutout polygon
+  // as the main body; only the color stops, column width, and t-mapping
+  // top differ. We pass `subVpY` (the height we want the secondary's
+  // gradient to terminate at) as both `vpY` and `maxY` so topExtendFrac
+  // can't push it any higher; the shader's `t > 1.15` discard then cuts
+  // off everything above subVpY * 1.15.
+  let secondaryBody = null;
+  const sub = (cfg.secondary && cfg.secondary.enabled !== false) ? cfg.secondary : null;
+  if (sub) {
+    const heightFrac = sub.heightFraction ?? 0.33;
+    const subTopY = minY + heightFrac * (vpY - minY);
+    const subCfg = mergeFlameCfg(cfg, sub);
+    secondaryBody = buildFlameBody({
+      cutoutLoop, vpX, vpY: subTopY, minY, maxY: subTopY,
+      halfWidth, zBack, zFront, cfg: subCfg,
+    });
+    // NormalBlending so the saturated blue COVERS the orange beneath
+    // its column (rather than additively summing — orange + bright
+    // blue with additive blends to white in the overlap, which kills
+    // the "blue inside orange" read).
+    secondaryBody.mesh.material.blending = THREE.NormalBlending;
+    secondaryBody.mesh.material.needsUpdate = true;
+    secondaryBody.mesh.renderOrder = 7;   // sit just over main body
+    group.add(secondaryBody.mesh);
+  }
 
   // Sparks
   const sparks = buildSparks({ cutoutLoop, vpX, vpY, minY, maxY, zBack, zFront, renderer });
@@ -761,6 +1112,10 @@ export function createFlame({ logoMesh, meta, renderer }) {
   // Light
   const light = buildLight({ vpX, minY, maxY, maxZ });
   if (light) group.add(light);
+
+  // Apply the rigid Y nudge now (cutout extents are finalised).
+  const cutoutHeight = Math.max(maxY - minY, 0.001);
+  group.position.y = cy + (cfg.yOffsetFrac ?? 0) * cutoutHeight;
 
   // ----- Flare envelope state (shared between body + light) -----
   let flareEndTime = -1;
@@ -771,10 +1126,19 @@ export function createFlame({ logoMesh, meta, renderer }) {
   const coolLightColor = new THREE.Color(cfg.light.coolColor);
   const flareLightColor = new THREE.Color();
   const lerpedLightColor = new THREE.Color();
+  // Reusable HSL → RGB scratch for the secondary's hue rotation.
+  const hsl = new THREE.Color();
+  // Reusable scratches for the main body's palette crossfade.
+  const paletteA = new THREE.Color();
+  const paletteB = new THREE.Color();
 
   function update(t, dt) {
     // Body shader time
     body.uniforms.uTime.value = t;
+
+    // Hot-swap the Y nudge so devtools edits to ANIM.flame.yOffsetFrac
+    // take effect immediately.
+    group.position.y = cy + (ANIM.flame.yOffsetFrac ?? 0) * cutoutHeight;
 
     // Spark uniforms — hot-swap so devtools edits to ANIM.flame.sparks.*
     // take effect immediately (count + spawn pos are load-only).
@@ -791,37 +1155,116 @@ export function createFlame({ logoMesh, meta, renderer }) {
       sparks.uniforms.uCoreColor.value.fromArray(hexToRgb(sc.coreColor));
     }
 
-    // Hot-swap body uniforms that are cheap to push every frame so the
-    // user can tweak them in devtools.
+    // Hot-swap body uniforms each frame so devtools edits take effect.
     const bcfg = ANIM.flame;
-    body.uniforms.uNoiseScale.value   = bcfg.noiseScale;
-    body.uniforms.uNoiseSpeed.value   = bcfg.noiseSpeed;
-    body.uniforms.uWarpStrength.value = bcfg.warpStrength;
-    body.uniforms.uTaperPower.value   = bcfg.taperPower;
-    body.uniforms.uEdgeSoft.value     = bcfg.edgeSoftness;
-    body.uniforms.uThreshLow.value    = bcfg.threshLow;
-    body.uniforms.uThreshHigh.value   = bcfg.threshHigh;
-    body.uniforms.uColHalfBase.value    = bcfg.bodyHalfWidthBase;
-    body.uniforms.uColHalfTop.value     = bcfg.bodyHalfWidthTop;
-    body.uniforms.uColWobble.value      = bcfg.columnWobble;
-    body.uniforms.uWidthNoiseAmt.value  = bcfg.widthNoiseAmt;
-    body.uniforms.uWidthNoiseFreq.value = bcfg.widthNoiseFreq;
-    body.uniforms.uColEdgeSoft.value    = bcfg.columnEdgeSoft;
-    body.uniforms.uBottomFadeFrac.value = bcfg.bottomFadeFrac;
-    // Recompute effective top Y from current topExtendFrac so live
-    // tweaks in devtools take effect.
-    const teFrac = bcfg.topExtendFrac ?? 0;
-    body.uniforms.uVanishingY.value = vpY + Math.max(0, maxY - vpY) * teFrac;
-    body.uniforms.uBrightness.value   = bcfg.brightness;
-    body.uniforms.uOpacity.value      = bcfg.opacity;
-    body.uniforms.uShimmerEnabled.value   = bcfg.shimmer.enabled ? 1 : 0;
-    body.uniforms.uShimmerIntensity.value = bcfg.shimmer.intensity;
-    body.uniforms.uShimmerYMax.value      = bcfg.shimmer.yMax;
-    body.uniforms.uShimmerSpeed.value     = bcfg.shimmer.speed;
-    body.uniforms.uColorBottom.value.fromArray(hexToRgb(bcfg.colorBottom));
-    body.uniforms.uColorMid.value.fromArray(hexToRgb(bcfg.colorMid));
-    body.uniforms.uColorTop.value.fromArray(hexToRgb(bcfg.colorTop));
-    body.uniforms.uFlareYMax.value = bcfg.flares.yMax;
+    applyBodyUniforms(body, bcfg);
+
+    // Shadow uniforms — keep noise + column shape in lock-step with the
+    // body so the dark halo always lines up with the bright tongues.
+    if (shadow) {
+      const sh = bcfg.shadow || {};
+      const su = shadow.uniforms;
+      su.uTime.value         = t;
+      su.uNoiseScale.value   = bcfg.noiseScale;
+      su.uNoiseSpeed.value   = bcfg.noiseSpeed;
+      su.uWarpStrength.value = bcfg.warpStrength;
+      su.uThreshLow.value    = bcfg.threshLow;
+      su.uThreshHigh.value   = bcfg.threshHigh;
+      su.uColHalfBase.value  = bcfg.bodyHalfWidthBase;
+      su.uColHalfTop.value   = bcfg.bodyHalfWidthTop;
+      su.uWaistY.value       = bcfg.waistY     ?? 0.25;
+      su.uWaistAmt.value     = bcfg.waistAmt   ?? 0;
+      su.uWaistWidth.value   = bcfg.waistWidth ?? 0.18;
+      su.uWaist2Y.value      = bcfg.waist2Y     ?? 0.60;
+      su.uWaist2Amt.value    = bcfg.waist2Amt   ?? 0;
+      su.uWaist2Width.value  = bcfg.waist2Width ?? 0.10;
+      su.uHaloScale.value       = sh.haloScale ?? 1.6;
+      su.uShadowIntensity.value = sh.intensity ?? 0.55;
+      su.uShadowYMax.value      = sh.yMax      ?? 0.85;
+    }
+
+    // Slow palette crossfade — overwrites the colorBottom/Mid/Top the
+    // call above just pushed. Picks two adjacent palettes from the
+    // colorDrift list and blends between them with a smoothstep ease,
+    // looping forever.
+    const cd = bcfg.colorDrift;
+    if (cd && cd.enabled && cd.palettes && cd.palettes.length > 0) {
+      const N = cd.palettes.length;
+      const dur = Math.max(cd.cycleDuration ?? 60, 0.001);
+      const phase = ((t / dur) % 1 + 1) % 1;   // wrap negative t safely
+      const slot = phase * N;
+      const idx = Math.floor(slot);
+      const frac = slot - idx;
+      const ease = frac * frac * (3 - 2 * frac);
+      const a = cd.palettes[idx];
+      const b = cd.palettes[(idx + 1) % N];
+      paletteA.set(a.bottom).lerp(paletteB.set(b.bottom), ease);
+      body.uniforms.uColorBottom.value.set(paletteA.r, paletteA.g, paletteA.b);
+      paletteA.set(a.mid).lerp(paletteB.set(b.mid), ease);
+      body.uniforms.uColorMid.value.set(paletteA.r, paletteA.g, paletteA.b);
+      paletteA.set(a.top).lerp(paletteB.set(b.top), ease);
+      body.uniforms.uColorTop.value.set(paletteA.r, paletteA.g, paletteA.b);
+    }
+
+    // Secondary blue body uses the same uniform set, but reads a merged
+    // config (main defaults + ANIM.flame.secondary overrides). Its time
+    // is shared with the main flame so the noise patterns stay coherent.
+    let subCfgLive = null;
+    if (secondaryBody) {
+      secondaryBody.uniforms.uTime.value = t;
+      subCfgLive = mergeFlameCfg(bcfg, bcfg.secondary || {});
+
+      // Animate the secondary's top Y over time. Two beating sines at
+      // incommensurate periods give a non-repeating-feeling drift; the
+      // result is a heightFrac in [base - amount, base + amount] that
+      // we clamp to a safe range, then mutate the secondary's vpY +
+      // maxY so the applyBodyUniforms call below pushes the updated
+      // uVanishingY.
+      const subSrc = bcfg.secondary || {};
+      const ha = subSrc.heightAnimation;
+      let heightFrac = subSrc.heightFraction ?? 0.33;
+      if (ha && ha.enabled) {
+        const dur   = Math.max(ha.cycleDuration ?? 12, 0.001);
+        const phase = (t / dur) * Math.PI * 2;
+        const s1 = Math.sin(phase);
+        const s2 = Math.sin(phase * 0.71 + 1.3);
+        const blended = (s1 + s2 * 0.6) / 1.6;          // ~[-1, 1]
+        heightFrac += blended * (ha.amount ?? 0.20);
+      }
+      heightFrac = Math.min(0.95, Math.max(0.05, heightFrac));
+      const subTopYLive = minY + heightFrac * (vpY - minY);
+      secondaryBody.vpY  = subTopYLive;
+      secondaryBody.maxY = subTopYLive;
+
+      applyBodyUniforms(secondaryBody, subCfgLive);
+      // Secondary doesn't fire chromatic flares — keep its flare
+      // intensity at zero so the merged-cfg pipeline can't accidentally
+      // bleed a main-flame flare colour into the blue body.
+      secondaryBody.uniforms.uFlareIntensity.value = 0;
+      // Secondary stays a unified blue column — branching is a main-
+      // flame-only effect.
+      secondaryBody.uniforms.uBranchSep.value = 0;
+
+      // Hue oscillation — sine-wanders the BOTTOM + MID stops in a
+      // narrow band around hr.baseHue (default blue). The TOP stop is
+      // deliberately NOT overwritten so the flame's outline keeps the
+      // saturated blue that applyBodyUniforms just pushed from
+      // cfg.colorTop, regardless of the inner-core hue wander.
+      const hr = subCfgLive.hueRotation;
+      if (hr && hr.enabled) {
+        const dur     = Math.max(hr.duration ?? 180, 0.001);
+        const baseHue = hr.baseHue   ?? 0.62;
+        const range   = hr.hueRange  ?? 0.10;
+        const phase   = (t / dur) * Math.PI * 2;
+        const hue     = ((baseHue + Math.sin(phase) * range) % 1 + 1) % 1;
+        const sat     = hr.saturation ?? 0.92;
+        hsl.setHSL(hue, sat, hr.lightnessBottom ?? 0.62);
+        secondaryBody.uniforms.uColorBottom.value.set(hsl.r, hsl.g, hsl.b);
+        hsl.setHSL(((hue + (hr.midHueOffset ?? 0.04)) % 1 + 1) % 1, sat,
+                    hr.lightnessMid ?? 0.46);
+        secondaryBody.uniforms.uColorMid.value.set(hsl.r, hsl.g, hsl.b);
+      }
+    }
 
     // ----- Chromatic flare envelope -----
     // Pick a new flare with rate-based Bernoulli probability per frame
@@ -854,6 +1297,14 @@ export function createFlame({ logoMesh, meta, renderer }) {
       }
     }
 
+    // Sparks burst forward during a flare — driven by the same envelope
+    // so the chromatic flame flash and the spark forward-pop are
+    // synchronised. uFlareForward is the maximum z displacement.
+    if (sparks) {
+      sparks.uniforms.uFlareBoost.value   = flareEnv;
+      sparks.uniforms.uFlareForward.value = ANIM.flame.sparks.flareForward ?? 3.0;
+    }
+
     // ----- Light flicker -----
     if (light) {
       const lc = ANIM.flame.light;
@@ -881,6 +1332,44 @@ export function createFlame({ logoMesh, meta, renderer }) {
         light.color.copy(lerpedLightColor);
       } else {
         light.color.copy(baseLightColor);
+      }
+    }
+
+    // ----- Movement diversity envelope -----
+    // Beat of two incommensurate sines drives a slow scale in
+    // [minScale, 1] applied to every motion-related uniform across
+    // body, secondary, shadow, and sparks AFTER applyBodyUniforms has
+    // pushed their base values. Each frame the base values are re-
+    // pushed and re-multiplied, so this never compounds — it's a pure
+    // post-multiplier on the configured speeds. Lets the flame settle
+    // into still moments and resume motion organically without ever
+    // freezing the whole shader.
+    const m = ANIM.flame.movement;
+    if (m && m.enabled) {
+      const dur   = Math.max(m.cycleDuration ?? 35, 0.001);
+      const phase = (t / dur) * Math.PI * 2;
+      const s1    = 0.5 + 0.5 * Math.sin(phase);
+      const s2    = 0.5 + 0.5 * Math.sin(phase * 0.41 + 1.7);
+      const blended = s1 * 0.6 + s2 * 0.4;
+      const eased   = blended * blended * (3 - 2 * blended);
+      const minScale = m.minScale ?? 0.10;
+      const movementScale = minScale + (1 - minScale) * eased;
+
+      body.uniforms.uNoiseSpeed.value    *= movementScale;
+      body.uniforms.uColWobble.value     *= movementScale;
+      body.uniforms.uWidthNoiseAmt.value *= movementScale;
+      body.uniforms.uBranchSpeed.value   *= movementScale;
+
+      if (secondaryBody) {
+        secondaryBody.uniforms.uNoiseSpeed.value    *= movementScale;
+        secondaryBody.uniforms.uColWobble.value     *= movementScale;
+        secondaryBody.uniforms.uWidthNoiseAmt.value *= movementScale;
+      }
+      if (shadow) {
+        shadow.uniforms.uNoiseSpeed.value *= movementScale;
+      }
+      if (sparks) {
+        sparks.uniforms.uSwayAmount.value *= movementScale;
       }
     }
   }
