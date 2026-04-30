@@ -1093,32 +1093,67 @@ function placeCornerHexes({ outerSilhouette, frontZ, gradientBright,
 // shimmer math). Returns a group containing the niche frame, back
 // wall, lantern mesh, and light, plus an `update(t)` closure.
 // -----------------------------------------------------------------------
+// Hex frame — stretched pointy-top hexagon in the XY plane (no rotation
+// needed when placed). `radial` = full vertical extent (top vertex to
+// bottom vertex); `width` = full horizontal extent (left flat to right
+// flat). Six vertices: top, top-right, bottom-right, bottom, bottom-left,
+// top-left.
+function makeHexFrameGeometry(radial, width, thickness) {
+  const halfH = radial * 0.5;
+  const halfW = width  * 0.5;
+  const shape = new THREE.Shape();
+  shape.moveTo(0,        halfH);          // top
+  shape.lineTo( halfW,   halfH * 0.5);    // top-right
+  shape.lineTo( halfW,  -halfH * 0.5);    // bottom-right
+  shape.lineTo(0,       -halfH);          // bottom
+  shape.lineTo(-halfW,  -halfH * 0.5);    // bottom-left
+  shape.lineTo(-halfW,   halfH * 0.5);    // top-left
+  shape.closePath();
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth:        thickness,
+    bevelEnabled: false,
+    curveSegments: 1,
+  });
+  geo.translate(0, 0, -thickness * 0.5);
+  return geo;
+}
+
 function createLanternNiche({ x, y, frameZ, cfg }) {
   const niche = new THREE.Group();
 
-  // Frame — pointed-arch ring sitting flush with the brick surface.
-  const frameGeo = makeArchCellGeometry(cfg.frameSize.radial,
-                                        cfg.frameSize.width,
-                                        cfg.frameSize.thickness);
+  // Frame — pointed-arch by default, hexagonal wedge if frameShape='hex'.
+  const useHex = (cfg.frameShape || 'arch') === 'hex';
+  const frameGeo = useHex
+    ? makeHexFrameGeometry(cfg.frameSize.radial,
+                           cfg.frameSize.width,
+                           cfg.frameSize.thickness)
+    : makeArchCellGeometry(cfg.frameSize.radial,
+                           cfg.frameSize.width,
+                           cfg.frameSize.thickness);
   const frameMat = new THREE.MeshStandardMaterial({
     color: new THREE.Color(cfg.frameColor || '#7A5A30'),
     metalness: 0.10, roughness: 0.85,
   });
   const frameMesh = new THREE.Mesh(frameGeo, frameMat);
-  // local-X = up (radial-up): cell tip points UP so the niche stands
-  // upright. We rotate by setting local axes manually.
-  frameMesh.quaternion.setFromRotationMatrix(
-    new THREE.Matrix4().makeBasis(
-      new THREE.Vector3(0, 1, 0),  // local-X → world-Y (up)
-      new THREE.Vector3(1, 0, 0),  // local-Y → world-X (cell width is horizontal)
-      new THREE.Vector3(0, 0, 1),  // local-Z → world-Z
-    ),
-  );
-  frameMesh.position.set(x, y, frameZ);
+  if (useHex) {
+    // Hex shape is already in XY (vertical = Y), no axis swap needed.
+    frameMesh.position.set(x, y, frameZ);
+  } else {
+    // Pointed-arch: shape's local-X = arch length → world-Y (up).
+    frameMesh.quaternion.setFromRotationMatrix(
+      new THREE.Matrix4().makeBasis(
+        new THREE.Vector3(0, 1, 0),
+        new THREE.Vector3(1, 0, 0),
+        new THREE.Vector3(0, 0, 1),
+      ),
+    );
+    frameMesh.position.set(x, y, frameZ);
+  }
   niche.add(frameMesh);
 
-  // Back wall — small dark rectangle recessed into the wall.
-  const backW = cfg.frameSize.width * 1.05;
+  // Back wall — small dark rectangle recessed into the wall. Centred
+  // around the frame so the flame sits in the middle of the niche.
+  const backW = cfg.frameSize.width  * 1.05;
   const backH = cfg.frameSize.radial * 1.0;
   const backGeo = new THREE.BoxGeometry(backW, backH, 0.08);
   const backMat = new THREE.MeshStandardMaterial({
@@ -1126,19 +1161,28 @@ function createLanternNiche({ x, y, frameZ, cfg }) {
     metalness: 0.05, roughness: 1.0,
   });
   const backMesh = new THREE.Mesh(backGeo, backMat);
-  backMesh.position.set(x, y + backH * 0.4, frameZ + cfg.zBack);
+  // Hex frame is centred on (x, y); arch frame's base is at y. Match
+  // back wall placement to whichever frame anchor we used.
+  const backCY = useHex ? y : (y + backH * 0.4);
+  backMesh.position.set(x, backCY, frameZ + cfg.zBack);
   niche.add(backMesh);
 
-  // Lantern flame — small emissive sphere just in front of the back
-  // wall, inside the niche opening.
+  // Lantern flame — taller emissive teardrop (squashed sphere) so the
+  // mesh reads as a candle flame rather than a tiny dot. Additive
+  // blending lets it punch through the dim back wall as a bright core.
+  const flameRadius = cfg.flameSize ?? 0.35;
   const flameMat = new THREE.MeshBasicMaterial({
     color: new THREE.Color(cfg.flameColor || '#FFC070'),
     transparent: true,
     opacity: 0.95,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
   });
-  const flameGeo = new THREE.SphereGeometry(0.18, 8, 6);
+  const flameGeo = new THREE.SphereGeometry(flameRadius, 12, 10);
+  // Squash horizontally and stretch vertically (teardrop-ish).
+  flameGeo.scale(0.7, 1.5, 0.7);
   const flameMesh = new THREE.Mesh(flameGeo, flameMat);
-  const flameY = y + backH * 0.25;
+  const flameY = useHex ? y : (y + backH * 0.25);
   const flameZpos = frameZ + cfg.zBack * 0.3;
   flameMesh.position.set(x, flameY, flameZpos);
   niche.add(flameMesh);
@@ -1160,16 +1204,33 @@ function createLanternNiche({ x, y, frameZ, cfg }) {
   const speedB = cfg.flickerSpeedB || 11.0;
   const intMin = cfg.intensityMin  || 4.0;
   const intMax = cfg.intensityMax  || 9.0;
+  // Stochastic flutter — separate quick noise blended on top of the
+  // smooth two-sine envelope so the candle has rapid micro-jitter on
+  // top of slower breathing. jitterAmount 0 = pure sine; 1 = pure noise.
+  const jitterAmount = cfg.flickerJitter ?? 0.35;
+  let jitterNoise = 0.5;
+  let lastJitterTime = -1;
 
   function update(t) {
-    // Two-sine envelope (matches the 3DOverlay petal-shimmer pattern):
-    // (sin(a) + 0.5*sin(b)) range ≈ [-1.5, 1.5] → remap to [0, 1].
+    // Two-sine envelope (smooth breathing).
     const a = Math.sin(t * speedA + phaseA);
     const b = Math.sin(t * speedB + phaseB);
-    const env = (a + 0.5 * b + 1.5) / 3.0;            // 0 .. 1
+    const sineEnv = (a + 0.5 * b + 1.5) / 3.0;       // 0 .. 1
+    // Stochastic noise updated every frame at high rate so flicker
+    // looks like rapid candle micro-flutter rather than smooth wave.
+    if (lastJitterTime < 0 || (t - lastJitterTime) > 0.04) {
+      jitterNoise = Math.random();
+      lastJitterTime = t;
+    }
+    const env = sineEnv * (1 - jitterAmount) + jitterNoise * jitterAmount;
     const intensity = intMin + (intMax - intMin) * env;
     light.intensity = intensity;
-    flameMat.opacity = 0.6 + 0.35 * env;              // flame brightens
+    // Wider opacity range for the flame mesh so it pulses dramatically.
+    flameMat.opacity = 0.4 + 0.6 * env;
+    // Subtle scale flicker — flame grows / shrinks with brightness so
+    // the mesh visibly breathes (not just opacity changes).
+    const s = 0.85 + 0.3 * env;
+    flameMesh.scale.set(s, s * 1.2, s);
   }
 
   return { group: niche, update };
@@ -1835,14 +1896,19 @@ export function createArch({ silhouette, maxZ, frameDepth = 0.5,
     // alcoves and lanterns stay synchronised by construction.
     let lanternPositions = [];
     const lantCfgEarly = cfg.lanterns;
-    if (lantCfgEarly?.enabled !== false && silhouette[0] && silhouette[1]
-        && silhouette[1].length >= 3) {
-      const sc = polyCentroid(silhouette[1]);
+    if (lantCfgEarly?.enabled !== false && silhouette[0]) {
       let lminX = Infinity, lmaxX = -Infinity, lminY = Infinity, lmaxY = -Infinity;
       for (const p of silhouette[0]) {
         if (p.x < lminX) lminX = p.x; if (p.x > lmaxX) lmaxX = p.x;
         if (p.y < lminY) lminY = p.y; if (p.y > lmaxY) lmaxY = p.y;
       }
+      // Star bay centroid — use silhouette[1] (inner cutout) if present,
+      // else fall back to the outer bbox centre. The SDG logo silhouette
+      // extraction only emits the outer loop, so the bbox-centre fallback
+      // is the production path here.
+      const sc = (silhouette[1] && silhouette[1].length >= 3)
+        ? polyCentroid(silhouette[1])
+        : { x: (lminX + lmaxX) * 0.5, y: (lminY + lmaxY) * 0.5 };
       const quadCentres = [
         { x: (lminX + sc.x) * 0.5, y: (lmaxY + sc.y) * 0.5 },  // UL
         { x: (lmaxX + sc.x) * 0.5, y: (lmaxY + sc.y) * 0.5 },  // UR
@@ -1876,8 +1942,8 @@ export function createArch({ silhouette, maxZ, frameDepth = 0.5,
     // Niche box just slightly larger than the lantern frame so a thin
     // border of carved-out wall reads around the fixture. Tighter ratios
     // keep the brick wall visually dominant.
-    const nicheW     = nicheCfg.width  ?? lantFrameW * 4.0;
-    const nicheH     = nicheCfg.height ?? lantFrameR * 4.0;
+    const nicheW     = nicheCfg.width  ?? lantFrameW * 1.5;
+    const nicheH     = nicheCfg.height ?? lantFrameR * 1.4;
     const nicheBoxes = lanternPositions.map(lp => ({
       x: lp.x,
       // Shift box centre up so the lantern (placed at lp) sits in the
@@ -1936,7 +2002,7 @@ export function createArch({ silhouette, maxZ, frameDepth = 0.5,
       const shelfX = n.x;
       const shelfY = n.y - n.h * 0.5 + shelfHexCfg.depth * 0.5;
       const shelfZ = backZ + shelfHexCfg.height * 0.5
-                   + (topCfg.shelfZLift ?? maxH * 0.45);
+                   + (topCfg.shelfZLift ?? (topCfg.maxStepHeight ?? 1.6) * 0.45);
       shelfMesh.position.set(shelfX, shelfY, shelfZ);
       group.add(shelfMesh);
     }
@@ -2023,15 +2089,15 @@ export function createArch({ silhouette, maxZ, frameDepth = 0.5,
   // or below the panel inlay.
   const lanternUpdaters = [];
   const lantCfg = cfg.lanterns;
-  if (lantCfg?.enabled !== false && silhouette[0] && silhouette[1]
-      && silhouette[1].length >= 3) {
-    const star = silhouette[1];
-    const sc = polyCentroid(star);
+  if (lantCfg?.enabled !== false && silhouette[0]) {
     let lminX = Infinity, lmaxX = -Infinity, lminY = Infinity, lmaxY = -Infinity;
     for (const p of silhouette[0]) {
       if (p.x < lminX) lminX = p.x; if (p.x > lmaxX) lmaxX = p.x;
       if (p.y < lminY) lminY = p.y; if (p.y > lmaxY) lmaxY = p.y;
     }
+    const sc = (silhouette[1] && silhouette[1].length >= 3)
+      ? polyCentroid(silhouette[1])
+      : { x: (lminX + lmaxX) * 0.5, y: (lminY + lmaxY) * 0.5 };
     const quadCentres = [
       { x: (lminX + sc.x) * 0.5, y: (lmaxY + sc.y) * 0.5 },  // UL
       { x: (lmaxX + sc.x) * 0.5, y: (lmaxY + sc.y) * 0.5 },  // UR
@@ -2043,17 +2109,14 @@ export function createArch({ silhouette, maxZ, frameDepth = 0.5,
       { panel: 0, yOffset:  1.6 }, { panel: 1, yOffset:  1.6 },
       { panel: 2, yOffset: -1.6 }, { panel: 3, yOffset: -1.6 },
     ];
-    console.log('[lantern] niches to place:', niches, 'quadCentres:', quadCentres, 'floorTopZL:', floorTopZL);
     for (const n of niches) {
       const c = quadCentres[n.panel];
-      if (!c) { console.log('[lantern] skip panel', n.panel, '— no quadCentre'); continue; }
+      if (!c) continue;
       const lx = c.x;
       const ly = c.y + (n.yOffset ?? 0);
-      const fz = floorTopZL + (lantCfg.zLift ?? 0.10);
-      console.log('[lantern] placing at', lx.toFixed(2), ly.toFixed(2), 'frameZ', fz.toFixed(2), 'panel', n.panel);
       const niche = createLanternNiche({
         x: lx, y: ly,
-        frameZ: fz,
+        frameZ: floorTopZL + (lantCfg.zLift ?? 0.10),
         cfg: lantCfg,
       });
       group.add(niche.group);

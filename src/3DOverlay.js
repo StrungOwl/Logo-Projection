@@ -717,23 +717,6 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
     hexGeo.rotateX(Math.PI / 2);
     hexGeo.rotateZ(Math.PI / 6);
 
-    // Shared unit-radius flat-top hex line loop — vertices match the
-    // hex prism's cap angles so a child LineLoop scaled by `r` aligns
-    // exactly with a hex face of radius r. The CylinderGeometry +
-    // rotateX(PI/2) + rotateZ(PI/6) chain above ends up with cap
-    // vertices at 0°, 60°, ..., 300° in the local XY plane (flat-top).
-    const hexLineGeo = new THREE.BufferGeometry();
-    {
-      const lineVerts = new Float32Array(6 * 3);
-      for (let i = 0; i < 6; i++) {
-        const a = i * (Math.PI / 3);
-        lineVerts[i * 3]     = Math.cos(a);
-        lineVerts[i * 3 + 1] = Math.sin(a);
-        lineVerts[i * 3 + 2] = 0;
-      }
-      hexLineGeo.setAttribute('position', new THREE.BufferAttribute(lineVerts, 3));
-    }
-
     // Dedicated group for the hex wall. Hexes keep a STATIC size and
     // instead do a domino-flip around their local +X axis (wave sweeps
     // left-to-right across the wall). Opacity fade handles the
@@ -747,11 +730,30 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
     // Warm amber-red hue for the wall — distinct from the rosettes so
     // the brick↔rose hand-off reads as a colour shift too.
     const hexColor = new THREE.Color(brickCfg.color ?? '#D14A22');
-    const nestCfg  = brickCfg.nesting || {};
-    const nestEnabled = nestCfg.enabled !== false;
-    const nestMin     = Math.max(0, Math.floor(nestCfg.minCount ?? 5));
-    const nestMax     = Math.max(nestMin, Math.floor(nestCfg.maxCount ?? 20));
-    const nestZOff    = nestCfg.zOffset ?? 0.05;
+
+    // Back-face alt colour — a random subset of tiles get a flat hex
+    // disc on their back face in a contrasting hue. Reveals during each
+    // tile's domino flip when the back rotates camera-facing.
+    const backCfg      = brickCfg.backFace || {};
+    const backEnabled  = backCfg.enabled !== false;
+    const altChance    = Math.max(0, Math.min(1, backCfg.altChance ?? 0.30));
+    const altColorHex  = backCfg.altColor ?? '#FFE08C';
+    const altZOff      = backCfg.zOffset ?? 0.02;
+    // Shared flat hex shape (2D) for the back-face disc — built once,
+    // reused per alt-back tile via per-tile material clones.
+    const altGeo = backEnabled
+      ? (() => {
+          const shape = new THREE.Shape();
+          for (let i = 0; i < 6; i++) {
+            const a = i * (Math.PI / 3);
+            const x = Math.cos(a) * hexR, y = Math.sin(a) * hexR;
+            if (i === 0) shape.moveTo(x, y); else shape.lineTo(x, y);
+          }
+          shape.closePath();
+          return new THREE.ShapeGeometry(shape);
+        })()
+      : null;
+
     const hexMeshes = [];
     for (const slot of slots) {
       const hMat = starMats[0].clone();
@@ -764,51 +766,36 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
       hexWall.add(mesh);
       hexMeshes.push(mesh);
 
-      if (nestEnabled) {
-        // Random count in [nestMin, nestMax] inclusive. Shared line
-        // material per tile so colour-drift + opacity update once.
-        const nestN = nestMin + Math.floor(Math.random() * (nestMax - nestMin + 1));
-        const lineMatOpts = {
-          color:       hexColor.clone(),
+      if (backEnabled && altGeo && Math.random() < altChance) {
+        // This tile is tagged for alt back. Flat hex disc sits just
+        // behind the prism's back cap so it shows when the tile flips
+        // and the back becomes camera-facing.
+        const altMatOpts = {
+          color:       new THREE.Color(altColorHex),
           transparent: true,
           opacity:     1.0,
           depthWrite:  false,
+          side:        THREE.DoubleSide,
         };
-        // Mirror the gate stencil clip from the hex face material so
-        // line outlines never poke past the gate-frame's inner aperture.
+        // Mirror gate stencil clip so the disc never pokes past the
+        // gate-frame's inner aperture.
         if (maskClip) {
-          lineMatOpts.stencilWrite = true;
-          lineMatOpts.stencilRef   = 1;
-          lineMatOpts.stencilFunc  = THREE.EqualStencilFunc;
-          lineMatOpts.stencilFail  = THREE.KeepStencilOp;
-          lineMatOpts.stencilZFail = THREE.KeepStencilOp;
-          lineMatOpts.stencilZPass = THREE.KeepStencilOp;
+          altMatOpts.stencilWrite = true;
+          altMatOpts.stencilRef   = 1;
+          altMatOpts.stencilFunc  = THREE.EqualStencilFunc;
+          altMatOpts.stencilFail  = THREE.KeepStencilOp;
+          altMatOpts.stencilZFail = THREE.KeepStencilOp;
+          altMatOpts.stencilZPass = THREE.KeepStencilOp;
         }
-        const lineMat = new THREE.LineBasicMaterial(lineMatOpts);
-        // Wrap rings in a sub-group so a single uniform scale on the
-        // group can drive the per-tile size pulse without touching each
-        // ring individually.
-        const nestGroup = new THREE.Group();
-        nestGroup.position.set(0, 0, hexDepth * 0.5 + nestZOff);
-        mesh.add(nestGroup);
-        for (let i = 0; i < nestN; i++) {
-          // Outer-to-inner: i=0 → frac=N/(N+1), i=N-1 → frac=1/(N+1).
-          const frac = 1 - (i + 1) / (nestN + 1);
-          const r = hexR * frac;
-          const ln = new THREE.LineLoop(hexLineGeo, lineMat);
-          ln.scale.set(r, r, 1);
-          nestGroup.add(ln);
-        }
-        mesh.userData.nestLineMat       = lineMat;
-        mesh.userData.nestGroup         = nestGroup;
-        // Random per-tile state for staggered fade-in + size pulse.
-        // Activation delay is sampled per cycle so each loop produces a
-        // different staggering pattern; phase + freq mul stay fixed for
-        // continuity.
-        mesh.userData.nestActivateDelay = 0;     // resampled each cycle
-        mesh.userData.nestLastCycleIdx  = -1;
-        mesh.userData.nestPhaseOffset   = Math.random() * Math.PI * 2;
-        mesh.userData.nestPulseFreqMul  = 0.7 + Math.random() * 0.6; // 0.7..1.3
+        const altMat  = new THREE.MeshBasicMaterial(altMatOpts);
+        const altMesh = new THREE.Mesh(altGeo, altMat);
+        altMesh.position.set(0, 0, -hexDepth * 0.5 - altZOff);
+        // ShapeGeometry is built in the XY plane facing +Z. After
+        // positioning at the back face we want it visible from -Z too,
+        // hence DoubleSide above.
+        altMesh.renderOrder = 7;   // draw before the prism in opaque pass
+        mesh.add(altMesh);
+        mesh.userData.altMat = altMat;
       }
     }
 
@@ -1262,31 +1249,16 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
       }
 
       const baseOpacity = isHexMode ? (brickCfg.baseOpacity ?? 1) : 1;
-      const nestCfgFrame = brickCfg.nesting || {};
-      const nestLineOp  = isHexMode
-        ? ((nestCfgFrame.lineOpacity != null) ? nestCfgFrame.lineOpacity : 1)
-        : 0;
 
-      // Wall-wide breathing — drives ALL activated tiles' rings between
-      // 0 (no rings show anywhere) and 1 (all rings show), so the room
-      // has coordinated full-on / full-off moments.
-      const nestFadeMaxDelay = nestCfgFrame.fadeInMaxDelay ?? 12;
-      const nestFadeDur      = Math.max(nestCfgFrame.fadeInDuration ?? 4, 0.001);
-      const nestGlobalPeriod = Math.max(nestCfgFrame.globalPeriod ?? 22, 0.001);
-      const nestSizeAmt      = nestCfgFrame.sizePulseAmount ?? 0.05;
-      const nestSizePeriod   = Math.max(nestCfgFrame.sizePulsePeriod ?? 8, 0.001);
-      const globalAmt = isHexMode
-        ? 0.5 - 0.5 * Math.cos((t / nestGlobalPeriod) * Math.PI * 2)
+      // Back-face alt-colour disc on random tiles — alpha gated to hex
+      // mode so other modes never reveal the contrast colour.
+      const backCfgFrame = brickCfg.backFace || {};
+      const altOpacity = isHexMode && backCfgFrame.enabled !== false
+        ? (backCfgFrame.altOpacity ?? 1)
         : 0;
-      // Cycle index — when it advances, resample each tile's random
-      // fade-in delay so the staggering pattern shuffles every loop.
-      const cycleIdx = morphTotal > 0 ? Math.floor(t / morphTotal) : 0;
 
       for (const hex of brickHexMeshes) {
         hex.material.color.copy(_hexDriftColor);
-        if (hex.userData.nestLineMat) {
-          hex.userData.nestLineMat.color.copy(_hexDriftColor);
-        }
         const step = hex.userData.flipStep;
         const ph   = (hexElapsed - step * hexTrigger) / hexFall;
         let angle = 0;
@@ -1296,13 +1268,6 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
         }
         hex.rotation.x = angle;
 
-        // Hoisted per-tile wave anchors so the nesting activation logic
-        // below can read entryEnd without recomputing.
-        const stepFrac   = stepDenom > 0 ? step / stepDenom : 0;
-        const entryStart = hexEntryDelay + hexEntryStagger * stepFrac;
-        const entryEnd   = entryStart + hexEntryGlide;
-        const exitStart  = exitTailEnd - hexExitStagger * (1 - stepFrac);
-
         // Per-hex window-edge envelope. `edgeDrift` (0..1) pushes the hex
         // toward its drifted-out position; `edgeFade` (0..1) is the on-
         // screen alpha multiplier. In free-running mode both stay at the
@@ -1311,11 +1276,15 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
         let edgeDrift = 0;
         let edgeFade  = 1;
         if (wavesOn) {
+          const stepFrac = step / stepDenom;
+
           // Entry wave — first hex (stepFrac=0) starts gliding at
           // cyc=hexEntryDelay, last hex starts at cyc=hexEntryDelay+
           // hexEntryStagger. Pre-trigger frames fall through the smoothstep
           // (u clamped to 0 → eased=0 → edgeDrift=1, edgeFade=0), so each
           // hex stays drifted + invisible until its turn.
+          const entryStart = hexEntryDelay + hexEntryStagger * stepFrac;
+          const entryEnd   = entryStart + hexEntryGlide;
           if (cyc < entryEnd) {
             const u = Math.max(0, (cyc - entryStart) / Math.max(hexEntryGlide, 1e-3));
             const eased = u * u * (3 - 2 * u);     // smoothstep
@@ -1326,6 +1295,7 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
           // Exit wave — symmetric, anchored to the window close. flipStep=0
           // exits first, last hex exits last (matches entry order so each
           // hex's "life" inside the window has a coherent in/out direction).
+          const exitStart = exitTailEnd - hexExitStagger * (1 - stepFrac);
           if (cyc > exitStart) {
             const u = Math.min(1, (cyc - exitStart) / Math.max(hexExitGlide, 1e-3));
             const eased = u * u * (3 - 2 * u);
@@ -1343,34 +1313,25 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
         const hexAlpha = brickW * edgeFade;
         hex.material.opacity = hexAlpha * baseOpacity;
 
-        // Nested-ring activation + size pulse. Only meaningful in 'hex'
-        // mode; outside of it nestLineOp == 0 zeroes the line opacity
-        // regardless of activation state.
-        if (hex.userData.nestLineMat) {
-          let activated = 0;
-          if (isHexMode && nestCfgFrame.enabled !== false) {
-            // Resample the random fade-in delay once per cycle so each
-            // loop has a different staggering pattern. Stable within a
-            // cycle so the chosen tile order doesn't flicker.
-            if (hex.userData.nestLastCycleIdx !== cycleIdx) {
-              hex.userData.nestLastCycleIdx = cycleIdx;
-              hex.userData.nestActivateDelay = Math.random() * nestFadeMaxDelay;
-            }
-            const tileAge = Math.max(0, cyc - entryEnd);
-            const ad = hex.userData.nestActivateDelay;
-            const u = (tileAge - ad) / nestFadeDur;
-            activated = u <= 0 ? 0 : (u >= 1 ? 1 : u * u * (3 - 2 * u));
-
-            if (hex.userData.nestGroup) {
-              const sp = 1 + nestSizeAmt
-                * Math.sin((t / nestSizePeriod) * Math.PI * 2
-                           * (hex.userData.nestPulseFreqMul ?? 1)
-                           + (hex.userData.nestPhaseOffset ?? 0));
-              hex.userData.nestGroup.scale.setScalar(sp);
+        // Back-face alt colour (random-tile only). Smooth back-camera-
+        // facing factor: positive when the hex's local -Z (back face) is
+        // pointing toward the camera. Easing in over a 0.4 band gives a
+        // soft fade-in/out as the tile rotates past the perpendicular
+        // point during a flip.
+        if (hex.userData.altMat) {
+          let backVis = 0;
+          if (isHexMode) {
+            const backFacing = -Math.cos(hex.rotation.x);
+            if (backFacing > 0) {
+              if (backFacing >= 0.4) {
+                backVis = 1;
+              } else {
+                const u = backFacing / 0.4;
+                backVis = u * u * (3 - 2 * u);
+              }
             }
           }
-          hex.userData.nestLineMat.opacity =
-            hexAlpha * nestLineOp * activated * globalAmt;
+          hex.userData.altMat.opacity = hexAlpha * altOpacity * backVis;
         }
       }
 

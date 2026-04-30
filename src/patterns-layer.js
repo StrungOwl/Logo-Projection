@@ -974,6 +974,12 @@ export function addPatternLayers(logoMesh, meta, renderer) {
         else                      f.mat.opacity                    = f.base * opacity;
       }
       // Per-tile staggered reveal as the clone grows from 0 to 1.
+      // SingleClone variant: every tile's reveal window is [phase*spread, 1]
+      // — i.e., tiles start at random scales (controlled by revealStaggerJitter)
+      // but ALL finish at scale=1. So the clone reaches its full pattern
+      // exactly at peak, no over-grow needed (revealOvershoot is unused
+      // here; it only applies to the multi-clone applyDive path where
+      // clones grow past 1 during the dive).
       if (revealSpread <= 0) {
         if (c.lastRevealMode !== 'full-norevealcfg') {
           for (let i = 0; i < c.revealTiles.length; i++) {
@@ -982,7 +988,7 @@ export function addPatternLayers(logoMesh, meta, renderer) {
           }
           c.lastRevealMode = 'full-norevealcfg';
         }
-      } else if (scale >= 1.0 + revealOvershoot) {
+      } else if (scale >= 1.0) {
         if (c.lastRevealMode !== 'full') {
           for (let i = 0; i < c.revealTiles.length; i++) {
             const rt = c.revealTiles[i];
@@ -994,7 +1000,7 @@ export function addPatternLayers(logoMesh, meta, renderer) {
         for (let i = 0; i < c.revealTiles.length; i++) {
           const rt = c.revealTiles[i];
           const t0  = rt.revealPhase * revealSpread;
-          const t1  = 1 + rt.revealPhase * revealOvershoot;
+          const t1  = 1;   // every tile finishes at clone-scale=1
           const den = t1 - t0;
           let f = den > 1e-4 ? (scale - t0) / den : 1;
           if (f <= 0) {

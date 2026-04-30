@@ -314,35 +314,23 @@ export const ANIM = {
     brickWall: {
       enabled: true,
       // Multiplier on hex face opacity. Combines with the per-hex
-      // entry/exit fade so the wall reads as semi-transparent at full
-      // hold (lower = more see-through).
-      baseOpacity: 0.4,
-      // Concentric hex outlines drawn on each tile — random count per
-      // hex in [minCount, maxCount], scaled inward so each tile reads as
-      // receding nested hexagons. Lines share the tile's drifted hue and
-      // fade with the entry/exit waves.
-      //
-      // Behaviour after a tile finishes its entry wave:
-      //   1. Rings start hidden.
-      //   2. After a per-tile random delay in [0, fadeInMaxDelay] sec,
-      //      they fade in over `fadeInDuration` sec (smoothstep).
-      //   3. Once active, a wall-wide sine cycle (`globalPeriod`)
-      //      modulates ring brightness from 0 (no rings show anywhere)
-      //      to 1 (all rings show), giving the room a coordinated
-      //      breathing rhythm.
-      //   4. A subtle per-tile sine modulates ring SIZE
-      //      (`sizePulseAmount` ± fraction, period `sizePulsePeriod`).
-      nesting: {
-        enabled:        true,
-        minCount:       5,
-        maxCount:       20,
-        zOffset:        0.05,   // push above the hex front face, units
-        lineOpacity:    1.0,    // multiplier on nested-line alpha at peak
-        fadeInMaxDelay: 12.0,   // max random delay after entry settle, sec
-        fadeInDuration: 4.0,    // per-tile fade-in ramp, sec
-        globalPeriod:   22.0,   // wall-wide breathing cycle, sec
-        sizePulseAmount: 0.05,  // ±5 % radius wobble
-        sizePulsePeriod: 8.0,   // sec per size-pulse cycle
+      // entry/exit fade. 1.0 = fully opaque hexes (recommended so the
+      // back-face alt colour stays hidden at rest); drop toward 0.4 for
+      // see-through tiles.
+      baseOpacity: 1.0,
+      // Random subset of hexes get a CONTRASTING colour on their back
+      // face. As each tile flips, those random tiles flash the alt
+      // colour for ~1s before the tile rotates back. Other tiles flip
+      // showing the same warm hue on both faces.
+      backFace: {
+        enabled:     true,
+        altChance:   0.30,       // fraction of tiles tagged for alt back (~30 %)
+        altColor:    '#FFE08C',  // creamy warm-yellow — reads as firelight
+                                 // peeking through. Try '#3DB7FF' (cool blue)
+                                 // or '#FFFFFF' (white-hot) for stronger
+                                 // contrast.
+        altOpacity:  1.0,        // peak alpha during a flip
+        zOffset:     0.02,       // sit slightly behind the hex back face
       },
       // Slow color drift on the hex bricks — eases the wall's hue from
       // its base colour toward `deepColor` and back, on a sine cycle.
@@ -474,7 +462,7 @@ export const ANIM = {
                               // of each dive segment (includes fade-in +
                               // pure static + fade-out windows below).
                               // 0 → continuous dive (skip hold entirely).
-    holdFadeIn:        6.0,   // seconds at start of hold spent crossfading
+    holdFadeIn:        0.0,   // seconds at start of hold spent crossfading
                               // the dive's clone stack out so the ORIGINAL
                               // pattern at rest reads through. cloneOp
                               // ramps 1 → 0 over the FULL holdFadeIn on a
@@ -506,7 +494,7 @@ export const ANIM = {
                               // shallow layer leading by half the window
                               // duration so deeper layers slip in behind
                               // it instead of stacking.
-    revealStaggerSpread: 0.0, // 0..0.95. Per-tile stagger applied as a
+    revealStaggerSpread: 0.95,// 0..0.95 (max). Per-tile stagger applied as a
                               // clone grows: tiles with higher
                               // revealPhase START revealing later. Each
                               // tile's window is [revealPhase × Spread,
@@ -520,7 +508,7 @@ export const ANIM = {
                               // The per-tile revealPhase is a mix of
                               // radial position and a random offset,
                               // governed by jitter below.
-    revealStaggerJitter: 0.7, // 0..1. Mix between RADIAL revealPhase
+    revealStaggerJitter: 1.0, // 0..1. Mix between RADIAL revealPhase
                               // (innermost-first wave from the focal
                               // centre) and a per-tile RANDOM phase.
                               // 0 = clean wave (rosettes in the same
@@ -1025,25 +1013,44 @@ export const ANIM = {
     //                     to that centroid's Y.
     lanterns: {
       enabled:        true,
-      frameSize:      { radial: 6.0, width: 6.0, thickness: 1.0 },
+      // Hexagonal wedge frame (set 'arch' for the original pointed-arch
+      // shape). The hex frame reads as a stretched pointy-top hexagonal
+      // alcove with `radial` = vertical extent, `width` = horizontal.
+      frameShape:    'hex',
+      frameSize:     { radial: 4.0, width: 3.0, thickness: 0.5 },
       zBack:         -0.6,
       // Lantern frame Z = floorTopZ + zLift. Set so the frame lands INSIDE
       // the carved niche cavity (between backZ and the outermost step
       // front), recessed enough that the shelf brick reads as protruding
       // forward of the frame.
-      zLift:          10.0,
-      intensityMin:   12.0,
-      intensityMax:   28.0,
-      flickerSpeedA:  6.0,
-      flickerSpeedB:  11.0,
-      flameColor:    '#FFD080',
-      lightColor:    '#FFA040',
-      decay:          1.6,
-      frameColor:    '#FF00FF',
+      zLift:          1.5,
+      // Brighter intensity range + stochastic jitter for candle-style
+      // flicker. flickerJitter ∈ [0,1]: 0 = smooth two-sine breathing,
+      // 1 = pure random per-frame noise. 0.5 mixes both for rapid
+      // micro-flutter on top of slower breathing — reads as a real
+      // candle's restless flame.
+      intensityMin:   25.0,
+      intensityMax:   80.0,
+      flickerSpeedA:  7.0,
+      flickerSpeedB:  13.0,
+      flickerJitter:  0.5,
+      // Flame mesh size — radius of the source sphere; geometry is
+      // pre-stretched (0.7×, 1.5×, 0.7×) into a teardrop. Bigger
+      // flameSize → bigger candle flame mesh.
+      flameSize:      0.55,
+      flameColor:    '#FFE090',
+      lightColor:    '#FFB060',
+      decay:          1.4,
+      frameColor:    '#7A5028',
       // Two lanterns matching the reference image's lower-left + lower-
       // right alcoves. Panel indices: 0=UL, 1=UR, 2=LL, 3=LR.
+      // The SDG logo's bbox extends well below its visible body (the
+      // letter descenders), so the raw LL/LR panel-quadrant centroid
+      // lands below the visible wall. Lift y by ~+40 to push the
+      // lanterns up into the lower-wall band.
       positions: [
-        { panel: 2, yOffset: 0.0 }, { panel: 3, yOffset: 0.0 },
+        { panel: 0, yOffset:  4 }, { panel: 1, yOffset:  4 },
+        { panel: 2, yOffset: 40 }, { panel: 3, yOffset: 40 },
       ],
     },
 
