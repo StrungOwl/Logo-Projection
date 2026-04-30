@@ -64,6 +64,12 @@ const ctx = {
   brightnessTime:     0,
 };
 
+// Low-passed flame brightness 0..1 — driven by the live PointLight stack
+// in patterns/flame.js. Read by the galaxy uBrightness pulse so the
+// starry backdrop breathes with the flame's broader envelope without
+// strobing on every per-frame flicker spike.
+let smoothedFlameEnv = 1.0;
+
 loadLogo().then((logo) => {
   ctx.galaxyMat     = logo.galaxyMat;
   ctx.logoMaterials = logo.logoMaterials;
@@ -127,7 +133,12 @@ export function tick(t, dt) {
     const targetBright = (flameBg !== undefined)
       ? ANIM.galaxy.brightness * (1 - galStarry) + flameBg * galStarry
       : ANIM.galaxy.brightness;
-    ctx.galaxyMat.uniforms.uBrightness.value = targetBright;
+    // Pulse the backdrop with the flame envelope. Only blends in
+    // proportion to galStarry (so non-fireplace modes are untouched).
+    const pulseAmount = (ANIM.flame && ANIM.flame.galaxyStarry
+                         && ANIM.flame.galaxyStarry.pulseAmount) ?? 0;
+    const pulseMul = 1 - galStarry * pulseAmount * (1 - smoothedFlameEnv);
+    ctx.galaxyMat.uniforms.uBrightness.value = targetBright * pulseMul;
   }
 
   if (ctx.particleMats) updateParticles(ctx.particleMats, t);
@@ -271,6 +282,24 @@ export function tick(t, dt) {
   // frame regardless of mode so the flame keeps "warming up" off-screen
   // (no first-frame popping in when switching to mode 5).
   if (ctx.updateFlame)      ctx.updateFlame(t, dt);
+
+  // Read the live flame PointLight stack and low-pass it to drive the
+  // galaxy backdrop pulse. The lights are flickered by patterns/flame.js
+  // each frame; we average normalized intensity and lerp our smoothed
+  // value toward it with a 1-sec time constant — high-frequency flicker
+  // averages out, slower envelope shifts (movement modulation, flares)
+  // ride through.
+  if (ctx.flameLights && ctx.flameLights.length && ANIM.flame && ANIM.flame.light) {
+    const lc = ANIM.flame.light;
+    let sum = 0, maxSum = 0;
+    for (const lt of ctx.flameLights) {
+      sum    += lt.intensity || 0;
+      maxSum += (lc.intensityMax || 1) * ((lt.userData && lt.userData.intensityScale) || 1);
+    }
+    const instant = maxSum > 0 ? Math.min(1, Math.max(0, sum / maxSum)) : 0.5;
+    const k = 1 - Math.exp(-dt / 1.0);
+    smoothedFlameEnv += (instant - smoothedFlameEnv) * k;
+  }
 
   // Galaxy starry-night blend — lerps toward 1 in fireplace mode (black
   // sky + denser flickering stars behind the flame), toward 0 otherwise

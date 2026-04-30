@@ -639,6 +639,28 @@ function placeFloor({ silhouettes, springerY = Infinity, brickCfg, floorCfg, zCe
 // interpenetrating. Grid arithmetic guarantees collision-free
 // placement — no physics sim required.
 // -----------------------------------------------------------------------
+// Pointy-top hex extruded as a flat tile, sized so its flat-to-flat width
+// matches the topLayer brick width. Used for steps whose `layerKinds`
+// entry is 'hex' — at the same brick grid spacing, alternate rows offset
+// by half a flatWidth (running-bond) tessellate hexes cleanly.
+function makeStepHexGeometry(flatWidth, stepHeight) {
+  const radius  = flatWidth / Math.sqrt(3);  // circumradius (vertex-to-centre)
+  const apothem = flatWidth * 0.5;
+  const shape = new THREE.Shape();
+  shape.moveTo(0,        radius);
+  shape.lineTo( apothem, radius * 0.5);
+  shape.lineTo( apothem, -radius * 0.5);
+  shape.lineTo(0,       -radius);
+  shape.lineTo(-apothem, -radius * 0.5);
+  shape.lineTo(-apothem,  radius * 0.5);
+  shape.closePath();
+  return new THREE.ExtrudeGeometry(shape, {
+    depth:         stepHeight,
+    bevelEnabled:  false,
+    curveSegments: 1,
+  });
+}
+
 function placeTopLayer({ outerSilhouette, brickCfgBase, floorCfg, backZ,
                          stepMats, group, seedOffset, topCfg }) {
   const outer = outerSilhouette;
@@ -669,6 +691,25 @@ function placeTopLayer({ outerSilhouette, brickCfgBase, floorCfg, backZ,
   const numSteps = Math.max(1, topCfg.stepCount ?? 4);
   const minH     = topCfg.minStepHeight ?? 0.4;
   const maxH     = topCfg.maxStepHeight ?? 1.6;
+
+  // Per-step kind: 'brick' (default) or 'hex'. Length is normalised to
+  // numSteps; missing entries default to 'brick' so old presets still
+  // produce a pure brick staircase.
+  const layerKinds = topCfg.layerKinds || [];
+  const kindFor = (i) => (layerKinds[i] === 'hex') ? 'hex' : 'brick';
+
+  // Niche cutouts — rectangular boxes in (x,y) where bricks/hexes are
+  // skipped, leaving carved alcoves for lantern fixtures. Each entry is
+  // { x, y, w, h }; both axis-aligned. Empty list = no carving.
+  const niches = topCfg.niches || [];
+  const insideNiche = (px, py) => {
+    for (const n of niches) {
+      const dx = Math.abs(px - n.x);
+      const dy = Math.abs(py - n.y);
+      if (dx <= n.w * 0.5 && dy <= n.h * 0.5) return true;
+    }
+    return false;
+  };
 
   const gapX  = brickCfgBase.mortarGapX ?? brickCfgBase.mortarGap;
   const gapY  = brickCfgBase.mortarGapY ?? brickCfgBase.mortarGap;
@@ -708,6 +749,10 @@ function placeTopLayer({ outerSilhouette, brickCfgBase, floorCfg, backZ,
       if (distT < reachT ) tNorm = Math.max(tNorm, 1 - distT / reachT );
       if (tNorm <= 0) continue;  // outside the L/R/T band
 
+      // Skip cells that fall inside a carved niche so a gap is left
+      // for the lantern fixture / shelf to sit in.
+      if (niches.length > 0 && insideNiche(x, y)) continue;
+
       // Quantise to discrete stair steps. step 0 = outermost (tallest),
       // step numSteps-1 = innermost (shortest).
       const u       = 1 - tNorm;  // 0 at edge, 1 at inner
@@ -715,17 +760,173 @@ function placeTopLayer({ outerSilhouette, brickCfgBase, floorCfg, backZ,
       const sFrac   = numSteps > 1 ? stepIdx / (numSteps - 1) : 0;
       const stepHeight = maxH - sFrac * (maxH - minH);
 
-      const cfg = { ...brickCfgBase, height: stepHeight };
-      const geo  = makeBrickGeometry(seedOffset + seedCounter++, cfg);
-      // Per-step material picks up the lerped colour for this stair
-      // level — outermost step uses the lightest colour, innermost
-      // sits one notch above the floor's dark colour.
-      const mesh = new THREE.Mesh(geo, stepMats[stepIdx]);
-      // Anchor each brick so its BACK face sits at backZ. Taller
-      // bricks therefore extend further toward the camera, which is
-      // what creates the stair tread.
-      mesh.position.set(x, y, backZ + stepHeight * 0.5);
-      mesh.quaternion.copy(q);
+      // Dispatch on this step's kind. Brick = box geometry with running-
+      // bond mortar fault; hex = flat hex extrusion with REDUCED Z extent
+      // (hexZScale × stepHeight) so the hex tier recedes behind the
+      // adjacent brick tiers and the alternation reads as a visible
+      // groove between brick rows.
+      let geo, mesh;
+      if (kindFor(stepIdx) === 'hex') {
+        const hexZScale = topCfg.hexZScale ?? 0.4;
+        const hexZ      = stepHeight * hexZScale;
+        geo = makeStepHexGeometry(brickCfgBase.width, hexZ);
+        // Choose hex material — defaults to a darker tint than the
+        // step's gradient brick material so the hex tier reads as a
+        // shadow band rather than blending with the bricks.
+        const hexMat = stepMats.hexMat || stepMats[stepIdx];
+        mesh = new THREE.Mesh(geo, hexMat);
+        // ExtrudeGeometry sweeps along +Z from its shape plane (XY); the
+        // tile back face is at the shape's z=0, so positioning at
+        // (x, y, backZ) puts the hex back face on the same plane the
+        // bricks share. Hex front face sits at backZ + hexZ < backZ +
+        // stepHeight = brick front face → groove visible.
+        mesh.position.set(x, y, backZ);
+      } else {
+        const cfg = { ...brickCfgBase, height: stepHeight };
+        geo = makeBrickGeometry(seedOffset + seedCounter++, cfg);
+        mesh = new THREE.Mesh(geo, stepMats[stepIdx]);
+        mesh.position.set(x, y, backZ + stepHeight * 0.5);
+        mesh.quaternion.copy(q);
+      }
+      group.add(mesh);
+    }
+  }
+}
+
+// -----------------------------------------------------------------------
+// Under-brick hex layers — one ring of half-hex tiles per topLayer step.
+// Each ring traces silhouette[0] inset by the step's reach, so step 0's
+// ring sits at the seam between the outermost and second steps, step 3's
+// ring sits at the deepest seam (closest to the logo centre). Hex
+// radius shrinks per step (smaller tiles for inner rings), and each
+// ring's Z is anchored at its step's brick FRONT face so the half-hexes
+// read as decorative tiles laid on each stair tread, with the flat cut
+// edge along the curve tangent and the rounded half pointing inward.
+// Clipped above the floor springer line so hexes only ride the upper
+// L+R+T region the topLayer staircase covers (same coverage as the
+// brick steps themselves).
+// -----------------------------------------------------------------------
+function makeUnderHexGeometry(radius, depth) {
+  const shape = new THREE.Shape();
+  const apothem = Math.sqrt(3) * radius / 2;
+  shape.moveTo(-apothem, 0);
+  shape.lineTo( apothem, 0);
+  shape.lineTo( apothem, radius * 0.5);
+  shape.lineTo( 0,       radius);
+  shape.lineTo(-apothem, radius * 0.5);
+  shape.closePath();
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth,
+    bevelEnabled:  false,
+    curveSegments: 1,
+  });
+  geo.translate(0, 0, -depth * 0.5);
+  return geo;
+}
+
+function placeUnderBrickHexLayers({ outerSilhouette, topCfg, floorCfg, backZ,
+                                     gradientBright, gradientDark, group }) {
+  const uhCfg = topCfg.underHexes || {};
+  if (uhCfg.enabled === false) return;
+  if (!outerSilhouette || outerSilhouette.length < 3) return;
+
+  const reachFraction = topCfg.reachFraction ?? 0.66;
+  const numSteps      = Math.max(1, topCfg.stepCount ?? 4);
+  const minH          = topCfg.minStepHeight ?? 0.4;
+  const maxH          = topCfg.maxStepHeight ?? 1.6;
+
+  const baseRadius   = uhCfg.baseRadius   ?? 2.6;
+  const shrinkRatio  = uhCfg.shrinkRatio  ?? 0.78;
+  const hexDepth     = uhCfg.depth        ?? 0.4;
+  const zLift        = uhCfg.zLift        ?? 0.05;
+  const pitchScale   = uhCfg.pitchScale   ?? 1.15;
+
+  // bbox + reach used to size each step's inset polygon.
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const p of outerSilhouette) {
+    if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+  }
+  const halfW = (maxX - minX) * 0.5;
+  const halfH = (maxY - minY) * 0.5;
+  const reachLR = reachFraction * halfW;
+  const stepWidth = reachLR / numSteps;
+  const cx = (minX + maxX) * 0.5;
+  const cy = (minY + maxY) * 0.5;
+
+  // Y clip — keep hexes above the floor wall's springer line so they
+  // don't appear on the bare bottom band where the topLayer is absent.
+  const floorSpringerY = minY
+    + (floorCfg?.springerYFrac ?? 0.30) * (maxY - minY);
+
+  for (let s = 0; s < numSteps; s++) {
+    const r = baseRadius * Math.pow(shrinkRatio, s);
+    // Inset distance: each step's inner perimeter sits at (s+1)*stepWidth
+    // from the silhouette boundary. So step 0's ring is at the FIRST
+    // step seam (between outermost and next), and step (numSteps-1)'s
+    // ring is the deepest seam (near the centre).
+    const insetDist = (s + 1) * stepWidth;
+    const insetPoly = insetPolygon(outerSilhouette, insetDist);
+    if (!insetPoly || insetPoly.length < 3) continue;
+
+    const upperArc = clipArcAboveY(insetPoly, floorSpringerY);
+    if (!upperArc || upperArc.length < 2) continue;
+
+    // Step s's brick FRONT face Z (= backZ + stepHeight). Outermost
+    // step has the tallest stepHeight; inner steps progressively
+    // shorter, matching the staircase silhouette so each ring sits
+    // exactly on its step's surface.
+    const sFrac = numSteps > 1 ? s / (numSteps - 1) : 0;
+    const stepHeight = maxH - sFrac * (maxH - minH);
+    const frontZ = backZ + stepHeight + zLift;
+
+    // Colour lerp matches the topLayer's stepMats: outermost → bright,
+    // innermost → dark. Override via uhCfg.color if set.
+    const tCol = numSteps > 1 ? (numSteps - s) / numSteps : 1;
+    const col = gradientDark.clone().lerp(gradientBright, tCol);
+    if (uhCfg.color) col.set(uhCfg.color);
+    const mat = new THREE.MeshStandardMaterial({
+      color:        col,
+      metalness:    0.10,
+      roughness:    0.85,
+      stencilWrite: true,
+      stencilRef:   2,
+      stencilFunc:  THREE.EqualStencilFunc,
+      stencilFail:  THREE.KeepStencilOp,
+      stencilZFail: THREE.KeepStencilOp,
+      stencilZPass: THREE.KeepStencilOp,
+    });
+
+    // Sample the open upper arc at half-hex flat-width pitch so adjacent
+    // tiles touch (or have a small gap when pitchScale > 1).
+    const flatWidth = Math.sqrt(3) * r * pitchScale;
+    let arcLen = 0;
+    for (let i = 1; i < upperArc.length; i++) {
+      arcLen += Math.hypot(
+        upperArc[i].x - upperArc[i - 1].x,
+        upperArc[i].y - upperArc[i - 1].y,
+      );
+    }
+    const sampleCount = Math.max(2, Math.round(arcLen / flatWidth));
+    const samples = samplePolyline(upperArc, sampleCount);
+
+    const geo = makeUnderHexGeometry(r, hexDepth);
+    const localX = new THREE.Vector3();
+    const localY = new THREE.Vector3();
+    const localZ = new THREE.Vector3(0, 0, 1);
+
+    for (const sample of samples) {
+      // Inward normal — perpendicular to tangent, toward logo centre.
+      let nx =  sample.ty, ny = -sample.tx;
+      if (nx * (cx - sample.x) + ny * (cy - sample.y) < 0) {
+        nx = -nx; ny = -ny;
+      }
+      localX.set(sample.tx, sample.ty, 0);
+      localY.set(nx, ny, 0);
+
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.set(sample.x, sample.y, frontZ);
+      mesh.quaternion.copy(basisQuat(localX, localY, localZ));
       group.add(mesh);
     }
   }
@@ -1603,11 +1804,90 @@ export function createArch({ silhouette, maxZ, frameDepth = 0.5,
         stencilZPass: THREE.KeepStencilOp,
       }));
     }
+    // Hex tier material — single shared material so every hex step looks
+    // the same regardless of stepIdx, reading as a unified ornamental
+    // band. Defaults to gradientDark (the deepest brick tone) so the
+    // recessed hex layer reads as a shadow groove between brick tiers.
+    const hexColor = new THREE.Color(
+      topCfg.hexColor || (cfg.gradientDark || '#5C3A1B'),
+    );
+    stepMats.hexMat = new THREE.MeshStandardMaterial({
+      color:        hexColor,
+      metalness:    0.05,
+      roughness:    0.92,
+      stencilWrite: true,
+      stencilRef:   2,
+      stencilFunc:  THREE.EqualStencilFunc,
+      stencilFail:  THREE.KeepStencilOp,
+      stencilZFail: THREE.KeepStencilOp,
+      stencilZPass: THREE.KeepStencilOp,
+    });
     // Back face of every top-layer brick sits on the floor's top
     // surface plus zLift. Taller stair-steps then push out further
     // toward the camera; shorter inner steps stay closer to the floor.
     const floorTopZ = maxZ + (cfg.floor?.yLevel || 0) + brickCfg.height;
     const backZ     = floorTopZ + (topCfg.zLift ?? 0.05);
+
+    // Lantern positions are computed BEFORE placeTopLayer so that the
+    // bricks/hexes at those XYs can be skipped, leaving carved alcoves
+    // ("niches") that hold the lantern fixture + shelf. The same
+    // positions are reused later by the lantern-placement loop so the
+    // alcoves and lanterns stay synchronised by construction.
+    let lanternPositions = [];
+    const lantCfgEarly = cfg.lanterns;
+    if (lantCfgEarly?.enabled !== false && silhouette[0] && silhouette[1]
+        && silhouette[1].length >= 3) {
+      const sc = polyCentroid(silhouette[1]);
+      let lminX = Infinity, lmaxX = -Infinity, lminY = Infinity, lmaxY = -Infinity;
+      for (const p of silhouette[0]) {
+        if (p.x < lminX) lminX = p.x; if (p.x > lmaxX) lmaxX = p.x;
+        if (p.y < lminY) lminY = p.y; if (p.y > lmaxY) lmaxY = p.y;
+      }
+      const quadCentres = [
+        { x: (lminX + sc.x) * 0.5, y: (lmaxY + sc.y) * 0.5 },  // UL
+        { x: (lmaxX + sc.x) * 0.5, y: (lmaxY + sc.y) * 0.5 },  // UR
+        { x: (lminX + sc.x) * 0.5, y: (lminY + sc.y) * 0.5 },  // LL
+        { x: (lmaxX + sc.x) * 0.5, y: (lminY + sc.y) * 0.5 },  // LR
+      ];
+      const positions = lantCfgEarly.positions || [
+        { panel: 0, yOffset:  1.6 }, { panel: 1, yOffset:  1.6 },
+        { panel: 2, yOffset: -1.6 }, { panel: 3, yOffset: -1.6 },
+      ];
+      for (const n of positions) {
+        const c = quadCentres[n.panel];
+        if (!c) continue;
+        lanternPositions.push({
+          x: c.x,
+          y: c.y + (n.yOffset ?? 0),
+          panel: n.panel,
+        });
+      }
+    }
+
+    // Niche box per lantern: rectangular carve-out where bricks/hexes
+    // are skipped. Sized off the lantern frame plus configurable margin
+    // so the carved hole is visibly larger than the fixture inside it.
+    // The box centre is shifted UP from the lantern centre so the bottom
+    // of the niche lines up with where the shelf will sit (the lantern
+    // flame rests on the shelf, occupying the upper 2/3 of the alcove).
+    const nicheCfg = topCfg.niche || {};
+    const lantFrameW = lantCfgEarly?.frameSize?.width  ?? 0.9;
+    const lantFrameR = lantCfgEarly?.frameSize?.radial ?? 1.4;
+    // Niche box just slightly larger than the lantern frame so a thin
+    // border of carved-out wall reads around the fixture. Tighter ratios
+    // keep the brick wall visually dominant.
+    const nicheW     = nicheCfg.width  ?? lantFrameW * 4.0;
+    const nicheH     = nicheCfg.height ?? lantFrameR * 4.0;
+    const nicheBoxes = lanternPositions.map(lp => ({
+      x: lp.x,
+      // Shift box centre up so the lantern (placed at lp) sits in the
+      // UPPER part of the niche; lower part is the shelf+flame zone.
+      y: lp.y + nicheH * 0.15,
+      w: nicheW,
+      h: nicheH,
+    }));
+    topCfg.niches = nicheBoxes;
+
     placeTopLayer({
       outerSilhouette: silhouette[0],
       brickCfgBase:    topBrickCfgBase,
@@ -1617,6 +1897,61 @@ export function createArch({ silhouette, maxZ, frameDepth = 0.5,
       group,
       seedOffset:      5500,
       topCfg,
+    });
+
+    // Shelf bricks — one chunky brick spanning the bottom of each niche,
+    // sitting forward in Z so it reads as a ledge inside the alcove.
+    // Material reuses the outermost step's bright tone so the shelf
+    // stands out against the dark hex tier behind it.
+    const shelfMat = stepMats[0];
+    const shelfHexCfg = {
+      width:       nicheW * 0.85,                       // tangent extent
+      height:      topBrickCfgBase.depth * 1.0,         // Z thickness (toward camera)
+      depth:       topBrickCfgBase.depth * 0.9,         // vertical Y extent
+      mortarGap:   topBrickCfgBase.mortarGap ?? 0,
+      mortarGapX:  0,
+      mortarGapY:  0,
+      faultAmount: 0.04,
+      chamfer:     0.04,
+    };
+    for (let i = 0; i < nicheBoxes.length; i++) {
+      const n = nicheBoxes[i];
+      const shelfGeo = makeBrickGeometry(7700 + i, shelfHexCfg);
+      const shelfMesh = new THREE.Mesh(shelfGeo, shelfMat);
+      // Brick orientation: width=local-X (world-X), height=local-Y
+      // (world-Z = thickness toward camera), depth=local-Z (world-Y).
+      // Same basis the topLayer uses so this brick sits flat against
+      // the wall like the others.
+      const shelfQ = basisQuat(
+        new THREE.Vector3(1, 0, 0),
+        new THREE.Vector3(0, 0, 1),
+        new THREE.Vector3(0, 1, 0),
+      );
+      shelfMesh.quaternion.copy(shelfQ);
+      // Position: centre of the shelf brick sits at the niche's bottom
+      // edge (just above lp's lower bound) and one shelf-thickness
+      // forward of backZ so the shelf protrudes visibly into the alcove
+      // cavity. This places the lantern's flame mesh directly on top of
+      // the shelf in screen space.
+      const shelfX = n.x;
+      const shelfY = n.y - n.h * 0.5 + shelfHexCfg.depth * 0.5;
+      const shelfZ = backZ + shelfHexCfg.height * 0.5
+                   + (topCfg.shelfZLift ?? maxH * 0.45);
+      shelfMesh.position.set(shelfX, shelfY, shelfZ);
+      group.add(shelfMesh);
+    }
+
+    // Under-brick hex layers — one ring of half-hex tiles per stair
+    // step, smaller per step, sitting on each step's front face. See
+    // placeUnderBrickHexLayers comment for placement geometry.
+    placeUnderBrickHexLayers({
+      outerSilhouette: silhouette[0],
+      topCfg,
+      floorCfg:        cfg.floor || {},
+      backZ,
+      gradientBright,
+      gradientDark,
+      group,
     });
 
     // Corner hexes — nested into the upper-left and upper-right corners
@@ -1708,14 +2043,17 @@ export function createArch({ silhouette, maxZ, frameDepth = 0.5,
       { panel: 0, yOffset:  1.6 }, { panel: 1, yOffset:  1.6 },
       { panel: 2, yOffset: -1.6 }, { panel: 3, yOffset: -1.6 },
     ];
+    console.log('[lantern] niches to place:', niches, 'quadCentres:', quadCentres, 'floorTopZL:', floorTopZL);
     for (const n of niches) {
       const c = quadCentres[n.panel];
-      if (!c) continue;
+      if (!c) { console.log('[lantern] skip panel', n.panel, '— no quadCentre'); continue; }
       const lx = c.x;
       const ly = c.y + (n.yOffset ?? 0);
+      const fz = floorTopZL + (lantCfg.zLift ?? 0.10);
+      console.log('[lantern] placing at', lx.toFixed(2), ly.toFixed(2), 'frameZ', fz.toFixed(2), 'panel', n.panel);
       const niche = createLanternNiche({
         x: lx, y: ly,
-        frameZ: floorTopZL + (lantCfg.zLift ?? 0.10),
+        frameZ: fz,
         cfg: lantCfg,
       });
       group.add(niche.group);

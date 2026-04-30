@@ -1,8 +1,25 @@
 {
   "permissions": {
     "allow": [
-      "PowerShell($loc = Get-Location; Write-Output $loc.Path; Get-ChildItem -Force C:\\\\Users\\\\sydne\\\\OneDrive\\\\Documents\\\\GitHub\\\\SP26_Art\\\\Logo-Projection | Format-Table Name, Length)",
-      "PowerShell($dir = 'C:\\\\Users\\\\sydne\\\\OneDrive\\\\Documents\\\\GitHub\\\\SP26_Art\\\\Logo-Projection'; cmd /c \"dir /A /B `\"$dir`\"\")"
+      "Bash(*)",
+      "PowerShell(*)",
+      "Read(*)",
+      "Write(*)",
+      "Edit(*)",
+      "Glob(*)",
+      "Grep(*)",
+      "Agent(*)",
+      "WebFetch(*)",
+      "WebSearch(*)",
+      "TodoWrite(*)",
+      "NotebookEdit(*)",
+      "mcp__playwright__*",
+      "mcp__claude_ai_Gmail__*",
+      "mcp__claude_ai_Google_Calendar__*",
+      "mcp__claude_ai_Google_Drive__*",
+      "mcp__plugin_figma_figma__*",
+      "Skill(update-config)",
+      "Skill(update-config:*)"
     ]
   }
 }

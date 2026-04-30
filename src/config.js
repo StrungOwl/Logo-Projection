@@ -311,7 +311,49 @@ export const ANIM = {
       flatTop:      true,
       halfCut:      true,
     },
-    brickWall: { enabled: true },
+    brickWall: {
+      enabled: true,
+      // Multiplier on hex face opacity. Combines with the per-hex
+      // entry/exit fade so the wall reads as semi-transparent at full
+      // hold (lower = more see-through).
+      baseOpacity: 0.4,
+      // Concentric hex outlines drawn on each tile — random count per
+      // hex in [minCount, maxCount], scaled inward so each tile reads as
+      // receding nested hexagons. Lines share the tile's drifted hue and
+      // fade with the entry/exit waves.
+      //
+      // Behaviour after a tile finishes its entry wave:
+      //   1. Rings start hidden.
+      //   2. After a per-tile random delay in [0, fadeInMaxDelay] sec,
+      //      they fade in over `fadeInDuration` sec (smoothstep).
+      //   3. Once active, a wall-wide sine cycle (`globalPeriod`)
+      //      modulates ring brightness from 0 (no rings show anywhere)
+      //      to 1 (all rings show), giving the room a coordinated
+      //      breathing rhythm.
+      //   4. A subtle per-tile sine modulates ring SIZE
+      //      (`sizePulseAmount` ± fraction, period `sizePulsePeriod`).
+      nesting: {
+        enabled:        true,
+        minCount:       5,
+        maxCount:       20,
+        zOffset:        0.05,   // push above the hex front face, units
+        lineOpacity:    1.0,    // multiplier on nested-line alpha at peak
+        fadeInMaxDelay: 12.0,   // max random delay after entry settle, sec
+        fadeInDuration: 4.0,    // per-tile fade-in ramp, sec
+        globalPeriod:   22.0,   // wall-wide breathing cycle, sec
+        sizePulseAmount: 0.05,  // ±5 % radius wobble
+        sizePulsePeriod: 8.0,   // sec per size-pulse cycle
+      },
+      // Slow color drift on the hex bricks — eases the wall's hue from
+      // its base colour toward `deepColor` and back, on a sine cycle.
+      // Half the cycle sits at the deep-red end, half at the base. Set
+      // `enabled: false` to freeze the wall at its base colour.
+      colorDrift: {
+        enabled:       true,
+        cycleDuration: 18.0,    // seconds for one full base→deep→base loop
+        deepColor:     '#5C0A04', // deep oxblood-red at the cycle's far end
+      },
+    },
   },
 
   // Radial cascade — infinite loop where each tile independently cycles
@@ -346,13 +388,19 @@ export const ANIM = {
   // viewMode === 'pattern' AND fractalZoom.enabled !== false.
   fractalZoom: {
     enabled:        true,     // false → fall back to the radial cascade in mode 1
-    oneShot:        true,     // true → play intro + ONE dive segment + the
-                              // fade-IN to the canonical rest pattern, then
-                              // park there forever (no more zooming, no
-                              // hold↔dive loop). false → keep diving with
-                              // periodic holds indefinitely (the original
-                              // infinite-loop behaviour, governed by
-                              // holdDuration / holdFadeOut below).
+    oneShot:        true,     // true → play intro + fade-IN to canonical rest
+                              // pattern, then either park forever (loopStaticDur
+                              // = 0) or retrigger after `loopStaticDur` seconds
+                              // of static (set below). The Droste dive +
+                              // hold↔dive loop is skipped entirely. false →
+                              // continuous Droste dive with periodic holds
+                              // (the original infinite-loop behaviour, governed
+                              // by holdDuration / holdFadeOut below).
+    loopStaticDur: 10.0,      // oneShot only. Seconds the canonical rest
+                              // pattern stays static after fade-in completes
+                              // before the intro re-triggers. 0 → park
+                              // forever (no loop). Increase for longer
+                              // breathing room between zoom cycles.
 
     // Intro (one-shot, before the dive begins) -------------------------
     // Focal tile grows, every other tile pushes outward past the
@@ -409,24 +457,24 @@ export const ANIM = {
                               // depth into one shape. Drop to ~0.25 for
                               // even more aggressive zoom; raise to 0.5
                               // for the classic gentler Droste.
-    droStepDuration:  12.0,   // seconds for d to advance by 1 (one full
+    droStepDuration:   8.0,   // seconds for d to advance by 1 (one full
                               // Droste step) at peak dive speed. Bigger =
                               // slower, more meditative dive.
-    diveDuration:     36.0,   // seconds of continuous diving before each
+    diveDuration:      8.0,   // seconds of continuous diving before the
                               // hold. Rounded up to the next integer-d so
                               // the hold lands exactly on a clone-at-peak
                               // (visually identical to the pattern at
-                              // rest). 36 with stepDur 12 = 3 Droste
-                              // steps per dive segment, so combined with
-                              // cloneScaleFactor 0.32 the apparent zoom
-                              // per dive is ~3.1^3 ≈ 30× into the focal
-                              // shape. Eased so the dive ramps up slowly
-                              // and slows again before settling.
+                              // rest). 8 with stepDur 8 = 1 Droste step
+                              // per dive segment, so the apparent zoom
+                              // per dive is ~3.1× into the focal shape —
+                              // a single zoom-in, not a cascade. Eased
+                              // so the dive ramps up slowly and slows
+                              // again before settling.
     holdDuration:     60.0,   // total seconds of static hold at the end
                               // of each dive segment (includes fade-in +
                               // pure static + fade-out windows below).
                               // 0 → continuous dive (skip hold entirely).
-    holdFadeIn:       18.0,   // seconds at start of hold spent crossfading
+    holdFadeIn:        6.0,   // seconds at start of hold spent crossfading
                               // the dive's clone stack out so the ORIGINAL
                               // pattern at rest reads through. cloneOp
                               // ramps 1 → 0 over the FULL holdFadeIn on a
@@ -458,7 +506,7 @@ export const ANIM = {
                               // shallow layer leading by half the window
                               // duration so deeper layers slip in behind
                               // it instead of stacking.
-    revealStaggerSpread: 0.65,// 0..0.95. Per-tile stagger applied as a
+    revealStaggerSpread: 0.0, // 0..0.95. Per-tile stagger applied as a
                               // clone grows: tiles with higher
                               // revealPhase START revealing later. Each
                               // tile's window is [revealPhase × Spread,
@@ -502,7 +550,7 @@ export const ANIM = {
                               // long as fast tiles to traverse the same
                               // window, giving each rosette a clearly
                               // distinct "personality" through the zoom.
-    revealOvershoot:   0.50,  // Each tile's reveal window is
+    revealOvershoot:   0.70,  // Each tile's reveal window is
                               // [revealPhase × revealSpread,
                               //  1 + revealPhase × revealOvershoot].
                               // So the OUTERMOST tiles (revealPhase ≈ 1)
@@ -606,7 +654,9 @@ export const ANIM = {
                             // Sum = total morph length = the auto-extended
                             // gap window length when playAll: true. Matches
                             // the legacy 40s free-run split (15+5+15+5).
-      brickHold:   15.0,    // brick wall holds at full
+      brickHold:   15.0,    // brick wall holds at full ('all' mode)
+      hexHold:     60.0,    // brick wall hold in solo 'hex' mode (effect 2).
+                            // Independent so 'all' stays cascade-sync'd at 15s.
       brickToRose:  5.0,    // morph brick → rosette petals
       roseHold:    15.0,    // petal rosettes dance at full
       roseToBrick:  5.0,    // morph rosette petals → brick
@@ -664,9 +714,9 @@ export const ANIM = {
       //   local-Z → world-Y (vertical) — `depth` field below
       // So `width` = horizontal (X) extent, `depth` = vertical (Y) extent,
       // `height` = thickness through the wall (Z).
-      width:        2.0,    // horizontal X — bumped up for chunkier bricks
-      height:       1.2,    // Z thickness on floor — bumped (thicker)
-      depth:        1.3,    // vertical Y — bumped up; rows still tight
+      width:        2.6,    // horizontal X — bumped up for chunkier bricks
+      height:       1.5,    // Z thickness on floor — bumped (thicker)
+      depth:        1.7,    // vertical Y — bumped up; rows still tight
       mortarGap:    0.0,    // base joint (used for brick-geometry shrink
                             // and as the default for the per-axis gaps
                             // below).
@@ -754,9 +804,21 @@ export const ANIM = {
       enabled:        true,
       reachFraction:  0.66,
       stepCount:      4,
-      minStepHeight:  0.4,
-      maxStepHeight:  1.6,
+      minStepHeight:  0.8,
+      maxStepHeight:  3.2,
       zLift:          0.05,
+      // Per-step kind. Length normalised to stepCount; missing entries
+      // default to 'brick'. Setting alternating values gives a visible
+      // brick → hex → brick → hex layer cadence as the staircase steps
+      // inward, where each hex tile reuses the same step Z thickness
+      // so the alternation reads as different masonry per tier.
+      layerKinds:     ['brick', 'hex', 'brick', 'hex'],
+      // Niche cutouts — rectangular regions (axis-aligned) in panel-XY
+      // where bricks/hexes are SKIPPED so a carved alcove is left for
+      // a lantern shelf + light figure. Filled in by patterns-layer.js
+      // when lanterns are enabled, so positions stay synchronised with
+      // lantern centres. Empty array = no carving.
+      niches:         [],
       widthScale:     1.0,
       depthScale:     1.0,
       mortarGapX:     0.08,
@@ -794,6 +856,35 @@ export const ANIM = {
       //                  face where the hex back face sits.
       //   color        — optional override; falls back to the
       //                  gradientBright→gradientDark lerp.
+      // Under-brick hex layers — one ring of half-hex tiles per stair
+      // step, sitting on each step's front face. The half-hex's flat
+      // cut edge follows the curve tangent (along the ring); the
+      // rounded half points inward toward the logo centre. Each ring
+      // traces silhouette[0] inset by (s+1)*reachLR/numSteps so step 0's
+      // ring sits at the FIRST step seam (between outermost & second),
+      // step (numSteps-1)'s ring is the deepest seam (closest to centre).
+      // Rings are clipped above the floor's springer Y so hexes ride
+      // only the upper L+R+T region the topLayer staircase covers.
+      //   baseRadius   — circumradius of step 0's hexes (largest).
+      //   shrinkRatio  — multiplier per step (0.78 = each ring is 78%
+      //                  of the previous).
+      //   pitchScale   — multiplier on the natural touching-hex pitch
+      //                  along the tangent. 1.0 = adjacent flat edges
+      //                  kiss; >1 introduces gap.
+      //   depth        — extrusion thickness on world-Z.
+      //   zLift        — Z above the step's brick front face where the
+      //                  hex centre sits.
+      //   color        — optional override; otherwise lerps per step
+      //                  from gradientBright (outer) → gradientDark
+      //                  (inner) like the topLayer's stepMats.
+      underHexes: {
+        enabled:      false,
+        baseRadius:   3.4,
+        shrinkRatio:  1.0,
+        pitchScale:   1.0,
+        depth:        0.8,
+        zLift:        0.05,
+      },
       cornerHexes: {
         enabled:      true,
         // Single hex per corner — the bright outer one. Bumping count up
@@ -876,10 +967,10 @@ export const ANIM = {
       enabled:             false,
       // Fractal recursion: each tier's cell dims = previous × fractalScale.
       // Loop runs for tierCount iterations OR until the inset polygon's
-      // perimeter drops below minPerimeter. With 8 tiers at fractalScale
-      // 0.78, tier 7's cells are 0.78^7 ≈ 19% of tier 0 — fine fractal
-      // detail, but each tier's cells stay visible.
-      tierCount:           8,
+      // perimeter drops below minPerimeter. 5 tiers at fractalScale 0.78
+      // → tier 4 cells ≈ 37% of tier 0 — readable detail without
+      // sub-pixel chaos.
+      tierCount:           5,
       cellWidth:           5.0,    // tier-0 cell width (along tangent)
       cellRadialDepth:     4.5,    // tier-0 radial extent
       cellThickness:       0.6,    // niche front-face thickness
@@ -887,7 +978,7 @@ export const ANIM = {
       tierOverlap:         0.55,   // adjacent tiers overlap radially by
                                    // (1 − tierOverlap) so they interlock
                                    // like a honeycomb
-      tierStepZ:           0.15,   // Z recession per tier (×8 tiers = 1.2
+      tierStepZ:           0.18,   // Z recession per tier (×5 tiers = 0.90
                                    // total — fits gate-frame thickness;
                                    // bricks underneath stay clear)
       colorMix:            0.78,
@@ -933,21 +1024,26 @@ export const ANIM = {
     //                     panel-quadrant centroid and yOffset is added
     //                     to that centroid's Y.
     lanterns: {
-      enabled:        false,
-      frameSize:      { radial: 1.4, width: 0.9, thickness: 0.18 },
-      zBack:         -0.55,
-      zLift:          0.15,
-      intensityMin:   3.0,
-      intensityMax:   8.0,
+      enabled:        true,
+      frameSize:      { radial: 6.0, width: 6.0, thickness: 1.0 },
+      zBack:         -0.6,
+      // Lantern frame Z = floorTopZ + zLift. Set so the frame lands INSIDE
+      // the carved niche cavity (between backZ and the outermost step
+      // front), recessed enough that the shelf brick reads as protruding
+      // forward of the frame.
+      zLift:          10.0,
+      intensityMin:   12.0,
+      intensityMax:   28.0,
       flickerSpeedA:  6.0,
       flickerSpeedB:  11.0,
-      flameColor:    '#FFC070',
-      lightColor:    '#FF9030',
-      decay:          1.5,
-      frameColor:    '#7A5A30',
+      flameColor:    '#FFD080',
+      lightColor:    '#FFA040',
+      decay:          1.6,
+      frameColor:    '#FF00FF',
+      // Two lanterns matching the reference image's lower-left + lower-
+      // right alcoves. Panel indices: 0=UL, 1=UR, 2=LL, 3=LR.
       positions: [
-        { panel: 0, yOffset:  1.4 }, { panel: 1, yOffset:  1.4 },
-        { panel: 2, yOffset: -1.4 }, { panel: 3, yOffset: -1.4 },
+        { panel: 2, yOffset: 0.0 }, { panel: 3, yOffset: 0.0 },
       ],
     },
 
@@ -1130,9 +1226,9 @@ export const ANIM = {
       ],
     },
 
-    color:           '#9A7544',
-    gradientDark:    '#5C4530',
-    gradientBright:  '#E0BE89',
+    color:           '#8B5A2B',
+    gradientDark:    '#5C3A1B',
+    gradientBright:  '#A87242',
   },
 
   // -----------------------------------------------------------------------
@@ -1717,8 +1813,14 @@ export const ANIM = {
     // galaxy's `uBrightness` uniform while fireplace mode is active so
     // the backdrop is darker and the flame body reads clearly against it.
     galaxyStarry: {
-      fadeSpeed:  1.5,
-      brightness: 0.32,
+      fadeSpeed:   1.5,
+      brightness:  0.32,
+      // Subtle "powered by the flame" pulse: when >0, uBrightness is
+      // multiplied by (1 - pulseAmount + pulseAmount * smoothedFlameEnv),
+      // where smoothedFlameEnv is a 1-sec low-passed average of the flame
+      // PointLight stack's instantaneous intensities. 0 = static; 0.5 =
+      // backdrop dims to 50% of base when flame is at its dimmest.
+      pulseAmount: 0.5,
     },
   },
 
@@ -1756,7 +1858,7 @@ export const ANIM = {
     archInset:      2.0,
     // Dark voussoir colour — sharp contrast against the tan brick wall
     // fill (arch.floor + topLayer) so the rim reads as a distinct ring.
-    brickColor:  '#3A2918',
+    brickColor:  '#8B5A2B',
     // Push the whole fireplace forward so the entire brick body lands
     // in front of arch.topLayer's outermost step (~gateFrontZ + 2.85).
     // 3.0 = brick back face at gateFrontZ + 3.0, fully clearing the step.
@@ -1778,17 +1880,17 @@ export const ANIM = {
     //   hotColor  — colour at noise peaks (the visible flame tongues).
     //   coldColor — colour in noise troughs (dark embers between).
     ember: {
-      strength: 0.7,
+      strength: 0.25,
       scale:    0.18,
       speed:    0.7,
       warp:     1.4,
-      hotColor:  '#FFB060',
-      coldColor: '#3A0E04',
+      hotColor:  '#B07840',
+      coldColor: '#2A0700',
     },
     brick: {
-      width:       2.2,   // local-X — long axis pointing at the camera
-      height:      4.0,   // local-Y — radial outward thickness (chunkier rim)
-      depth:       1.8,   // local-Z — along-curve spacing
+      width:       2.8,   // local-X — long axis pointing at the camera
+      height:      5.0,   // local-Y — radial outward thickness (chunkier rim)
+      depth:       2.3,   // local-Z — along-curve spacing
       mortarGap:   0.06,
       faultAmount: 0.05,
     },
@@ -1830,7 +1932,7 @@ export const ANIM = {
     //   color             — hex tile colour.
     innerHexes: {
       enabled:          true,
-      radius:           7.0,
+      radius:           3.0,
       depth:            0.5,
       rowCount:         1,
       // halfCut on  → pointy-top hex sliced along its horizontal
@@ -1850,9 +1952,9 @@ export const ANIM = {
       // pitchScale multiplies the natural touching-hex pitch along the
       // tangent. 1.0 = adjacent flat edges kiss; >1 introduces a gap
       // between tiles. 1.15 leaves a small gap for visual breathing.
-      pitchScale:       1.15,
+      pitchScale:       1.0,
       zLift:            0.05,
-      color:           '#B8915A',
+      color:           '#E8B86E',
       // Outline — when true (or outlineColor is set), every hex tile
       // gets a LineSegments edge stroke laid over its mesh.
       outline:          false,
