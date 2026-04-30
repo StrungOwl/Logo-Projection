@@ -732,6 +732,160 @@ function placeTopLayer({ outerSilhouette, brickCfgBase, floorCfg, backZ,
 }
 
 // -----------------------------------------------------------------------
+// Corner hexagons — three flat extruded hexes nestled into each upper
+// corner of the topLayer brick band. Each hex is centred near the
+// silhouette bbox corner so the topLayer stencil mask clips ~2/3 of
+// the body, leaving roughly 1/3 visible inside the silhouette.
+// Subsequent hexes step diagonally inward toward the bbox centre and
+// shrink by `shrinkRatio` per step.
+//
+// Reuses the topLayer stencil mask (stencilRef = 2) — works because
+// both meshes are added to the same arch group and the mask is drawn
+// first (renderOrder = -50). No mask redraw needed here.
+// -----------------------------------------------------------------------
+function buildHexShapeGeometry(radius, depth) {
+  const shape = new THREE.Shape();
+  for (let i = 0; i < 6; i++) {
+    const a = Math.PI / 2 + i * Math.PI / 3;  // pointy-top
+    const x = Math.cos(a) * radius, y = Math.sin(a) * radius;
+    if (i === 0) shape.moveTo(x, y); else shape.lineTo(x, y);
+  }
+  shape.closePath();
+  return new THREE.ExtrudeGeometry(shape, {
+    depth,
+    bevelEnabled:  false,
+    curveSegments: 1,
+  });
+}
+
+function placeCornerHexes({ outerSilhouette, frontZ, gradientBright,
+                            gradientDark, group, cornerCfg }) {
+  if (!outerSilhouette || outerSilhouette.length < 3) return;
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const p of outerSilhouette) {
+    if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+  }
+  const cx = (minX + maxX) * 0.5;
+  const cy = (minY + maxY) * 0.5;
+
+  const count        = Math.max(1, cornerCfg.count        ?? 3);
+  const outerRadius  =             cornerCfg.outerRadius  ?? 4.5;
+  const shrinkRatio  =             cornerCfg.shrinkRatio  ?? 0.7;
+  const spacingFrac  =             cornerCfg.spacingFrac  ?? 0.95;
+  const cornerInset  =             cornerCfg.cornerInset  ?? 0.0;
+  const depth        =             cornerCfg.depth        ?? 0.5;
+  const zLift        =             cornerCfg.zLift        ?? 0.05;
+
+  // The silhouette doesn't actually reach the bbox corners (the SDG dome
+  // is rounded, side flares pull away from the corners) — anchoring at
+  // (minX, maxY) drops the whole hex outside the stencil mask, which
+  // discards everything. Instead, find the silhouette[0] vertex that
+  // sits FARTHEST in each diagonal direction (UL: maximises -x + y,
+  // UR: maximises x + y). That's the silhouette's true upper-left /
+  // upper-right "corner" point — the spot where the convex corner the
+  // brick layers create actually lives.
+  let ulPt = null, urPt = null;
+  let ulScore = -Infinity, urScore = -Infinity;
+  for (const p of outerSilhouette) {
+    const sUL = -p.x + p.y;
+    const sUR =  p.x + p.y;
+    if (sUL > ulScore) { ulScore = sUL; ulPt = p; }
+    if (sUR > urScore) { urScore = sUR; urPt = p; }
+  }
+
+  // Diagonal direction from the silhouette corner point toward the bbox
+  // centre — used to march each successive hex inward and to slide the
+  // first hex partially across the silhouette boundary so the stencil
+  // mask clips ~2/3 of it (leaving ~1/3 nestled into the inside corner).
+  const corners = [
+    { x: ulPt.x, y: ulPt.y, dirX: cx - ulPt.x, dirY: cy - ulPt.y },
+    { x: urPt.x, y: urPt.y, dirX: cx - urPt.x, dirY: cy - urPt.y },
+  ];
+
+  // Pre-compute radii so we can space adjacent hexes by their summed radii
+  // (centres are pushed apart by (r_k + r_{k+1}) * spacingFrac so they kiss
+  // when spacingFrac = 1, overlap when < 1).
+  const radii = [];
+  for (let k = 0; k < count; k++) {
+    radii.push(outerRadius * Math.pow(shrinkRatio, k));
+  }
+
+  // One material per hex so we can lerp the colour from gradientBright at
+  // the outer corner toward gradientDark as they march inward — same
+  // dark→light gradient cue the topLayer staircase uses.
+  const matFor = (k) => {
+    const t = count > 1 ? 1 - (k / (count - 1)) : 1;
+    const col = gradientDark.clone().lerp(gradientBright, t);
+    if (cornerCfg.color) col.set(cornerCfg.color);
+    return new THREE.MeshStandardMaterial({
+      color:        col,
+      metalness:    0.10,
+      roughness:    0.85,
+      stencilWrite: true,
+      stencilRef:   2,
+      stencilFunc:  THREE.EqualStencilFunc,
+      stencilFail:  THREE.KeepStencilOp,
+      stencilZFail: THREE.KeepStencilOp,
+      stencilZPass: THREE.KeepStencilOp,
+    });
+  };
+
+  // Outline — same stencil ref so the LineSegments are clipped by the
+  // silhouette mask too (otherwise the outline would stick out past the
+  // visible 1/3 of each hex inside the corner).
+  let outlineMat = null;
+  if (cornerCfg.outline !== false &&
+      (cornerCfg.outlineColor || cornerCfg.outline === true)) {
+    outlineMat = new THREE.LineBasicMaterial({
+      color:        new THREE.Color(cornerCfg.outlineColor || '#1a0d05'),
+      stencilWrite: true,
+      stencilRef:   2,
+      stencilFunc:  THREE.EqualStencilFunc,
+      stencilFail:  THREE.KeepStencilOp,
+      stencilZFail: THREE.KeepStencilOp,
+      stencilZPass: THREE.KeepStencilOp,
+    });
+  }
+
+  for (const corner of corners) {
+    const dlen = Math.hypot(corner.dirX, corner.dirY);
+    const dx = corner.dirX / dlen, dy = corner.dirY / dlen;
+
+    // Cumulative diagonal distance for the k-th hex centre.
+    let t = cornerInset;
+    for (let k = 0; k < count; k++) {
+      const r = radii[k];
+      if (k === 0) {
+        // Largest hex: centre on the corner (plus optional inset). Stencil
+        // clips it to the visible inside-corner region.
+        t = cornerInset;
+      } else {
+        // Step inward by the summed radii of this hex and its predecessor.
+        t += (radii[k - 1] + radii[k]) * spacingFrac;
+      }
+      const hx = corner.x + dx * t;
+      const hy = corner.y + dy * t;
+      const geo  = buildHexShapeGeometry(r, depth);
+      const mesh = new THREE.Mesh(geo, matFor(k));
+      // ExtrudeGeometry extrudes along +Z from the shape plane, so anchor
+      // the back face at frontZ + zLift; front face lands at frontZ +
+      // zLift + depth (closer to the camera than the topLayer steps).
+      mesh.position.set(hx, hy, frontZ + zLift);
+      group.add(mesh);
+      if (outlineMat) {
+        const edge = new THREE.LineSegments(
+          new THREE.EdgesGeometry(geo, 1),
+          outlineMat,
+        );
+        edge.position.copy(mesh.position);
+        group.add(edge);
+      }
+    }
+  }
+}
+
+// -----------------------------------------------------------------------
 // Lantern niche — a small recessed pointed-arch alcove with a glowing
 // flame mesh and a real PointLight inside, both flickered each frame
 // via a two-sine envelope (transcribed from src/3DOverlay.js's petal
@@ -1464,6 +1618,25 @@ export function createArch({ silhouette, maxZ, frameDepth = 0.5,
       seedOffset:      5500,
       topCfg,
     });
+
+    // Corner hexes — nested into the upper-left and upper-right corners
+    // of the silhouette, clipped by the same stencil mask. Anchored Z
+    // is the front face of the topLayer's outermost step; a per-hex
+    // zLift then pushes them past the fireplace brick ring (which sits
+    // ~3-5 units further forward in fireplace mode), so the hexes
+    // float in front of the rim instead of being occluded by it.
+    const cornerCfg = topCfg.cornerHexes;
+    if (cornerCfg?.enabled !== false && cornerCfg) {
+      const maxStepHeight = topCfg.maxStepHeight ?? 1.6;
+      placeCornerHexes({
+        outerSilhouette: silhouette[0],
+        frontZ:          backZ + maxStepHeight,
+        gradientBright,
+        gradientDark,
+        group,
+        cornerCfg,
+      });
+    }
   }
 
   // --- Embossed geometric inlays ---

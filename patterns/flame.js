@@ -33,6 +33,9 @@ function mergeFlameCfg(main, override) {
   const out = { ...main, ...override };
   out.shimmer = { ...main.shimmer, ...(override.shimmer || {}) };
   out.flares  = { ...main.flares,  ...(override.flares  || {}) };
+  // Tertiary uses an `outline` block — main flame doesn't define one, so
+  // main.outline is undefined; the override's fields land on a fresh obj.
+  out.outline = { ...(main.outline || {}), ...(override.outline || {}) };
   return out;
 }
 
@@ -314,6 +317,14 @@ function buildFlameBody({ cutoutLoop, vpX, vpY, minY, maxY, halfWidth, zBack, zF
     uShimmerIntensity:{ value: cfg.shimmer.intensity },
     uShimmerYMax:     { value: cfg.shimmer.yMax },
     uShimmerSpeed:    { value: cfg.shimmer.speed },
+    // Outline mode — when enabled, the body renders only at the column
+    // edge (transparent inner core, hard ring) so a third flame can
+    // visibly trace just the outline of its column. Width is the ring
+    // thickness as a fraction of column half-width; soft is the edge
+    // smoothness (small = harder/sharper outline).
+    uOutlineMode:     { value: (cfg.outline && cfg.outline.enabled) ? 1 : 0 },
+    uOutlineWidth:    { value: cfg.outline?.width ?? 0.15 },
+    uOutlineSoft:     { value: cfg.outline?.soft  ?? 0.05 },
   };
 
   const material = new THREE.ShaderMaterial({
@@ -375,6 +386,9 @@ function buildFlameBody({ cutoutLoop, vpX, vpY, minY, maxY, halfWidth, zBack, zF
       uniform float uShimmerIntensity;
       uniform float uShimmerYMax;
       uniform float uShimmerSpeed;
+      uniform int   uOutlineMode;
+      uniform float uOutlineWidth;
+      uniform float uOutlineSoft;
       varying vec3  vLocalPos;
 
       float hash21(vec2 p) {
@@ -471,16 +485,33 @@ function buildFlameBody({ cutoutLoop, vpX, vpY, minY, maxY, halfWidth, zBack, zF
         float branchHalfSep = branchAmp * uBranchSep * uHalfWidth;
         float xRel1 = (vLocalPos.x - (xCenter - branchHalfSep)) / max(colHalfWidth, 0.001);
         float xRel2 = (vLocalPos.x - (xCenter + branchHalfSep)) / max(colHalfWidth, 0.001);
-        float xFade1 = 1.0 - smoothstep(1.0 - uColEdgeSoft, 1.0, abs(xRel1));
-        float xFade2 = 1.0 - smoothstep(1.0 - uColEdgeSoft, 1.0, abs(xRel2));
-        // Take whichever column "owns" this pixel — preserves the soft
-        // edge on each side without flattening the centre when the
-        // columns merge.
-        float xFade = max(xFade1, xFade2);
         // For the rounded-bottom dome, use the closer column's xRel so
         // each branch gets its own dome instead of one huge dome
         // spanning both.
         float xRel = abs(xRel1) < abs(xRel2) ? xRel1 : xRel2;
+        float xFade;
+        if (uOutlineMode == 1) {
+          // Hard outline ring — high just inside the column edge, zero
+          // at the centre (transparent core) and zero outside the column.
+          // Width is the ring thickness; soft fades both the inner and
+          // outer edges of the ring (small soft = sharper/harder edge).
+          float xa1 = abs(xRel1);
+          float xa2 = abs(xRel2);
+          float ow  = uOutlineWidth;
+          float os  = max(uOutlineSoft, 0.001);
+          float in1 = smoothstep(1.0 - ow - os, 1.0 - ow, xa1)
+                    * (1.0 - smoothstep(1.0, 1.0 + os * 0.5, xa1));
+          float in2 = smoothstep(1.0 - ow - os, 1.0 - ow, xa2)
+                    * (1.0 - smoothstep(1.0, 1.0 + os * 0.5, xa2));
+          xFade = max(in1, in2);
+        } else {
+          float xFade1 = 1.0 - smoothstep(1.0 - uColEdgeSoft, 1.0, abs(xRel1));
+          float xFade2 = 1.0 - smoothstep(1.0 - uColEdgeSoft, 1.0, abs(xRel2));
+          // Take whichever column "owns" this pixel — preserves the soft
+          // edge on each side without flattening the centre when the
+          // columns merge.
+          xFade = max(xFade1, xFade2);
+        }
 
         // Threshold the raw noise (uniform across the body), then
         // combine with vertical + horizontal soft fades. (Earlier
@@ -489,7 +520,13 @@ function buildFlameBody({ cutoutLoop, vpX, vpY, minY, maxY, halfWidth, zBack, zF
         // the front face entirely, since the camera-facing face has
         // zRel == 1 and was getting multiplied by zero. Without the
         // z-fade the front face renders the noise pattern directly.)
-        float intensity = smoothstep(uThreshLow, uThreshHigh, n);
+        // In outline mode the noise contribution is dialled down so the
+        // ring stays mostly solid (a fully noise-gated outline reads as
+        // a broken dotted line — we want a hard continuous outline).
+        float noiseGate = smoothstep(uThreshLow, uThreshHigh, n);
+        float intensity = uOutlineMode == 1
+          ? mix(1.0, noiseGate, 0.15)
+          : noiseGate;
         intensity *= vTaper;
         intensity *= xFade;
         intensity *= smoothstep(1.05, 0.85, t);   // top fade — flame
@@ -604,6 +641,10 @@ function applyBodyUniforms(body, cfg) {
   u.uColorMid.value.fromArray(hexToRgb(cfg.colorMid));
   u.uColorTop.value.fromArray(hexToRgb(cfg.colorTop));
   u.uFlareYMax.value = cfg.flares.yMax;
+  const ol = cfg.outline || {};
+  u.uOutlineMode.value  = ol.enabled ? 1 : 0;
+  u.uOutlineWidth.value = ol.width ?? 0.15;
+  u.uOutlineSoft.value  = ol.soft  ?? 0.05;
 }
 
 // -----------------------------------------------------------------------
@@ -1080,7 +1121,13 @@ function buildSparks({ cutoutLoop, vpX, vpY, minY, maxY, zBack, zFront, renderer
     uSwayAmount:    { value: cfg.swayAmount },
     uSwayFreq:      { value: cfg.swayFreq },
     uPointSize:     { value: cfg.pointSize },
-    uVanishingY:    { value: vpY },
+    // Cap = top of the central CUTOUT (not the body's vanishing point,
+    // which sits much higher). Above this Y the dome interior begins,
+    // and that's where the inner hex band lives — so sparks rising past
+    // the cutout would visually overlap the hexes. Clamping pos.y to
+    // maxY combined with a fade as sparks approach it keeps the spark
+    // population entirely within the central column.
+    uVanishingY:    { value: maxY },
     uBodyColor:     { value: new THREE.Vector3(...hexToRgb(cfg.bodyColor)) },
     uCoreColor:     { value: new THREE.Vector3(...hexToRgb(cfg.coreColor)) },
     uBrightness:    { value: cfg.brightness },
@@ -1123,9 +1170,10 @@ function buildSparks({ cutoutLoop, vpX, vpY, minY, maxY, zBack, zFront, renderer
         // Rise: ease-out so sparks decelerate as they climb (cooling).
         float ease = 1.0 - pow(1.0 - t, 1.6);
         vec3 pos = position;
-        pos.y += ease * uRiseDistance;
-        // Cap the rise at the vanishing point so sparks don't fly past
-        // the visible cutout.
+        // Track the unclamped Y so the alpha fade below kicks in BEFORE
+        // sparks pile up at the cap line.
+        float rawY = position.y + ease * uRiseDistance;
+        pos.y = rawY;
         if (pos.y > uVanishingY) pos.y = uVanishingY - 0.05;
         // Horizontal sway — sinusoidal, phase from aRandom.
         pos.x += sin(uTime * uSwayFreq + aRandom * 31.4) * uSwayAmount * t;
@@ -1148,7 +1196,12 @@ function buildSparks({ cutoutLoop, vpX, vpY, minY, maxY, zBack, zFront, renderer
         // Fade in fast, fade out gradually.
         float fadeIn  = smoothstep(0.0, 0.08, t);
         float fadeOut = 1.0 - smoothstep(0.55, 1.0, t);
-        vAlpha = fadeIn * fadeOut;
+        // Spatial fade — sparks get progressively transparent as their
+        // unclamped Y approaches the cap, so they vanish before reaching
+        // the dome region above the central cutout. Keeps the hex band
+        // along the inner brick wall free of any spark overlap.
+        float yFade = 1.0 - smoothstep(uVanishingY - 6.0, uVanishingY, rawY);
+        vAlpha = fadeIn * fadeOut * yFade;
         vT = t;
       }
     `,
@@ -1353,6 +1406,29 @@ export function createFlame({ logoMesh, meta, renderer }) {
     group.add(secondaryBody.mesh);
   }
 
+  // Tertiary outlined body — traces the orange main body's silhouette
+  // with a hard red→blue colour ring and a transparent inner core (the
+  // orange + blue show through). vpY / maxY match the main body's so
+  // the outline reaches the same height (and shares the same topExtend
+  // headroom). Silhouette-shaping uniforms (column widths, waists,
+  // branching) are inherited via mergeFlameCfg so the outline always
+  // hugs whatever shape the orange currently has. NormalBlending so the
+  // ring paints over the underlying flames rather than additively
+  // summing into white. renderOrder=8 puts it above the secondary.
+  let tertiaryBody = null;
+  const ter = (cfg.tertiary && cfg.tertiary.enabled !== false) ? cfg.tertiary : null;
+  if (ter) {
+    const terCfg = mergeFlameCfg(cfg, ter);
+    tertiaryBody = buildFlameBody({
+      cutoutLoop, vpX, vpY, minY, maxY,
+      halfWidth, zBack, zFront, cfg: terCfg,
+    });
+    tertiaryBody.mesh.material.blending = THREE.NormalBlending;
+    tertiaryBody.mesh.material.needsUpdate = true;
+    tertiaryBody.mesh.renderOrder = 8;
+    group.add(tertiaryBody.mesh);
+  }
+
   // Sparks
   const sparks = buildSparks({ cutoutLoop, vpX, vpY, minY, maxY, zBack, zFront, renderer });
   if (sparks) group.add(sparks.points);
@@ -1554,6 +1630,19 @@ export function createFlame({ logoMesh, meta, renderer }) {
       }
     }
 
+    // Tertiary outlined body — uniforms refresh from the merged cfg so
+    // silhouette-shaping fields stay locked to the main flame's current
+    // values (column widths, waists, branching), making the outline
+    // visibly track any shape change the orange goes through. Flare
+    // intensity is force-zeroed so the chromatic flare envelope can't
+    // bleed warm tints into the locked red→blue gradient.
+    if (tertiaryBody) {
+      tertiaryBody.uniforms.uTime.value = t;
+      const terCfgLive = mergeFlameCfg(bcfg, bcfg.tertiary || {});
+      applyBodyUniforms(tertiaryBody, terCfgLive);
+      tertiaryBody.uniforms.uFlareIntensity.value = 0;
+    }
+
     // ----- Chromatic flare envelope -----
     // Pick a new flare with rate-based Bernoulli probability per frame
     // when none is active. Envelope: 0 → peak (at 25 % through) → 0.
@@ -1737,6 +1826,14 @@ export function createFlame({ logoMesh, meta, renderer }) {
         secondaryBody.uniforms.uNoiseSpeed.value    *= movementScale;
         secondaryBody.uniforms.uColWobble.value     *= movementScale;
         secondaryBody.uniforms.uWidthNoiseAmt.value *= movementScale;
+      }
+      if (tertiaryBody) {
+        tertiaryBody.uniforms.uNoiseSpeed.value    *= movementScale;
+        tertiaryBody.uniforms.uColWobble.value     *= movementScale;
+        tertiaryBody.uniforms.uWidthNoiseAmt.value *= movementScale;
+        // Match the main body's branchSpeed scaling so the tertiary's
+        // outline branches in sync with the orange's bifurcation.
+        tertiaryBody.uniforms.uBranchSpeed.value   *= movementScale;
       }
       if (shadow) {
         shadow.uniforms.uNoiseSpeed.value *= movementScale;

@@ -72,46 +72,85 @@ function makePetalGeometry(length, width, thickness) {
 }
 
 // =======================================================================
-// Horseshoe centerline — the path bricks + petals walk. Built directly
-// from the logo's bbox (NOT from silhouette[0]), so it doesn't inherit
-// the SDG side flares or any other concavity.
+// Centerline — the path bricks + petals walk. Traces silhouette[0]
+// directly so the fireplace hugs the actual logo curve (SDG dome + side
+// flares) instead of a bbox-derived half-ellipse. Same longest-run-above-Y
+// approach that placeOuterBrickArch in arch.js uses, intentionally
+// inlined here so fireplace.js shares no helpers with arch.js.
 //
-// Inputs: bbox of silhouette[0] + a few horseshoe shape knobs.
-// Output: open polyline of {x,y} points ordered foot→over-the-top→foot.
-//         The polyline traces the INNER face of the horseshoe (the face
-//         pointing at the logo). Bricks extend outward from this line by
-//         brickHeight; petals extend inward by petalLength.
+// Inputs: silhouette[0] (CCW polygon) + a springerYFrac knob.
+// Output: open polyline of {x,y} points walking foot→over-the-top→foot
+//         along the actual silhouette curve. Bricks extend outward from
+//         this line by brickHeight; petals extend inward.
 // =======================================================================
-function buildHorseshoe({ bbox, gap, domeRise, legHeight, arcSegments }) {
-  const innerLeft  = bbox.minX - gap;
-  const innerRight = bbox.maxX + gap;
-  const cx         = (innerLeft + innerRight) * 0.5;
-  const radiusX    = (innerRight - innerLeft) * 0.5;
-  const springerY  = bbox.maxY;
-  const apexY      = springerY + domeRise;
-  // Half-ellipse with horizontal radius = radiusX, vertical radius = domeRise.
-  // Center at (cx, springerY); sweep angle 0→π gives left-springer over top
-  // back to right-springer (CCW in screen coords because Y is up).
-  const baseY = springerY - legHeight;
-
-  const pts = [];
-  // Left foot up to left springer.
-  pts.push({ x: innerLeft, y: baseY });
-  pts.push({ x: innerLeft, y: springerY });
-  // Half-ellipse arc from left springer over the apex to right springer.
-  // theta runs from π (left) to 0 (right), via π/2 at apex.
-  const seg = Math.max(8, arcSegments | 0);
-  for (let i = 1; i < seg; i++) {
-    const theta = Math.PI - (i / seg) * Math.PI;
-    pts.push({
-      x: cx + radiusX * Math.cos(theta),
-      y: springerY + domeRise * Math.sin(theta),
-    });
+function samplePerimeterDense(poly, count) {
+  const segLens = [];
+  let total = 0;
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i], b = poly[(i + 1) % poly.length];
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    segLens.push(len);
+    total += len;
   }
-  // Right springer down to right foot.
-  pts.push({ x: innerRight, y: springerY });
-  pts.push({ x: innerRight, y: baseY  });
-  return { points: pts, apexY, springerY, baseY, cx };
+  const out = [];
+  const step = total / count;
+  for (let k = 0; k < count; k++) {
+    let target = k * step;
+    for (let i = 0; i < poly.length; i++) {
+      if (target <= segLens[i]) {
+        const a = poly[i], b = poly[(i + 1) % poly.length];
+        const f = segLens[i] > 0 ? target / segLens[i] : 0;
+        out.push({
+          x: a.x + (b.x - a.x) * f,
+          y: a.y + (b.y - a.y) * f,
+        });
+        break;
+      }
+      target -= segLens[i];
+    }
+  }
+  return out;
+}
+
+function buildSilhouetteArc({ poly, springerYFrac, sampleDensity }) {
+  let minY =  Infinity, maxY = -Infinity;
+  for (const p of poly) {
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  const springerY = minY + (maxY - minY) * springerYFrac;
+
+  // Perimeter total length — used to size the dense sample count.
+  let totalPerim = 0;
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i], b = poly[(i + 1) % poly.length];
+    totalPerim += Math.hypot(b.x - a.x, b.y - a.y);
+  }
+  const sampleCount = Math.max(96, Math.round(totalPerim / sampleDensity) * 3);
+  const perimSamples = samplePerimeterDense(poly, sampleCount);
+
+  // Longest CONTIGUOUS run of samples with y > springerY (wrap-aware).
+  // Robust against multi-crossing polygons (the SDG flares cross the cut
+  // line many times in the lower half — the upper U is still one run).
+  const N = perimSamples.length;
+  const above = perimSamples.map(s => s.y > springerY);
+  let bestStart = -1, bestLen = 0;
+  let curStart = -1, curLen = 0;
+  for (let i = 0; i < N * 2; i++) {
+    if (above[i % N]) {
+      if (curStart < 0) curStart = i;
+      curLen++;
+      if (curLen > bestLen) { bestLen = curLen; bestStart = curStart; }
+    } else {
+      curStart = -1; curLen = 0;
+    }
+  }
+  if (bestLen > N) bestLen = N;
+  if (bestLen < 2) return { points: [], springerY };
+
+  const arc = [];
+  for (let k = 0; k < bestLen; k++) arc.push(perimSamples[(bestStart + k) % N]);
+  return { points: arc, springerY };
 }
 
 // Walk an open polyline and emit `count` evenly-spaced samples with
@@ -168,13 +207,14 @@ function smoothTangents(samples) {
 }
 
 // =======================================================================
-// Brick row — chunky tangent-aligned stones whose body extends OUTWARD
-// (away from the logo) from each sample point. Brick local axes:
+// Brick row — chunky tangent-aligned stones whose body extends INWARD
+// (toward the logo) from each sample point. Brick local axes:
 //   local-X → world-Z       (long axis points at the camera)
 //   local-Y → outward       (radial, away from logo centre)
 //   local-Z → curve tangent (along the horseshoe path)
-// The brick's INNER face (local-Y = -height/2) sits flush with the
-// horseshoe centerline; the body extends `brickHeight` units outward.
+// The brick's OUTER face (local-Y = +height/2) kisses the silhouette
+// centerline; the body extends `brickHeight` units inward, so no part of
+// the brick pokes outside silhouette[0].
 // =======================================================================
 function placeFireplaceBricks({ samples, logoCx, logoCy, brickCfg, zCenter,
                                 material, group, seedOffset }) {
@@ -195,9 +235,9 @@ function placeFireplaceBricks({ samples, logoCx, logoCy, brickCfg, zCenter,
     localZ.set(s.tx, s.ty, 0).normalize();
     const geo  = makeBrickGeometry(seedOffset + i, brickCfg);
     const mesh = new THREE.Mesh(geo, material);
-    // Push the brick centre outward by halfH so its inner face kisses
-    // the horseshoe centerline.
-    mesh.position.set(s.x + nx * halfH, s.y + ny * halfH, zCenter);
+    // Push the brick centre INWARD by halfH so its outer face kisses
+    // silhouette[0] and the body stays entirely inside the logo.
+    mesh.position.set(s.x - nx * halfH, s.y - ny * halfH, zCenter);
     mesh.quaternion.copy(basisQuat(localX, localY, localZ));
     group.add(mesh);
   }
@@ -212,25 +252,195 @@ function placeFireplaceBricks({ samples, logoCx, logoCy, brickCfg, zCenter,
 //   local-Z → world +Z      (cell thickness)
 // =======================================================================
 function placePetalRow({ samples, logoCx, logoCy, petalLength, petalWidth,
-                         petalThick, zCenter, material, group }) {
+                         petalThick, inwardOffset, zCenter, material, group }) {
   const geo = makePetalGeometry(petalLength, petalWidth, petalThick);
   const localX = new THREE.Vector3();
   const localY = new THREE.Vector3();
   const localZ = new THREE.Vector3(0, 0, 1);
+  // Use the curve normal (perpendicular to tangent, pointing toward logo
+  // centre) for the inward push so adjacent petals all shift by the same
+  // signed distance along the same local frame — using the raw "to-centre"
+  // vector instead would skew their bases off the curve.
   for (let i = 0; i < samples.length; i++) {
     const s = samples[i];
-    // Inward = toward logo centre.
-    let inX = logoCx - s.x;
-    let inY = logoCy - s.y;
-    const len = Math.hypot(inX, inY) || 1;
-    inX /= len; inY /= len;
-    localX.set(inX, inY, 0);
+    let nx =  s.ty, ny = -s.tx;
+    const toLogoX = logoCx - s.x;
+    const toLogoY = logoCy - s.y;
+    if (nx * toLogoX + ny * toLogoY < 0) { nx = -nx; ny = -ny; }
+    localX.set(nx, ny, 0);
     localY.set(s.tx, s.ty, 0);
     const mesh = new THREE.Mesh(geo, material);
-    mesh.position.set(s.x, s.y, zCenter);
+    mesh.position.set(s.x + nx * inwardOffset, s.y + ny * inwardOffset, zCenter);
     mesh.quaternion.copy(basisQuat(localX, localY, localZ));
     group.add(mesh);
   }
+}
+
+// =======================================================================
+// Inner hex band — flat-extruded pointy-top hexagons tiled across the
+// inner face of the horseshoe to "fill" the inner lining with a hex
+// pattern. The band is laid out in the curve's LOCAL frame at every
+// sample (local-X = curve tangent, local-Y = inward radial), so the
+// hex grid wraps around the horseshoe instead of being drawn in flat
+// world XY (which would mis-tile around the dome curve).
+//
+// Tiling: pointy-top hexes touch flat-edge along the tangent at
+// horizontal pitch √3·R; successive rows are pushed inward (toward
+// the logo centre) by 1.5·R and offset along the tangent by half a
+// hex-width so the rows interlock.
+// =======================================================================
+function makeFlatHexGeometry(radius, depth) {
+  const shape = new THREE.Shape();
+  for (let i = 0; i < 6; i++) {
+    const a = Math.PI / 2 + i * Math.PI / 3;  // pointy-top
+    const x = Math.cos(a) * radius, y = Math.sin(a) * radius;
+    if (i === 0) shape.moveTo(x, y); else shape.lineTo(x, y);
+  }
+  shape.closePath();
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth,
+    bevelEnabled:  false,
+    curveSegments: 1,
+  });
+  geo.translate(0, 0, -depth * 0.5);  // centre the extrusion on Z=0
+  return geo;
+}
+
+// Half hex — pointy-top hex sliced along the horizontal diameter,
+// keeping the upper half. The flat cut edge runs along local-X
+// (= curve tangent when placed) at local-Y = 0, so the cut sits
+// flush against the inner wall; the rounded half protrudes in
+// local-+Y (= radial inward toward the logo). Apothem-half-width
+// across the cut = √3·R/2 on each side.
+function makeHalfHexGeometry(radius, depth) {
+  const shape = new THREE.Shape();
+  const apothem = Math.sqrt(3) * radius / 2;
+  shape.moveTo(-apothem, 0);
+  shape.lineTo( apothem, 0);
+  shape.lineTo( apothem, radius * 0.5);
+  shape.lineTo( 0,       radius);
+  shape.lineTo(-apothem, radius * 0.5);
+  shape.closePath();
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth,
+    bevelEnabled:  false,
+    curveSegments: 1,
+  });
+  geo.translate(0, 0, -depth * 0.5);
+  return geo;
+}
+
+function placeInnerHexBand({ arcPoints, logoCx, logoCy, hexRadius, hexDepth,
+                              rowCount, baseInwardOffset, alongOffset,
+                              pitchScale, halfCut, outlineMat, zCenter,
+                              material, group }) {
+  if (!arcPoints || arcPoints.length < 2) return;
+
+  // pitchScale multiplies the natural touching-hex pitch on BOTH axes,
+  // so values >1 introduce uniform gaps between adjacent tiles in both
+  // the tangent (along-curve) and radial (between-row) directions.
+  const ps         = Math.max(0.1, pitchScale ?? 1.0);
+  const flatWidth  = Math.sqrt(3) * hexRadius * ps;  // tangent pitch
+  const rowSpacing = 1.5            * hexRadius * ps;  // radial pitch
+  // Half-cut hex: pointy half hugs the wall, flat edge flush against
+  // the inner brick face. Tangent pitch becomes the half-hex's flat
+  // width = √3·R (same as full hex, since we keep the full diameter
+  // on the cut edge). Radial extent shrinks to R (half hex height).
+  const hexGeo     = halfCut
+    ? makeHalfHexGeometry(hexRadius, hexDepth)
+    : makeFlatHexGeometry(hexRadius, hexDepth);
+  // Edges geometry — built once, instanced per hex via LineSegments.
+  // Threshold of 1° catches every flat-to-flat seam on the extrusion,
+  // so each tile gets all 6 face edges + the front/back outlines.
+  const edgesGeo   = outlineMat ? new THREE.EdgesGeometry(hexGeo, 1) : null;
+
+  // Local axes: hex face stays perpendicular to world-Z, so local-Z
+  // always = +Z. local-X aligns with the curve tangent at each sample,
+  // local-Y is the radial-inward normal — this is what makes the hex
+  // grid follow the horseshoe path instead of being drawn in flat XY.
+  const localX = new THREE.Vector3();
+  const localY = new THREE.Vector3();
+  const localZ = new THREE.Vector3(0, 0, 1);
+
+  for (let r = 0; r < rowCount; r++) {
+    // Even rows kiss flat-to-flat along the tangent; odd rows shift by
+    // half a hex-width so they interlock with the row outside them.
+    const rowAlongShift  = (r % 2 === 1) ? flatWidth * 0.5 : 0.0;
+    const rowInwardShift = baseInwardOffset + r * rowSpacing;
+
+    // Build this row's OWN inset polyline by pushing each arc point
+    // inward by rowInwardShift along the local normal, then resample
+    // THAT polyline at flatWidth pitch. Sampling the OUTER arc and
+    // then radially shifting (the previous approach) bunched hexes
+    // near the dome apex because the inner curve is shorter than the
+    // outer one — uniform spacing on the outer curve became uneven
+    // spacing on the inner curve where the hexes physically sit.
+    const insetPoly = offsetPolylineInward(
+      arcPoints, rowInwardShift, logoCx, logoCy,
+    );
+    if (insetPoly.length < 2) continue;
+    const insetLen = arcLength(insetPoly);
+    const sampleCount = Math.max(2, Math.round(insetLen / flatWidth));
+    const samples = samplePolylineEven(insetPoly, sampleCount);
+    if (samples.length === 0) continue;
+
+    for (let i = 0; i < samples.length; i++) {
+      const s = samples[i];
+      // Inward normal at the inset sample — perpendicular to its OWN
+      // tangent, so the hex's local-Y points correctly inward at the
+      // inset curve's curvature.
+      let nx =  s.ty, ny = -s.tx;
+      const toLogoX = logoCx - s.x;
+      const toLogoY = logoCy - s.y;
+      if (nx * toLogoX + ny * toLogoY < 0) { nx = -nx; ny = -ny; }
+      localX.set(s.tx, s.ty, 0);
+      localY.set(nx, ny, 0);
+
+      // Tangential shift only — the sample already lies on the inset
+      // curve, so no further radial push is needed.
+      const px = s.x + s.tx * (rowAlongShift + alongOffset);
+      const py = s.y + s.ty * (rowAlongShift + alongOffset);
+
+      const mesh = new THREE.Mesh(hexGeo, material);
+      mesh.position.set(px, py, zCenter);
+      mesh.quaternion.copy(basisQuat(localX, localY, localZ));
+      group.add(mesh);
+      if (edgesGeo) {
+        const edge = new THREE.LineSegments(edgesGeo, outlineMat);
+        edge.position.copy(mesh.position);
+        edge.quaternion.copy(mesh.quaternion);
+        group.add(edge);
+      }
+    }
+  }
+}
+
+// Push every point of an open polyline INWARD (toward the logo centre)
+// by `distance`, along the local normal at that point. Used so we can
+// resample the actual centerline a row of inner hexes traces — uniform
+// pitch on this curve = uniform spacing where the hexes physically sit.
+function offsetPolylineInward(pts, distance, logoCx, logoCy) {
+  if (!pts || pts.length < 2) return pts;
+  const out = new Array(pts.length);
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[Math.max(0, i - 1)];
+    const b = pts[Math.min(pts.length - 1, i + 1)];
+    const tx = b.x - a.x, ty = b.y - a.y;
+    const tlen = Math.hypot(tx, ty) || 1;
+    let nx =  ty / tlen, ny = -tx / tlen;
+    const p = pts[i];
+    if (nx * (logoCx - p.x) + ny * (logoCy - p.y) < 0) { nx = -nx; ny = -ny; }
+    out[i] = { x: p.x + nx * distance, y: p.y + ny * distance };
+  }
+  return out;
+}
+
+function arcLength(pts) {
+  let L = 0;
+  for (let i = 1; i < pts.length; i++) {
+    L += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+  }
+  return L;
 }
 
 // =======================================================================
@@ -247,49 +457,28 @@ export function createFireplace({ silhouette, maxZ, frameDepth = 0.5 }) {
     return { group, update: () => {} };
   }
 
-  // Logo bbox in panel-local coords (silhouette is already mesh-local
-  // because patterns-layer pre-shifted it by (cx, cy)).
-  //
-  // X bounds come from the UPPER half of the silhouette only — this
-  // drops the SDG side-flare width at the bottom of the logo, so the
-  // horseshoe hugs the dome instead of stretching out to the flares.
-  // Y bounds use the full silhouette so the legs can reach down past
-  // the body if the user wants longer legs.
+  // Logo bbox is only used for the logo centre (so per-sample inward /
+  // outward direction can point toward / away from the body). The
+  // centerline itself comes from silhouette[0] directly.
   let minY =  Infinity, maxY = -Infinity;
+  let minX =  Infinity, maxX = -Infinity;
   for (const p of silhouette[0]) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
     if (p.y < minY) minY = p.y;
     if (p.y > maxY) maxY = p.y;
   }
-  const upperCutY = cfg.upperCutY ?? (minY + maxY) * 0.5;
-  let minX =  Infinity, maxX = -Infinity;
-  for (const p of silhouette[0]) {
-    if (p.y < upperCutY) continue;
-    if (p.x < minX) minX = p.x;
-    if (p.x > maxX) maxX = p.x;
-  }
-  // Fallback if the upper-cut filter rejects everything (defensive).
-  if (!isFinite(minX) || !isFinite(maxX)) {
-    for (const p of silhouette[0]) {
-      if (p.x < minX) minX = p.x;
-      if (p.x > maxX) maxX = p.x;
-    }
-  }
-  const bbox     = { minX, maxX, minY, maxY };
-  const upperW   = maxX - minX;
-  const fullH    = maxY - minY;
   const logoCx   = (minX + maxX) * 0.5;
   const logoCy   = (minY + maxY) * 0.5;
 
-  // Tight defaults — the silhouette is already wide, so a small absolute
-  // domeRise keeps the apex just above the logo dome (visible on canvas)
-  // instead of pushing it off the top. legHeight as a fullH fraction so
-  // the legs scale with the logo body.
-  const gap       = cfg.gap        ?? 0.6;
-  const domeRise  = cfg.domeRise   ?? 1.5;
-  const legHeight = cfg.legHeight  ?? fullH  * 0.70;
-  const arcSeg    = cfg.arcSegments ?? 24;
-
-  const horseshoe = buildHorseshoe({ bbox, gap, domeRise, legHeight, arcSeg });
+  // springerYFrac sets how far down the legs reach along silhouette[0]:
+  // 0 = legs follow the curve all the way to the bottom; 0.5 = stop at
+  // mid-height (drops the SDG side flares).
+  const springerYFrac = cfg.springerYFrac ?? 0.0;
+  // archInset shifts the WHOLE centerline inward (toward logo centre).
+  // 0 = brick outer face kisses silhouette[0]; positive values pull the
+  // arch in so it floats inside the silhouette.
+  const archInset     = cfg.archInset     ?? 0.0;
 
   // Bricks ----------------------------------------------------------------
   const bCfg = cfg.brick || {};
@@ -300,18 +489,47 @@ export function createFireplace({ silhouette, maxZ, frameDepth = 0.5 }) {
     mortarGap:   bCfg.mortarGap   ?? 0.06,
     faultAmount: bCfg.faultAmount ?? 0.05,
   };
+
+  const arc = buildSilhouetteArc({
+    poly:           silhouette[0],
+    springerYFrac,
+    sampleDensity:  brickDims.depth,
+  });
+  if (arc.points.length < 2) return { group, update: () => {} };
+
+  // Apply archInset by walking the arc's segment normals and shifting
+  // each point inward (toward logo centre). Done before sampling so both
+  // bricks and petals inherit the same offset centerline.
+  if (archInset > 0) {
+    const offset = new Array(arc.points.length);
+    for (let i = 0; i < arc.points.length; i++) {
+      const a = arc.points[Math.max(0, i - 1)];
+      const b = arc.points[Math.min(arc.points.length - 1, i + 1)];
+      const tx = b.x - a.x, ty = b.y - a.y;
+      const tlen = Math.hypot(tx, ty) || 1;
+      let nx =  ty / tlen, ny = -tx / tlen;
+      const p = arc.points[i];
+      if (nx * (logoCx - p.x) + ny * (logoCy - p.y) < 0) { nx = -nx; ny = -ny; }
+      offset[i] = { x: p.x + nx * archInset, y: p.y + ny * archInset };
+    }
+    for (let i = 0; i < arc.points.length; i++) {
+      arc.points[i].x = offset[i].x;
+      arc.points[i].y = offset[i].y;
+    }
+  }
+
   // Spacing along the curve = brick.depth (the dimension that runs along
   // local-Z, which is our tangent). Sample density is total arc length
   // divided by that spacing, so adjacent bricks butt edge-to-edge.
   let totalLen = 0;
-  for (let i = 1; i < horseshoe.points.length; i++) {
+  for (let i = 1; i < arc.points.length; i++) {
     totalLen += Math.hypot(
-      horseshoe.points[i].x - horseshoe.points[i - 1].x,
-      horseshoe.points[i].y - horseshoe.points[i - 1].y,
+      arc.points[i].x - arc.points[i - 1].x,
+      arc.points[i].y - arc.points[i - 1].y,
     );
   }
   const brickCount = Math.max(8, Math.round(totalLen / brickDims.depth));
-  let brickSamples = samplePolylineEven(horseshoe.points, brickCount);
+  let brickSamples = samplePolylineEven(arc.points, brickCount);
   brickSamples = smoothTangents(brickSamples);
 
   const brickMat = new THREE.MeshStandardMaterial({
@@ -339,13 +557,13 @@ export function createFireplace({ silhouette, maxZ, frameDepth = 0.5 }) {
   // Petals ----------------------------------------------------------------
   const pCfg = cfg.petals || {};
   if (pCfg.enabled !== false) {
-    const petalLength = pCfg.length    ?? 2.0;
-    const petalWidth  = pCfg.width     ?? 1.6;
+    const petalLength = pCfg.length    ?? 4.0;
+    const petalWidth  = pCfg.width     ?? 2.4;
     const petalThick  = pCfg.thickness ?? 0.4;
     // Petals get their own sample density (typically lower than bricks
     // so each cell has visible spacing along the curve).
     const petalCount = Math.max(6, Math.round(totalLen / (pCfg.spacing ?? 1.6)));
-    let petalSamples = samplePolylineEven(horseshoe.points, petalCount);
+    let petalSamples = samplePolylineEven(arc.points, petalCount);
     petalSamples = smoothTangents(petalSamples);
 
     const petalMat = new THREE.MeshStandardMaterial({
@@ -353,16 +571,84 @@ export function createFireplace({ silhouette, maxZ, frameDepth = 0.5 }) {
       metalness: 0.10,
       roughness: 0.85,
     });
-    // Petals sit slightly behind the brick front face so the brick
-    // surround reads as the dominant outer layer and petals as inset
-    // niches on the inner lip.
-    const petalZ = gateFrontZ + petalThick * 0.5 + (pCfg.zLift ?? 0.05);
+    // Petals sit UNDER the brick arch — their Z centre matches the brick
+    // centre, so the brick rim reads as the dominant outer layer with the
+    // petals as recessed niches just radially inward of it. Both bricks
+    // and petals are pushed past the topLayer staircase by brickZLift,
+    // so neither is occluded.
+    const petalZ = brickZ + (pCfg.zLift ?? 0.0);
+    // Default petal inwardOffset = brick.height so the petal's base sits
+    // exactly flush with the inner face of the brick band (= silhouette[0]
+    // - archInset - brick.height inward), and the petal extends inward
+    // FROM that face.
+    const petalInset = pCfg.inwardOffset ?? brickDims.height;
     placePetalRow({
-      samples:     petalSamples,
+      samples:      petalSamples,
       logoCx, logoCy,
       petalLength, petalWidth, petalThick,
-      zCenter:     petalZ,
-      material:    petalMat,
+      inwardOffset: petalInset,
+      zCenter:      petalZ,
+      material:     petalMat,
+      group,
+    });
+  }
+
+  // Inner hex band ---------------------------------------------------------
+  // Tessellated hex tiles filling the inner lining of the horseshoe. Sits
+  // just inside the inner brick face (= silhouette - archInset -
+  // brick.height) and extends further inward by `rowCount` rows of hex
+  // pitch. Z is co-planar with the brick centre by default so the band
+  // reads as a continuous inner skin of the brick rim.
+  const hCfg = cfg.innerHexes || {};
+  if (hCfg.enabled !== false) {
+    const hexRadius   = hCfg.radius        ?? 1.4;
+    const hexDepth    = hCfg.depth         ?? 0.5;
+    const rowCount    = Math.max(1, hCfg.rowCount ?? 3);
+    const alongOffset = hCfg.alongOffset   ?? 0.0;
+    const pitchScale  = hCfg.pitchScale    ?? 1.0;
+    const halfCut     = hCfg.halfCut       !== false;
+    // Default base inward offset:
+    //   halfCut on  → brick.height. The half-hex's cut edge anchors at
+    //                 local-Y = 0 of its own geometry, so placing the
+    //                 anchor exactly at the inner brick face puts the
+    //                 cut edge flush with the wall and the half-hex
+    //                 protrudes inward.
+    //   halfCut off → brick.height + hexRadius. The full hex's anchor
+    //                 is its centre, so we shift inward by R so the
+    //                 hex's outer EDGE sits at the inner brick face
+    //                 instead of bisecting it.
+    const defaultInset = halfCut
+      ? brickDims.height
+      : (brickDims.height + hexRadius);
+    const baseInset   = hCfg.baseInwardOffset ?? defaultInset;
+    const hexZ        = brickZ + (hCfg.zLift ?? 0.05);
+
+    const hexMat = new THREE.MeshStandardMaterial({
+      color:     new THREE.Color(hCfg.color || '#B8915A'),
+      metalness: 0.10,
+      roughness: 0.80,
+    });
+    // Outline — undefined / null outlineColor disables the outline.
+    let outlineMat = null;
+    if (hCfg.outline !== false && (hCfg.outlineColor || hCfg.outline === true)) {
+      outlineMat = new THREE.LineBasicMaterial({
+        color: new THREE.Color(hCfg.outlineColor || '#1a0d05'),
+      });
+    }
+
+    placeInnerHexBand({
+      arcPoints:        arc.points,
+      logoCx, logoCy,
+      hexRadius,
+      hexDepth,
+      rowCount,
+      baseInwardOffset: baseInset,
+      alongOffset,
+      pitchScale,
+      halfCut,
+      outlineMat,
+      zCenter:          hexZ,
+      material:         hexMat,
       group,
     });
   }

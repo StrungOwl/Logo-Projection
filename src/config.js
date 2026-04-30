@@ -346,6 +346,13 @@ export const ANIM = {
   // viewMode === 'pattern' AND fractalZoom.enabled !== false.
   fractalZoom: {
     enabled:        true,     // false → fall back to the radial cascade in mode 1
+    oneShot:        true,     // true → play intro + ONE dive segment + the
+                              // fade-IN to the canonical rest pattern, then
+                              // park there forever (no more zooming, no
+                              // hold↔dive loop). false → keep diving with
+                              // periodic holds indefinitely (the original
+                              // infinite-loop behaviour, governed by
+                              // holdDuration / holdFadeOut below).
 
     // Intro (one-shot, before the dive begins) -------------------------
     // Focal tile grows, every other tile pushes outward past the
@@ -419,31 +426,123 @@ export const ANIM = {
                               // of each dive segment (includes fade-in +
                               // pure static + fade-out windows below).
                               // 0 → continuous dive (skip hold entirely).
-    holdFadeIn:        7.0,   // seconds at start of hold spent crossfading
+    holdFadeIn:       18.0,   // seconds at start of hold spent crossfading
                               // the dive's clone stack out so the ORIGINAL
                               // pattern at rest reads through. cloneOp
-                              // ramps 1 → 0 over the FULL holdFadeIn, so
-                              // the user sees the Droste-nested clones
-                              // gradually dissolve into the canonical
-                              // pattern. λ snaps 1 → 0 in the FIRST
+                              // ramps 1 → 0 over the FULL holdFadeIn on a
+                              // gentle ease-out (fast off, soft landing
+                              // into rest), so the Droste nesting dissolves
+                              // smoothly. λ snaps 1 → 0 in the FIRST
                               // `lambdaFadeDur` seconds (covered by the
                               // still-opaque clones) so the silhouette
                               // edge is never exposed during the focal
                               // shrink / pushed-tile slide-in.
-    holdFadeOut:       7.0,   // seconds at end of hold spent crossfading
-                              // the other way. cloneOp ramps 0 → 1 over
-                              // the FULL holdFadeOut (Droste nesting
-                              // gradually appears inside the static
-                              // pattern), then λ snaps 0 → 1 in the LAST
-                              // `lambdaFadeDur` seconds (covered by the
-                              // now-opaque clones).
-    droSigma:          0.70,  // Gaussian envelope half-width in log-scale
+    holdFadeOut:      20.0,   // seconds at end of hold spent crossfading
+                              // back to the dive. cloneOp ramps 0 → 1 on
+                              // an ease-out cubic so the clone stack wells
+                              // back in gently instead of flashing — fast
+                              // initial appearance, then a long soft tail.
+                              // Per-clone stagger (cloneFadeStagger) further
+                              // spaces shallow vs deep layers so multiple
+                              // clones don't pop in simultaneously. λ snaps
+                              // 0 → 1 in the LAST `lambdaFadeDur` seconds
+                              // (covered by the now-opaque clones).
+    cloneFadeStagger:  0.55,  // 0..0.95. During hold fade-in / fade-out,
+                              // shallower clones (closer to peak |r|≈0)
+                              // crossfade FIRST and deeper clones lag.
+                              // 0 → no stagger (legacy: every clone fades
+                              // on the same curve, producing the
+                              // simultaneous "few patterns appear at once"
+                              // flash). Higher → bigger spacing between
+                              // shallow/deep onsets. ~0.55 keeps the
+                              // shallow layer leading by half the window
+                              // duration so deeper layers slip in behind
+                              // it instead of stacking.
+    revealStaggerSpread: 0.65,// 0..0.95. Per-tile stagger applied as a
+                              // clone grows: tiles with higher
+                              // revealPhase START revealing later. Each
+                              // tile's window is [revealPhase × Spread,
+                              // 1 + revealPhase × Overshoot] — phase=0
+                              // reveals over [0, 1]; phase=1 reveals
+                              // over [Spread, 1+Overshoot]. So 0.65 =
+                              // outermost tile doesn't START revealing
+                              // until the clone has grown to 65% of
+                              // peak. (See `revealOvershoot` below for
+                              // when those outermost tiles FINISH.)
+                              // The per-tile revealPhase is a mix of
+                              // radial position and a random offset,
+                              // governed by jitter below.
+    revealStaggerJitter: 0.7, // 0..1. Mix between RADIAL revealPhase
+                              // (innermost-first wave from the focal
+                              // centre) and a per-tile RANDOM phase.
+                              // 0 = clean wave (rosettes in the same
+                              // ring fire together, briefly visible as a
+                              // brightness pulse when the wave hits
+                              // peak); 1 = each rosette / hex grows on
+                              // its own random schedule (organic, no
+                              // ring structure); ~0.7 keeps a hint of
+                              // the bloom-from-centre feel but smears
+                              // tile arrivals across the whole zoom so
+                              // the residual brightness pulse dissolves
+                              // into noise. Each clone draws its own
+                              // random sequence so the stack doesn't
+                              // replay the same pattern level-to-level.
+    revealSpeedMin:    0.45,  // Per-tile growth-rate variance — each
+    revealSpeedMax:    1.8,   // tile picks a random `speed` in
+                              // [revealSpeedMin, revealSpeedMax] that
+                              // warps the smoothstep curve via
+                              // pow(f, 1/speed). speed > 1 races through
+                              // the window (tile reaches full size
+                              // early in its reveal); speed < 1 lingers
+                              // low and snaps up near the end. Endpoints
+                              // are preserved so every tile still
+                              // finishes at its scheduled scale.
+                              // Set both to 1 to disable. Default range
+                              // ~0.45..1.8 means slow tiles take ~2× as
+                              // long as fast tiles to traverse the same
+                              // window, giving each rosette a clearly
+                              // distinct "personality" through the zoom.
+    revealOvershoot:   0.50,  // Each tile's reveal window is
+                              // [revealPhase × revealSpread,
+                              //  1 + revealPhase × revealOvershoot].
+                              // So the OUTERMOST tiles (revealPhase ≈ 1)
+                              // don't finish revealing until the clone
+                              // has grown PAST scale=1 by this much.
+                              // At the moment the clone first reaches
+                              // scale=1, its outer ring is still small
+                              // / invisible — so the gate-frame
+                              // silhouette is NOT outlined by a
+                              // wall-of-rosettes touching the edge.
+                              // The hullClip mask trims the over-grown
+                              // clone back to the silhouette while the
+                              // outer tiles ramp up inside it, so the
+                              // rim fills gradually under cover instead
+                              // of flashing into view all at once.
+                              // 0 = legacy (every tile finishes at
+                              // scale=1, silhouette flashes); 0.5 =
+                              // outermost tiles take an extra half a
+                              // Droste step to settle.
+    droSigma:          1.50,  // Gaussian envelope half-width in log-scale
                               // units. Smaller = sharper crossfade
                               // between layers (fewer visible at once);
-                              // larger = softer overlap. 0.70 keeps total
-                              // brightness roughly steady across the dive
-                              // (adjacent layers crossfade smoothly
-                              // through their handoff). Drop to ~0.45 for
+                              // larger = softer overlap. CRUCIAL for
+                              // brightness flatness: with N transparent
+                              // clones, the visible coverage is
+                              //   1 − ∏(1 − αₖ)
+                              // — non-linear. At sigma=0.70 a half-step
+                              // moment had two clones at α≈0.52 each,
+                              // giving coverage ≈ 0.77 (vs 1.0 at the
+                              // integer-d moment), so the silhouette
+                              // strobed bright/dim across each Droste
+                              // step. sigma=1.5 spreads each clone's
+                              // envelope wide enough that adjacent
+                              // Gaussians overlap cleanly — coverage
+                              // stays >99% at every d, no perceptible
+                              // brightness oscillation. Trade-off: more
+                              // clones at substantial opacity at once,
+                              // so the Droste nesting reads "creamy"
+                              // (soft depth blend) rather than crisp
+                              // discrete steps. Drop to ~0.45 for
                               // a more "discrete depth steps" feel where
                               // each layer briefly stands out as it peaks.
     droLayerRotation:  0.0,   // radians of rotation accumulated per
@@ -455,7 +554,7 @@ export const ANIM = {
     cloneZStep:        0.03,  // z recession added per clone level so
                               // deeper copies render BEHIND shallower
                               // ones in transparent-sort order.
-    lambdaFadeDur:     1.5,   // seconds for λ (originals' focal-grow +
+    lambdaFadeDur:     5.0,   // seconds for λ (originals' focal-grow +
                               // push-out displacement) to ramp through
                               // its full range. Always shorter than
                               // introDuration / holdFadeIn / holdFadeOut
@@ -669,6 +768,57 @@ export const ANIM = {
       // edge poking past the logo outline is GPU-discarded. 0 = use
       // the raw silhouette; small positive value = avoid 1-px halo.
       maskInset:      0.4,
+
+      // Corner hexes — three flat extruded hexagons nestled into each
+      // upper corner (UL, UR) of the silhouette bbox, sitting on top of
+      // the outermost staircase step. Each hex is centred near the
+      // corner so the topLayer stencil mask clips ~2/3 of the body and
+      // only ~1/3 protrudes inside the silhouette. Subsequent hexes
+      // step diagonally inward toward the bbox centre and shrink by
+      // shrinkRatio per step. Colour lerps from gradientBright (outer
+      // corner) toward gradientDark (innermost) so the trio reads as
+      // part of the same masonry gradient as the staircase.
+      //   count        — hexes per corner.
+      //   outerRadius  — radius of the largest (outer) hex.
+      //   shrinkRatio  — multiplier on radius per step (0.7 = each
+      //                  successive hex is 70% of the previous).
+      //   spacingFrac  — packing factor: adjacent centres are pushed
+      //                  apart by (r_k + r_{k+1}) * spacingFrac.
+      //                  1.0 = hexes kiss; <1 = overlap; >1 = gap.
+      //   cornerInset  — diagonal offset of the FIRST hex centre from
+      //                  the bbox corner, units. 0 = centre exactly
+      //                  on the corner (~1/4 visible). Positive shifts
+      //                  inward (more visible).
+      //   depth        — extrusion thickness on world-Z.
+      //   zLift        — Z above the outermost staircase step's front
+      //                  face where the hex back face sits.
+      //   color        — optional override; falls back to the
+      //                  gradientBright→gradientDark lerp.
+      cornerHexes: {
+        enabled:      true,
+        // Single hex per corner — the bright outer one. Bumping count up
+        // to 2/3 emits successively darker hexes marching diagonally
+        // inward (gradientBright → gradientDark per step).
+        count:        1,
+        outerRadius:  4.5,
+        shrinkRatio:  0.7,
+        spacingFrac:  0.95,
+        // Negative cornerInset pushes the FIRST hex centre OUTWARD
+        // along the diagonal (away from the bbox centre). With the
+        // anchor on the silhouette[0] corner extreme, the hex centre
+        // would otherwise sit on the boundary with ~50% visible;
+        // pulling it outward by ~R/3 leaves ~1/3 of the hex inside
+        // the silhouette (= the "nestled into the corner" look).
+        cornerInset: -1.4,
+        depth:        0.5,
+        // Pushed past the fireplace brick ring (which sits ~3 units
+        // forward of the topLayer's outermost step in fireplace mode).
+        // Without this lift the hexes are occluded by the ring.
+        zLift:        5.0,
+        // Outline — set to true (or pass outlineColor) to draw an edge
+        // stroke over each hex; false leaves bare faces.
+        outline:      false,
+      },
     },
 
     // Muqarnas vault — fractal-scaled pointed-arch niches DUG INTO the
@@ -866,7 +1016,12 @@ export const ANIM = {
     //   zLift           — extra Z above the gate-frame front face.
     //   color           — brick colour (defaults to cfg.gradientBright).
     outerFrameArch: {
-      enabled:        true,
+      // Disabled: the fireplace archway (ANIM.fireplace, with gap: 0)
+      // now occupies this perimeter ring's position, so the chunky
+      // voussoirs would double up on the same band. Re-enable if you
+      // want the silhouette-tracing voussoir ring back instead of the
+      // fireplace horseshoe at the perimeter.
+      enabled:        false,
       // 0 = bricks sit INSIDE silhouette[0] (outer face flush with the
       // perimeter, body extending one brickHeight inward). Increase to
       // push the frame outside the logo.
@@ -1094,7 +1249,7 @@ export const ANIM = {
     //   columnEdgeSoft  — soft-edge fraction at the column boundary
     //                     (separate from `edgeSoftness` which still
     //                     fades against the cutout polygon edges)
-    bodyHalfWidthBase: 0.18,
+    bodyHalfWidthBase: 0.14,
     bodyHalfWidthTop:  0.005,
     columnWobble:      0.04,
     widthNoiseAmt:     0.42,
@@ -1139,7 +1294,10 @@ export const ANIM = {
     // pinch entirely.
     waist2Y:     0.62,
     waist2Amt:   0.40,
-    waist2Width: 0.10,
+    waist2Width: 0.18,   // wider Gaussian so the tail thins the visible
+                         // middle of the body (~t=0.5) while the peak
+                         // pinch stays at t=0.62 to keep the column off
+                         // the inner-star polygon's neck.
 
     // Movement diversity — slowly modulates ALL motion uniforms
     // (noise scroll, column wobble, width-noise amplitude, branching
@@ -1214,7 +1372,7 @@ export const ANIM = {
     // 0 = base lights fully off — only the flame's own flickering
     // PointLight + spark particles illuminate the logo. Set to 1.0 to
     // keep base lights at full strength alongside the flame.
-    baseLightDim: 0.0,
+    baseLightDim: 0.35,
 
     // Multiplier on logo material's `envMapIntensity` in flame mode.
     // Default 1.0 lets the metallic logo reflect the neutral-grey env
@@ -1222,7 +1380,7 @@ export const ANIM = {
     // value so the body goes nearly black between flame-light flicker
     // peaks, letting the flame's PointLight be the visible source of
     // illumination on the surrounding logo.
-    envMapIntensity: 0.05,
+    envMapIntensity: 0.25,
 
     // While in fireplace mode, set `scene.environment = null` so the
     // grey PMREM ambient wash on every MeshStandardMaterial (arch
@@ -1513,6 +1671,45 @@ export const ANIM = {
       },
     },
 
+    // Tertiary flame — a hard-outlined ring that traces the ORANGE main
+    // flame's silhouette. Reuses the body shader in `outline` mode so the
+    // column edge renders as a solid ring while the centre stays empty
+    // (the orange + blue flames behind show through). Most silhouette-
+    // shaping fields (column widths, waists, branching, top extension)
+    // are intentionally OMITTED so they inherit from the main flame via
+    // mergeFlameCfg — that way the outline always matches whatever shape
+    // the orange currently has, including waist pinches and branching.
+    // The vertical colour gradient runs deep red at the base → purple
+    // bridge → vibrant blue at the tip.
+    //
+    //   outline.width  — ring thickness as a fraction of the column half-
+    //                    width (0.18 ≈ outer 18 % of the column is filled,
+    //                    inner 82 % is transparent core).
+    //   outline.soft   — edge smoothness; small values give a harder /
+    //                    sharper outline. 0.04 reads as a crisp ring.
+    tertiary: {
+      enabled:     true,
+      // Vertical gradient — deep red at the base, purple bridge in the
+      // middle, vibrant blue at the tip.
+      colorBottom: '#B81A0E',
+      colorMid:    '#5D1FA8',
+      colorTop:    '#2280FF',
+      brightness:  2.4,
+      opacity:     0.55,
+      // No shimmer / flares — the outline stays clean (no warm-tinted
+      // flicker, no chromatic flashes overriding the red→blue gradient).
+      // Branching is NOT overridden — it inherits the main flame's
+      // setting so the outline visibly splits whenever the orange does.
+      shimmer:   { enabled: false, intensity: 0, yMax: 0.4, speed: 1.3 },
+      flares:    { enabled: false, rate: 0, duration: 1.0,
+                   intensity: 0, yMax: 0.5, palette: [] },
+      outline: {
+        enabled: true,
+        width:   0.18,
+        soft:    0.04,
+      },
+    },
+
     // Galaxy starry-night mode. When viewMode === 'fireplace' the galaxy
     // shader lerps `uStarryMode` toward 1: nebula + warm core glow fade
     // out, deep-space goes pure black, and an extra dense star layer
@@ -1526,52 +1723,177 @@ export const ANIM = {
   },
 
   // -----------------------------------------------------------------------
-  // FIREPLACE — standalone Roman-horseshoe brick frame that wraps the
-  // OUTSIDE of the logo's bounding box. Lives in its own module
-  // (patterns/fireplace.js) and reads ONLY this config block — does not
-  // touch ANIM.arch.* and is not affected by it. Visible only in the
-  // 'fireplace' view mode (key 4).
-  //   gap          — distance from the logo's bbox to the inner face of
-  //                  the brick frame (units = scene units).
-  //   domeRise     — height of the half-ellipse dome above the bbox top.
-  //                  Larger = taller arch; smaller = flatter arch.
-  //   legHeight    — how far down the vertical brick legs reach from the
-  //                  bbox top before stopping. The hearth (bottom edge)
-  //                  is intentionally open.
-  //   arcSegments  — polyline resolution of the dome arc (≥8 recommended).
-  //   brickColor   — surround stone colour.
-  //   brickZLift   — extra Z push toward the camera on the brick layer.
-  //   brick.*      — per-brick dimensions; `depth` is the spacing along
-  //                  the curve, so smaller = more bricks.
-  //   petals.*     — muqarnas-style pointed-arch cells lining the inner
-  //                  face with tips facing the logo. `spacing` controls
-  //                  cell pitch along the curve.
+  // FIREPLACE — brick frame that traces silhouette[0] directly so it
+  // hugs the actual SDG curve (dome + flares) rather than a bbox-derived
+  // half-ellipse. Lives in its own module (patterns/fireplace.js) and
+  // reads ONLY this config block. Visible in the 'fireplace' view mode.
+  //   springerYFrac — fraction of silhouette Y range below which the
+  //                   centerline is clipped. 0 = legs trace silhouette
+  //                   all the way down; 0.05 ≈ legs reach the bottom of
+  //                   the SDG body but don't wrap under it; 0.5 = drops
+  //                   the side flares entirely.
+  //   archInset     — distance to push the centerline INWARD from
+  //                   silhouette[0], units. 0 = brick outer face kisses
+  //                   the silhouette; bigger values float the whole
+  //                   archway inside the logo body.
+  //   brickColor    — surround stone colour.
+  //   brickZLift    — extra Z push toward the camera on the brick layer.
+  //   brick.*       — per-brick dimensions; `depth` is the spacing along
+  //                   the curve, so smaller = more bricks.
+  //   petals.*      — muqarnas-style pointed-arch cells lining the inner
+  //                   face with tips facing the logo. `spacing` controls
+  //                   cell pitch along the curve.
+  //   gap, domeRise, legHeight, arcSegments — INERT. Held over from the
+  //   older bbox-horseshoe centerline (now replaced by silhouette
+  //   tracing); kept here only so old presets don't crash.
   // -----------------------------------------------------------------------
   fireplace: {
-    enabled:     true,
-    gap:         0.6,
-    domeRise:    undefined,   // undefined → defaults to bbox-width * 0.45
-    legHeight:   undefined,   // undefined → defaults to bbox-height * 0.55
-    arcSegments: 24,
-    brickColor:  '#9A7544',
-    brickZLift:  0.0,
+    enabled:        true,
+    // Tiny non-zero springerYFrac drops silhouette[0]'s bottom horizontal
+    // edge from the longest-above-Y run so the band reads as a clean
+    // upside-down U (top + sides) instead of wrapping across the floor.
+    springerYFrac:  0.02,
+    archInset:      2.0,
+    // Dark voussoir colour — sharp contrast against the tan brick wall
+    // fill (arch.floor + topLayer) so the rim reads as a distinct ring.
+    brickColor:  '#3A2918',
+    // Push the whole fireplace forward so the entire brick body lands
+    // in front of arch.topLayer's outermost step (~gateFrontZ + 2.85).
+    // 3.0 = brick back face at gateFrontZ + 3.0, fully clearing the step.
+    brickZLift:  3.0,
     bricks: { enabled: true },
+    // Ember-flicker emissive tint on the brick rim — same domain-warped
+    // fbm the central flame uses, grafted onto the brick's StandardMaterial
+    // via onBeforeCompile. PBR shading is preserved (bricks still read as
+    // 3D stone) but they glow with subtle flickering ember light.
+    //   strength  — final emissive multiplier. 0 disables (skips the
+    //               onBeforeCompile patch entirely). 0.4-0.8 = subtle
+    //               coals; >1 = clearly fiery.
+    //   scale     — noise frequency in object-local XY. Higher = smaller
+    //               flecks; lower = broader flame plates.
+    //   speed     — vertical scroll speed (units/sec). Bigger = quicker
+    //               licking.
+    //   warp      — domain-warp strength; 0 = un-warped fbm (clean
+    //               clouds); 1.5 = full flame-style turbulence.
+    //   hotColor  — colour at noise peaks (the visible flame tongues).
+    //   coldColor — colour in noise troughs (dark embers between).
+    ember: {
+      strength: 0.7,
+      scale:    0.18,
+      speed:    0.7,
+      warp:     1.4,
+      hotColor:  '#FFB060',
+      coldColor: '#3A0E04',
+    },
     brick: {
-      width:       1.4,   // local-X — long axis pointing at the camera
-      height:      2.4,   // local-Y — radial outward thickness
-      depth:       1.6,   // local-Z — along-curve spacing (≈ brick length tangentially)
+      width:       2.2,   // local-X — long axis pointing at the camera
+      height:      4.0,   // local-Y — radial outward thickness (chunkier rim)
+      depth:       1.8,   // local-Z — along-curve spacing
       mortarGap:   0.06,
       faultAmount: 0.05,
     },
     petals: {
-      enabled:    true,
-      length:     2.0,    // radial extent toward logo centre
-      width:      1.6,    // tangential width along the curve
-      thickness:  0.4,    // Z protrusion
-      spacing:    1.6,    // along-curve pitch (smaller = denser)
-      zLift:      0.05,   // forward of gate-frame front face
-      color:      '#7A5A38',
+      enabled:      false,
+      length:       6.0,    // radial extent toward logo centre (longer = more visible)
+      width:        3.0,    // tangential width along the curve
+      thickness:    0.5,    // Z protrusion
+      spacing:      2.2,    // along-curve pitch (smaller = denser)
+      zLift:        0.0,    // additional forward push past the brick-centre anchor
+      // How far inward (toward logo centre) to push the petal base from
+      // silhouette[0]. Defaults to brick.height so the base sits exactly
+      // flush with the inner face of the brick band.
+      inwardOffset: undefined,
+      // Warm contrast colour so petals pop against the dark voussoirs.
+      color:        '#E06A3A',
     },
+    // Inner hex band — tessellated pointy-top hexagons filling the inner
+    // lining of the horseshoe. The outermost row's flat face kisses the
+    // inner brick face; successive rows are pushed inward by 1.5·radius
+    // and offset along the tangent by half a hex-width so adjacent rows
+    // interlock (standard hex packing). The hex grid is laid out in the
+    // curve's LOCAL frame at each sample (local-X = tangent, local-Y =
+    // radial), so the tiling wraps around the horseshoe instead of being
+    // drawn in flat world XY.
+    //   radius            — hex circumradius (vertex-to-centre).
+    //                       Width across flats = √3·radius.
+    //   depth             — extrusion thickness on world-Z.
+    //   rowCount          — how many hex rows deep the band runs (1 =
+    //                       single row hugging the brick face; 3 = a
+    //                       three-tile band reaching further inward).
+    //   baseInwardOffset  — distance from silhouette[0] (after archInset)
+    //                       at which row 0 sits. undefined → brick.height
+    //                       so the outermost row is flush with the inner
+    //                       brick face.
+    //   alongOffset       — bonus tangential shift applied to every hex
+    //                       (rotates the whole band along the curve).
+    //   zLift             — extra Z above the brick centre. 0 = co-planar.
+    //   color             — hex tile colour.
+    innerHexes: {
+      enabled:          true,
+      radius:           7.0,
+      depth:            0.5,
+      rowCount:         1,
+      // halfCut on  → pointy-top hex sliced along its horizontal
+      //               diameter; only the upper half is drawn. The cut
+      //               edge runs along the inner brick wall (curve
+      //               tangent), the rounded half points inward toward
+      //               the logo. Default base offset = brick.height so
+      //               the cut edge sits flush against the wall.
+      // halfCut off → full pointy-top hex. Default base offset =
+      //               brick.height + radius so the hex's outer edge
+      //               flushes with the inner brick face (no radial
+      //               overlap with the brick rim).
+      halfCut:          true,
+      // undefined → resolved by halfCut above. Set explicitly to override.
+      baseInwardOffset: undefined,
+      alongOffset:      0.0,
+      // pitchScale multiplies the natural touching-hex pitch along the
+      // tangent. 1.0 = adjacent flat edges kiss; >1 introduces a gap
+      // between tiles. 1.15 leaves a small gap for visual breathing.
+      pitchScale:       1.15,
+      zLift:            0.05,
+      color:           '#B8915A',
+      // Outline — when true (or outlineColor is set), every hex tile
+      // gets a LineSegments edge stroke laid over its mesh.
+      outline:          false,
+      outlineColor:    '#1a0d05',
+    },
+  },
+
+  // -----------------------------------------------------------------------
+  // DOMINO-FLIP — looping radial wave across every brick in the scene
+  // (arch.floor + topLayer + fireplace rim). Press 'd' to TOGGLE the
+  // loop on/off, or call window.__triggerDominoes() in devtools.
+  // Implementation: src/dominoes.js. At each cycle start we rank every
+  // brick by 2D Euclidean distance to the brick mass's CENTROID
+  // (DESCENDING) — outermost circular ring fires first, next ring
+  // inward fires next, and so on, so the wave reads as concentric
+  // circles collapsing toward the centre regardless of the underlying
+  // silhouette shape.
+  //
+  // Concurrent flippers ≈ duration / stagger. Bigger ratio = thicker
+  // wavefront (more bricks in flight at once); smaller ratio = sharp
+  // single-brick-deep ripple.
+  //
+  //   stagger  — seconds between adjacent bricks' start times. Smaller =
+  //              denser wavefront.
+  //   duration — seconds for a single brick's full rotation. Bigger =
+  //              wavefront stays alive longer; more overlap with
+  //              neighbours' flips.
+  //   angle    — radians to rotate. Math.PI * 2 = full 360° spin that
+  //              returns to rest. Math.PI = half-flip that settles in
+  //              the upside-down pose.
+  //   axis     — WORLD-frame rotation axis [x,y,z]. [1,0,0] = every
+  //              brick tips around the world horizontal axis (the
+  //              classic forward "domino fall"); [0,1,0] = world-Y
+  //              spin (bricks rotate like a wheel on a pole);
+  //              [0,0,1] = world-Z spin (in-screen pinwheel).
+  // -----------------------------------------------------------------------
+  dominoFlip: {
+    stagger:  0.025,        // ~100 bricks flipping at once with duration 2.5
+    duration: 2.5,
+    angle:    Math.PI * 2,
+    axis:     [1, 0, 0],
   },
 };
 

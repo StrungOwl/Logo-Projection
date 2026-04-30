@@ -11,6 +11,7 @@ import { loadLogo } from './logo.js';
 import { addPatternLayers } from './patterns-layer.js';
 import { addOverlay } from './3DOverlay.js';
 import { addParticles, updateParticles } from './particles.js';
+import { toggleDominoes, updateDominoes } from './dominoes.js';
 
 const { scene, camera, renderer, controls } = createScene();
 const lights = createLights(scene);
@@ -55,6 +56,12 @@ const ctx = {
   camera,
   renderer,
   baseColorScratch:   new THREE.Color(),
+  // Separate clock that pauses while the fractal zoom is animating, so
+  // the logo body breath + lattice/twinkle stroke uniforms freeze at
+  // their last value during the dive (any pulse on top of the dive's
+  // own brightness motion reads as flicker). When the fractal settles
+  // back to rest, this clock resumes from where it paused — no snap.
+  brightnessTime:     0,
 };
 
 loadLogo().then((logo) => {
@@ -80,6 +87,7 @@ loadLogo().then((logo) => {
   ctx.flameLights        = patternResult.flameLights || [];
   ctx.fireplaceGroup     = patternResult.fireplaceGroup;
   ctx.updateFireplace    = patternResult.updateFireplace;
+  ctx.silhouettePolygons = patternResult.silhouettePolygons;
 
   // cascadeState is passed in so the overlay can sync its brick↔petals
   // morph to the cascade's all-at-center window when ANIM.timings.playAll
@@ -194,10 +202,23 @@ export function tick(t, dt) {
     ctx.overlayMaskMesh.visible = showFlowers || showHexBrick;
   }
 
+  // Brightness clock — pauses while the fractal zoom is animating
+  // (clones visible OR displacement non-zero). The dive's own brightness
+  // motion is dramatic enough that any background breath / pulse / stroke
+  // twinkle layered on top reads as flicker; freezing those during the
+  // zoom keeps the eye on the fractal motion. The clock resumes
+  // seamlessly when the fractal settles back to rest, so the logo body
+  // breath continues from where it paused — no snap-back jump.
+  const fractalRunning = ctx.fractalState
+    && ((ctx.fractalState.cloneOp ?? 0) > 0.01
+     || (ctx.fractalState.lambda  ?? 0) > 0.01);
+  if (!fractalRunning) ctx.brightnessTime += dt;
+  const tBright = ctx.brightnessTime;
+
   // Logo base brightness — sine-wave breath between min and max over `period` seconds.
   if (ctx.logoMaterials) {
     const lb = ANIM.logoBase;
-    const phase = (t / Math.max(lb.period, 1e-3)) * Math.PI * 2;
+    const phase = (tBright / Math.max(lb.period, 1e-3)) * Math.PI * 2;
     const k01 = 0.5 + 0.5 * Math.sin(phase);
     const factor = lb.brightnessMin + (lb.brightnessMax - lb.brightnessMin) * k01;
     ctx.baseColorScratch.set(COLORS.logo.base).multiplyScalar(factor);
@@ -214,7 +235,7 @@ export function tick(t, dt) {
     }
   }
 
-  for (let i = 0; i < ctx.strokeTimeUniforms.length; i++) ctx.strokeTimeUniforms[i].value = t;
+  for (let i = 0; i < ctx.strokeTimeUniforms.length; i++) ctx.strokeTimeUniforms[i].value = tBright;
 
   // Row cascade runs BEFORE both overlay and sparks: the overlay reads
   // cascadeState.playAllT to gate its brick↔petals morph to the all-at-
@@ -243,6 +264,9 @@ export function tick(t, dt) {
   if (ctx.updateOverlay)    ctx.updateOverlay(t);
   if (ctx.updateArch)       ctx.updateArch(t, dt);
   if (ctx.updateFireplace)  ctx.updateFireplace(t, dt);
+  // Domino-flip wave — no-op when idle; runs through all registered
+  // bricks once per trigger (key 'd' or window.__triggerDominoes()).
+  updateDominoes(t);
   // Flame body shader, sparks, and flickering point light — runs every
   // frame regardless of mode so the flame keeps "warming up" off-screen
   // (no first-frame popping in when switching to mode 5).
@@ -381,6 +405,15 @@ if (typeof window !== 'undefined') {
         handled = true;
       }
       if (handled) e.preventDefault();
+      return;
+    }
+    // Lowercase 'd' (no modifiers) — toggle the domino-flip loop on/off.
+    // First press starts continuous waves; second press snaps bricks back
+    // to rest.
+    if (e.code === 'KeyD' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      const on = toggleDominoes(scene, clock.elapsedTime);
+      console.log(`[dominoes] ${on ? 'on' : 'off'}`);
       return;
     }
     // Digit keys 0–4 (no modifiers) switch ANIM.viewMode.

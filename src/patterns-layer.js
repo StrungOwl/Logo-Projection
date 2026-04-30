@@ -821,11 +821,62 @@ export function addPatternLayers(logoMesh, meta, renderer) {
         }
       });
 
+      // Per-tile reveal stagger. For every cascade-tagged tile in the
+      // cloned panel + underlay, store a normalized phase ∈ [0,1] that
+      // mixes the tile's radial position (innermost first, outermost
+      // last) with a per-tile random offset. The mix is controlled by
+      // `revealStaggerJitter`:
+      //   0   → purely radial (clean wave from the focal centre outward —
+      //         every tile in the same ring fires at exactly the same
+      //         scale, which concentrates "tiles arriving at peak" in a
+      //         narrow window and leaves a faint brightness pulse).
+      //   1   → purely random (each rosette / hex pops in on its own
+      //         schedule, no ring structure).
+      //   mid → radial trend with per-tile jitter — the bloom-from-centre
+      //         feel survives, but individual flowers within a ring grow
+      //         on their own timing so the perceived wave of completion
+      //         is smeared across the whole zoom and any residual flash
+      //         disappears into the noise.
+      // Each clone draws a fresh random sequence, so the diving stack
+      // doesn't replay the same pattern at every level.
+      const revealTiles = [];
+      const jitterMix = Math.min(1, Math.max(0,
+        (ANIM.fractalZoom && ANIM.fractalZoom.revealStaggerJitter) ?? 0));
+      const speedMin = Math.max(0.05,
+        (ANIM.fractalZoom && ANIM.fractalZoom.revealSpeedMin) ?? 1);
+      const speedMax = Math.max(speedMin,
+        (ANIM.fractalZoom && ANIM.fractalZoom.revealSpeedMax) ?? 1);
+      [cp, cu].forEach(g => g.traverse(o => {
+        if (o.userData && o.userData.baseX !== undefined) {
+          const r = o.userData.radius || 0;
+          const radialPhase = maxRadius > 1e-4 ? r / maxRadius : 0;
+          const randomPhase = Math.random();
+          const phase = radialPhase * (1 - jitterMix) + randomPhase * jitterMix;
+          // Per-tile growth speed multiplier ∈ [speedMin, speedMax].
+          // Higher = tile zips through its reveal window quickly; lower
+          // = tile takes longer to reach full size. Combined with the
+          // randomized start phase, every flower has a unique
+          // "personality" through the zoom — no two rosettes grow on
+          // the same schedule, which is what fully kills the residual
+          // wave-front read.
+          const speed = speedMin + Math.random() * (speedMax - speedMin);
+          revealTiles.push({
+            mesh: o,
+            revealPhase: phase,
+            speed,
+            baseScaleX: o.scale.x,
+            baseScaleY: o.scale.y,
+            baseScaleZ: o.scale.z,
+          });
+        }
+      }));
+
       // Continuous Droste dive: every clone is identical at construction.
       // Their per-frame role (depth, scale, opacity, rotation) is computed
       // entirely from the global d(t) in applyDive — no static per-clone
       // scaleFactor or stagger offset.
-      clones.push({ pivot, fadeables, cloneScaleUniform });
+      clones.push({ pivot, fadeables, cloneScaleUniform, revealTiles,
+                    lastRevealMode: 'unset' });
     }
   }
 
@@ -876,9 +927,10 @@ export function addPatternLayers(logoMesh, meta, renderer) {
   // hold and the long dive's plateau, so re-applying identical values
   // every frame burned cycles writing the same numbers to hundreds of
   // meshes/materials. Skipping no-op writes is a major perf win.
-  let lastLambda = -999;
-  let lastDiveD  = NaN;
-  let lastDiveOp = NaN;
+  let lastLambda   = -999;
+  let lastDiveD    = NaN;
+  let lastDiveOp   = NaN;
+  let lastFadeMode = 'unset';
 
   function applyDisplacement(lambda) {
     if (Math.abs(lambda - lastLambda) < 1e-4) return;
@@ -920,7 +972,14 @@ export function addPatternLayers(logoMesh, meta, renderer) {
   // peak → grown past peak → escape) as d advances; modular arithmetic
   // makes that rotation seamless because the wraparound happens where
   // opacity is already zero.
-  function applyDive(d, opacityMul = 1.0) {
+  //
+  // `opacityMul` is the global cloneOp envelope (1 during dive, 0 in the
+  // hold's pure-static window, ramping in/out across the fade windows).
+  // `fadeMode` annotates the fade direction so per-clone fade staggering
+  // (cloneFadeStagger) can apply during hold fade-in / fade-out without
+  // perturbing the steady-state dive: 'fadeIn' = 1 → 0 (entering hold),
+  // 'fadeOut' = 0 → 1 (leaving hold), 'steady' = no stagger applied.
+  function applyDive(d, opacityMul = 1.0, fadeMode = 'steady') {
     const cfg = ANIM.fractalZoom || {};
     const N = clones.length;
     if (N === 0) return;
@@ -936,15 +995,20 @@ export function addPatternLayers(logoMesh, meta, renderer) {
       return;
     }
     if (Math.abs(d - lastDiveD) < 1e-5 &&
-        Math.abs(opacityMul - lastDiveOp) < 1e-4) return;
-    lastDiveD  = d;
-    lastDiveOp = opacityMul;
+        Math.abs(opacityMul - lastDiveOp) < 1e-4 &&
+        fadeMode === lastFadeMode) return;
+    lastDiveD     = d;
+    lastDiveOp    = opacityMul;
+    lastFadeMode  = fadeMode;
     const scaleF = cfg.cloneScaleFactor ?? 0.5;
     const g      = 1 / Math.max(scaleF, 0.05);   // growth factor between layers
     const sigma  = Math.max(cfg.droSigma ?? 0.45, 1e-3);
     const rotPer = cfg.droLayerRotation ?? 0.0;
     const half   = N * 0.5;
     const lnG    = Math.log(g);
+    const revealSpread    = Math.min(0.95, Math.max(0, cfg.revealStaggerSpread ?? 0.0));
+    const revealOvershoot = Math.max(0, cfg.revealOvershoot ?? 0.0);
+    const fadeStagger     = Math.min(0.95, Math.max(0, cfg.cloneFadeStagger ?? 0.0));
     for (let k = 0; k < N; k++) {
       // Each clone's effective depth wraps modulo N into [-N/2, N/2).
       // Subtracting k staggers them by one Droste step apiece, so at any
@@ -956,13 +1020,42 @@ export function addPatternLayers(logoMesh, meta, renderer) {
       // the exponent is huge so opacity ≈ 0 — that's where the modular
       // wraparound happens, hiding the seam.
       const logS = r * lnG;
-      const op   = Math.exp(-(logS / sigma) * (logS / sigma)) * opacityMul;
+      let op = Math.exp(-(logS / sigma) * (logS / sigma)) * opacityMul;
+
+      // Per-clone fade stagger (only during hold's fade-in / fade-out).
+      // Shallow clones (|r| close to 0) lead the crossfade; deeper clones
+      // (|r| close to N/2) lag by up to `fadeStagger` of the window. So
+      // when fading back in toward the dive, the closest-to-peak layer
+      // appears first and deeper layers slip in behind it — the user no
+      // longer sees "a few patterns appear simultaneously". When fading
+      // INTO static, the same shift makes deep clones dissolve away
+      // before the shallow layer finishes its descent. The global
+      // cloneOp is already eased (ease-out cubic, set in updateFractalZoom),
+      // so we apply a plain smoothstep per-clone — soft start + end on
+      // each layer's local ramp window without double-easing.
+      if (fadeStagger > 0 && fadeMode !== 'steady') {
+        const rNorm = Math.min(1, Math.abs(r) / Math.max(half, 1e-4));
+        const shift = rNorm * fadeStagger;
+        // local in [0,1] = how far this clone is into its OWN fade window.
+        // Same formula for fadeIn / fadeOut: opacityMul itself encodes
+        // direction (1→0 vs 0→1), so local mirrors that.
+        let local = (opacityMul - shift) / Math.max(1e-3, 1 - shift);
+        if (local <= 0)      local = 0;
+        else if (local >= 1) local = 1;
+        else                 local = local * local * (3 - 2 * local); // smoothstep
+        const baseEnv = Math.exp(-(logS / sigma) * (logS / sigma));
+        op = baseEnv * local;
+      }
+
       // Hide essentially-invisible clones so three.js skips their draw
       // calls. With sigma=0.7 and N=5 there are always 1–2 clones at
       // op < 1e-3 (the wrap-around layers); culling them costs nothing
       // visually and saves panel+underlay draw work each frame.
       if (op < 1e-3) {
         c.pivot.visible = false;
+        // Park reveal state so the next time this clone re-emerges we
+        // re-apply the staggered scale-up from scratch.
+        c.lastRevealMode = 'hidden';
         continue;
       }
       c.pivot.visible = true;
@@ -976,6 +1069,70 @@ export function addPatternLayers(logoMesh, meta, renderer) {
         const f = c.fadeables[i];
         if (f.kind === 'uniform') f.mat.uniforms.uMaxOpacity.value = f.base * op;
         else                      f.mat.opacity                    = f.base * op;
+      }
+
+      // Per-tile reveal stagger inside this clone. As the pivot scale
+      // grows from 0 toward 1, each tile's LOCAL scale ramps from 0 → 1
+      // on its own curve, with `revealPhase` (0 = innermost, 1 = outer
+      // ring) controlling how late it joins. Net effect: each clone
+      // appears to bloom outward from its focal centre instead of
+      // arriving as a uniform rectangle whose outer tiles all reach the
+      // gate-frame edge at the same instant. Once the clone has grown
+      // past peak we lock every tile at full local scale and skip the
+      // per-tile sweep until the clone wraps back to the emerging side.
+      if (revealSpread <= 0) {
+        // Stagger disabled — make sure tiles are at their cloned base
+        // scale (idempotent fast path, no per-frame writes once set).
+        if (c.lastRevealMode !== 'full-norevealcfg') {
+          for (let i = 0; i < c.revealTiles.length; i++) {
+            const rt = c.revealTiles[i];
+            rt.mesh.scale.set(rt.baseScaleX, rt.baseScaleY, rt.baseScaleZ);
+          }
+          c.lastRevealMode = 'full-norevealcfg';
+        }
+      } else if (scale >= 1.0 + revealOvershoot) {
+        // Past peak (and past every tile's individual end-scale) — pin
+        // all tiles at full and skip per-frame writes.
+        if (c.lastRevealMode !== 'full') {
+          for (let i = 0; i < c.revealTiles.length; i++) {
+            const rt = c.revealTiles[i];
+            rt.mesh.scale.set(rt.baseScaleX, rt.baseScaleY, rt.baseScaleZ);
+          }
+          c.lastRevealMode = 'full';
+        }
+      } else {
+        // Growing — apply staggered per-tile reveal. Each tile's window
+        // is `[revealPhase × revealSpread, 1 + revealPhase × revealOvershoot]`:
+        //   phase=0 (innermost) reveals over scale [0, 1].
+        //   phase=1 (outermost) reveals over scale [revealSpread,
+        //                                           1 + revealOvershoot].
+        // Crucially, outermost tiles DON'T finish at scale=1 — they
+        // finish PAST it. So when the clone first reaches scale=1, its
+        // outer ring is still small / invisible and the gate-frame
+        // silhouette is NOT outlined by a wall of full-size rosettes.
+        // As the clone grows past scale=1, those outer tiles ramp up
+        // inside the hullClip silhouette mask, filling the rim
+        // gradually. By scale = 1+revealOvershoot every tile is at full.
+        // Per-tile `speed` warps the smoothstep so individual rosettes
+        // progress through their own window at their own rate.
+        for (let i = 0; i < c.revealTiles.length; i++) {
+          const rt = c.revealTiles[i];
+          const t0  = rt.revealPhase * revealSpread;
+          const t1  = 1 + rt.revealPhase * revealOvershoot;
+          const den = t1 - t0;
+          let f = den > 1e-4 ? (scale - t0) / den : 1;
+          if (f <= 0) {
+            rt.mesh.scale.set(0, 0, rt.baseScaleZ);
+            continue;
+          }
+          if (f >= 1) f = 1;
+          else {
+            f = f * f * (3 - 2 * f);
+            if (rt.speed !== 1) f = Math.pow(f, 1 / rt.speed);
+          }
+          rt.mesh.scale.set(rt.baseScaleX * f, rt.baseScaleY * f, rt.baseScaleZ);
+        }
+        c.lastRevealMode = 'growing';
       }
     }
   }
@@ -995,9 +1152,16 @@ export function addPatternLayers(logoMesh, meta, renderer) {
         if (f.kind === 'uniform') f.mat.uniforms.uMaxOpacity.value = 0;
         else                      f.mat.opacity                    = 0;
       }
+      // Reset per-tile scales + reveal state so the next emergence
+      // re-applies the staggered scale-up from scratch.
+      for (let i = 0; i < c.revealTiles.length; i++) {
+        const rt = c.revealTiles[i];
+        rt.mesh.scale.set(0, 0, rt.baseScaleZ);
+      }
+      c.lastRevealMode = 'unset';
     }
     // Invalidate the dive short-circuit so the next applyDive re-applies.
-    lastDiveD = NaN; lastDiveOp = NaN;
+    lastDiveD = NaN; lastDiveOp = NaN; lastFadeMode = 'unset';
   }
 
   function updateFractalZoom(t /*, dt */) {
@@ -1036,6 +1200,10 @@ export function addPatternLayers(logoMesh, meta, renderer) {
                        // during the static window so the original pattern
                        // is what's actually visible at rest)
     let holding = false;
+    let fadeMode = 'steady';   // 'fadeIn' / 'fadeOut' during hold crossfade
+                               // windows — gates per-clone fadeStagger in
+                               // applyDive so the dive's steady state isn't
+                               // perturbed.
 
     if (fractalState.phase === 'rest') {
       // Initial settle before the very first dive. After triggerDelay
@@ -1134,19 +1302,39 @@ export function addPatternLayers(logoMesh, meta, renderer) {
       const lIn   = Math.min(lDur, holdIn);
       const lOut  = Math.min(lDur, holdOut);
       if (introElapsed < holdIn) {
-        cloneOp = 1 - smoothstep(introElapsed / tIn);
+        // Fade IN to static — clones dissolve out toward the canonical
+        // rest pattern. Ease-OUT cubic on the descent: quick early drop
+        // off the dive's full opacity, then a long soft tail into 0 so
+        // the last sliver of clone presence dies away gently rather than
+        // snapping to nothing.
+        const u = introElapsed / tIn;
+        cloneOp = Math.pow(1 - Math.min(1, u), 3);   // 1 → 0, ease-out
         lambda  = 1 - smoothstep(introElapsed / Math.max(lIn, 1e-3));
-      } else if (introElapsed < Math.max(0, holdDur - holdOut)) {
+        fadeMode = 'fadeIn';
+      } else if (cfg.oneShot || introElapsed < Math.max(0, holdDur - holdOut)) {
+        // One-shot mode: after the single intro+dive completes and the
+        // fade-IN to static finishes, stay parked at rest forever. Skip
+        // both the fade-OUT and the dive-resume branches so the pattern
+        // settles into its canonical look and never zooms again.
         lambda  = 0;
         cloneOp = 0;
         holding = true;
       } else if (introElapsed < holdDur) {
+        // Fade OUT of static — clones well back in. Ease-OUT cubic
+        // (1 - (1-u)³) so the Droste nesting reappears with a quick
+        // initial presence and then a long soft approach toward full
+        // opacity, instead of the previous smoothstep that hit peak
+        // velocity midway and produced the brightness-flash feel. The
+        // per-clone fadeStagger inside applyDive then spaces shallow vs
+        // deep layers so we don't see "a few patterns appear at once".
         const offset = introElapsed - (holdDur - holdOut);
-        cloneOp = smoothstep(offset / tOut);
+        const u = Math.min(1, offset / tOut);
+        cloneOp = 1 - Math.pow(1 - u, 3);            // 0 → 1, ease-out
         // λ stays at 0 until the last lOut seconds, then ramps up.
         const lambdaStart = holdOut - lOut;
         lambda  = smoothstep(Math.max(0, offset - lambdaStart) /
                              Math.max(lOut, 1e-3));
+        fadeMode = 'fadeOut';
       } else {
         // Hold complete — dive resumes from the held d.
         fractalState.phase      = 'dive';
@@ -1166,7 +1354,7 @@ export function addPatternLayers(logoMesh, meta, renderer) {
     fractalState.active = holding ? 1 : (1 - lambda);
 
     applyDisplacement(lambda);
-    applyDive(d, cloneOp);
+    applyDive(d, cloneOp, fadeMode);
   }
 
   return { strokeTimeUniforms, sparkSystems, patternsToRefresh,
@@ -1182,5 +1370,9 @@ export function addPatternLayers(logoMesh, meta, renderer) {
            updateFlame:  flame.update,
            flameLights:  flame.lights,
            fireplaceGroup:  fireplace.group,
-           updateFireplace: fireplace.update };
+           updateFireplace: fireplace.update,
+           // Mesh-local silhouette polygons (logoMesh sits at world origin
+           // so these double as world-XY for downstream consumers like
+           // src/dominoes.js).
+           silhouettePolygons };
 }

@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell($loc = Get-Location; Write-Output $loc.Path; Get-ChildItem -Force C:\\\\Users\\\\sydne\\\\OneDrive\\\\Documents\\\\GitHub\\\\SP26_Art\\\\Logo-Projection | Format-Table Name, Length)",
+      "PowerShell($dir = 'C:\\\\Users\\\\sydne\\\\OneDrive\\\\Documents\\\\GitHub\\\\SP26_Art\\\\Logo-Projection'; cmd /c \"dir /A /B `\"$dir`\"\")"
+    ]
+  }
+}
