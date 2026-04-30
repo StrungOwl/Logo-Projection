@@ -538,9 +538,14 @@ export const ANIM = {
                               // long as fast tiles to traverse the same
                               // window, giving each rosette a clearly
                               // distinct "personality" through the zoom.
-    revealOvershoot:   0.70,  // Each tile's reveal window is
+    revealOvershoot:   0.00,  // Each tile's reveal window is
                               // [revealPhase × revealSpread,
                               //  1 + revealPhase × revealOvershoot].
+                              // 0 = every tile finishes revealing exactly
+                              // at clone-scale=1 (correct for oneShot mode
+                              // where r>0 is clamped, so clones never grow
+                              // past 1). Raise > 0 only for multi-shot mode
+                              // where clones grow past 1 during the dive.
                               // So the OUTERMOST tiles (revealPhase ≈ 1)
                               // don't finish revealing until the clone
                               // has grown PAST scale=1 by this much.
@@ -1048,9 +1053,15 @@ export const ANIM = {
       // letter descenders), so the raw LL/LR panel-quadrant centroid
       // lands below the visible wall. Lift y by ~+40 to push the
       // lanterns up into the lower-wall band.
+      // All four lanterns stacked in the LOWER side walls (matching the
+      // reference image's bottom-corner alcoves). Panels 0/1 (UL/UR)
+      // get a large negative yOffset to drag them DOWN below the
+      // central star into the upper-lower-wall band; panels 2/3 (LL/LR)
+      // keep a +15 offset which lifts them past the descenders into
+      // the lower-lower-wall band. Result: 2 stacked lanterns per side.
       positions: [
-        { panel: 0, yOffset:  4 }, { panel: 1, yOffset:  4 },
-        { panel: 2, yOffset: 40 }, { panel: 3, yOffset: 40 },
+        { panel: 0, yOffset: -45 }, { panel: 1, yOffset: -45 },
+        { panel: 2, yOffset:  30 }, { panel: 3, yOffset:  30 },
       ],
     },
 
@@ -1236,6 +1247,49 @@ export const ANIM = {
     color:           '#8B5A2B',
     gradientDark:    '#5C3A1B',
     gradientBright:  '#A87242',
+  },
+
+  // -----------------------------------------------------------------------
+  // ARCH CARVED — experimental viewMode (key 5). Fork of ANIM.arch where
+  // the topLayer staircase is built MUCH deeper (more steps, taller Z
+  // extrusion) and bricks are STRATEGICALLY removed in patterns to
+  // expose lantern alcoves carved into the deeper wall. The user's
+  // playground for sculpting carved-brick muqarnas-style patterns.
+  // Inherits everything from ANIM.arch unless explicitly overridden;
+  // the patterns-layer.js wiring shallow-merges ANIM.arch onto this
+  // block before passing as configOverride.
+  // -----------------------------------------------------------------------
+  archCarved: {
+    // Deeper wall: 8 stair tiers (vs 4 in fireplace), with a much
+    // larger maxStepHeight so the outermost step pops dramatically
+    // forward of the floor.
+    topLayer: {
+      enabled:        true,
+      reachFraction:  0.66,
+      stepCount:      8,
+      minStepHeight:  0.6,
+      maxStepHeight:  6.0,
+      zLift:          0.05,
+      // 8 tiers: alternate brick / hex / brick / hex / brick / hex /
+      // brick / hex so the carved deeper wall has a busier rhythm.
+      layerKinds:     ['brick','hex','brick','hex','brick','hex','brick','hex'],
+      niches:         [],            // populated by createArch from lantern positions
+      widthScale:     1.0,
+      depthScale:     1.0,
+      mortarGapX:     0.08,
+      mortarGapY:     0.0,
+      maskInset:      0.4,
+      // Larger hex Z scale so the recessed grooves are deeper / more
+      // visually pronounced against the chunkier brick steps.
+      hexZScale:      0.35,
+      // hexColor inherits gradientDark from below if undefined.
+      underHexes: { enabled: false },
+      cornerHexes: { enabled: false },
+    },
+    // Lanterns + floor + colours intentionally OMITTED here so the
+    // shallow merge ({ ...ANIM.arch, ...ANIM.archCarved }) inherits
+    // them from ANIM.arch (an explicit `undefined` would clobber the
+    // inherited value).
   },
 
   // -----------------------------------------------------------------------

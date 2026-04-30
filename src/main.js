@@ -44,6 +44,8 @@ const ctx = {
   overlayHexRoots:    [],
   overlayMaskMesh:    null,
   archGroup:          null,
+  archCarvedGroup:    null,
+  updateArchCarved:   null,
   updateArch:         null,
   triggerArchCascade: null,
   flameGroup:         null,
@@ -86,6 +88,8 @@ loadLogo().then((logo) => {
   ctx.latticeGroup       = patternResult.latticeGroup;
   ctx.gateFrameGroup     = patternResult.gateFrameGroup;
   ctx.archGroup          = patternResult.archGroup;
+  ctx.archCarvedGroup    = patternResult.archCarvedGroup;
+  ctx.updateArchCarved   = patternResult.updateArchCarved;
   ctx.updateArch         = patternResult.updateArch;
   ctx.triggerArchCascade = patternResult.triggerArchCascade;
   ctx.flameGroup         = patternResult.flameGroup;
@@ -161,16 +165,23 @@ export function tick(t, dt) {
   const showHexBrick  = (mode === 'all' || mode === 'hex');
   const showFlowers   = (mode === 'all' || mode === 'flowers');
   const showFireplace = (mode === 'fireplace');
+  const showCarved    = (mode === 'carved');
+  // Both fireplace + carved share the central flame, fireplace voussoir
+  // ring, and the fade-to-black galaxy backdrop. They differ only in
+  // which arch brick layer is shown — archGroup (fireplace) vs
+  // archCarvedGroup (deeper-wall experimental version).
+  const showFireOrCarved = showFireplace || showCarved;
   if (ctx.panelGroup)   ctx.panelGroup.visible   = showPanel;
   if (ctx.latticeGroup) ctx.latticeGroup.visible = showLattice;
   if (ctx.archGroup)    ctx.archGroup.visible    = showFireplace;
-  if (ctx.flameGroup)   ctx.flameGroup.visible   = showFireplace;
-  if (ctx.fireplaceGroup) ctx.fireplaceGroup.visible = showFireplace;
-  // Hide the smooth extruded gate-frame ring when fireplace mode wants
-  // to own the perimeter look — set ANIM.arch.hideGateFrame in config to
-  // drop the procedural frame so only the brick layers read.
+  if (ctx.archCarvedGroup) ctx.archCarvedGroup.visible = showCarved;
+  if (ctx.flameGroup)   ctx.flameGroup.visible   = showFireOrCarved;
+  if (ctx.fireplaceGroup) ctx.fireplaceGroup.visible = showFireOrCarved;
+  // Hide the smooth extruded gate-frame ring when fireplace/carved mode
+  // wants to own the perimeter look — set ANIM.arch.hideGateFrame in
+  // config to drop the procedural frame so only the brick layers read.
   if (ctx.gateFrameGroup) {
-    ctx.gateFrameGroup.visible = !(showFireplace && ANIM.arch && ANIM.arch.hideGateFrame);
+    ctx.gateFrameGroup.visible = !(showFireOrCarved && ANIM.arch && ANIM.arch.hideGateFrame);
   }
   // Three.js checks light.visible directly when collecting scene lights —
   // hiding the parent group does NOT remove the light from the shader's
@@ -179,26 +190,23 @@ export function tick(t, dt) {
   // mode is active.
   if (ctx.flameLights) {
     for (let i = 0; i < ctx.flameLights.length; i++) {
-      ctx.flameLights[i].visible = showFireplace;
+      ctx.flameLights[i].visible = showFireOrCarved;
     }
   }
-  // Hide the ember + white particle streams in fireplace mode. They
-  // emit from the inner-star outline and would visually clutter /
+  // Hide the ember + white particle streams in fireplace/carved mode.
+  // They emit from the inner-star outline and would visually clutter /
   // compete with the flame body in the same negative-space region.
   if (ctx.particleMats) {
-    const showParticles = !showFireplace;
+    const showParticles = !showFireOrCarved;
     if (ctx.particleMats.emberPoints) ctx.particleMats.emberPoints.visible = showParticles;
     if (ctx.particleMats.whitePoints) ctx.particleMats.whitePoints.visible = showParticles;
   }
-  // Strip the scene-wide PMREM env cubemap in fireplace mode so the grey
-  // ambient wash baked into every MeshStandardMaterial (arch bricks,
-  // gate frame, logo) goes away — without this, those materials read at
-  // ~constant brightness from the env reflection regardless of light
-  // state, defeating the "only the flame illuminates" goal. Gated by
-  // ANIM.flame.stripEnvironment (default true) so the behaviour is
-  // toggleable live in devtools. Always restored when leaving fireplace
-  // mode regardless of the flag.
-  const stripEnv = showFireplace
+  // Strip the scene-wide PMREM env cubemap in fireplace/carved mode so
+  // the grey ambient wash baked into every MeshStandardMaterial goes
+  // away — without this, those materials read at ~constant brightness
+  // regardless of light state, defeating the "only the flame
+  // illuminates" goal.
+  const stripEnv = showFireOrCarved
                 && (ANIM.flame && ANIM.flame.stripEnvironment !== false);
   scene.environment = stripEnv ? null : baseEnvironment;
   for (let i = 0; i < ctx.overlayFlowerRoots.length; i++) {
@@ -237,7 +245,7 @@ export function tick(t, dt) {
     // env reflection doesn't wash the body warm-grey on its own — the
     // flame's own point light should be the dominant illumination on
     // the logo body, with the body going dark between flicker peaks.
-    const envI = (ANIM.viewMode === 'fireplace')
+    const envI = (ANIM.viewMode === 'fireplace' || ANIM.viewMode === 'carved')
       ? ((ANIM.flame && ANIM.flame.envMapIntensity) ?? 0.08)
       : 1.0;
     for (let i = 0; i < ctx.logoMaterials.length; i++) {
@@ -274,6 +282,7 @@ export function tick(t, dt) {
   }
   if (ctx.updateOverlay)    ctx.updateOverlay(t);
   if (ctx.updateArch)       ctx.updateArch(t, dt);
+  if (ctx.updateArchCarved) ctx.updateArchCarved(t, dt);
   if (ctx.updateFireplace)  ctx.updateFireplace(t, dt);
   // Domino-flip wave — no-op when idle; runs through all registered
   // bricks once per trigger (key 'd' or window.__triggerDominoes()).
@@ -306,7 +315,7 @@ export function tick(t, dt) {
   // (warm nebula). Eased exponentially using the configured fadeSpeed
   // (1/sec).
   if (ctx.galaxyMat && ctx.galaxyMat.uniforms.uStarryMode) {
-    const targetStarry = (mode === 'fireplace') ? 1.0 : 0.0;
+    const targetStarry = (mode === 'fireplace' || mode === 'carved') ? 1.0 : 0.0;
     const fadeSpeed = (ANIM.flame && ANIM.flame.galaxyStarry && ANIM.flame.galaxyStarry.fadeSpeed) || 1.5;
     const blend = 1 - Math.exp(-fadeSpeed * dt);
     const u = ctx.galaxyMat.uniforms.uStarryMode;
@@ -357,7 +366,7 @@ export function tick(t, dt) {
     if (host === 'panel' || host === 'lattice') {
       hostVisible = (mode === 'all' || mode === 'pattern');
     } else if (host === 'arch') {
-      hostVisible = (mode === 'fireplace');
+      hostVisible = (mode === 'fireplace' || mode === 'carved');
     }
     let target = hostVisible ? 1 : 0;
     if (mode === 'all' && inOverlayWindow) target = 0;
@@ -449,7 +458,7 @@ if (typeof window !== 'undefined') {
     if (!e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
       const modeByKey = {
         Digit0: 'all', Digit1: 'pattern', Digit2: 'hex',
-        Digit3: 'flowers', Digit4: 'fireplace',
+        Digit3: 'flowers', Digit4: 'fireplace', Digit5: 'carved',
       };
       const next = modeByKey[e.code];
       if (next) {

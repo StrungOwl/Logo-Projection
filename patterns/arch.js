@@ -1537,10 +1537,14 @@ function placeOuterBrickArch({
 // into main.js's tick.
 // -----------------------------------------------------------------------
 export function createArch({ silhouette, maxZ, frameDepth = 0.5,
-                             gateFrameWidth = 1.6 }) {
-  const cfg = ANIM.arch || {};
+                             gateFrameWidth = 1.6, configOverride = null,
+                             groupName = 'arch' }) {
+  // configOverride lets a caller build a second, parallel arch group
+  // with different config (e.g. the 'carved' viewMode's deeper-wall
+  // experiment) without swapping ANIM.arch globally.
+  const cfg = configOverride || ANIM.arch || {};
   const group = new THREE.Group();
-  group.name = 'arch';
+  group.name = groupName;
   if (cfg.enabled === false) return { group, update: () => {}, triggerCascade: () => {} };
   if (!silhouette || !silhouette.length || !silhouette[0]) {
     return { group, update: () => {}, triggerCascade: () => {} };
@@ -1896,7 +1900,7 @@ export function createArch({ silhouette, maxZ, frameDepth = 0.5,
     // alcoves and lanterns stay synchronised by construction.
     let lanternPositions = [];
     const lantCfgEarly = cfg.lanterns;
-    if (lantCfgEarly?.enabled !== false && silhouette[0]) {
+    if (lantCfgEarly && lantCfgEarly.enabled !== false && silhouette[0]) {
       let lminX = Infinity, lmaxX = -Infinity, lminY = Infinity, lmaxY = -Infinity;
       for (const p of silhouette[0]) {
         if (p.x < lminX) lminX = p.x; if (p.x > lmaxX) lmaxX = p.x;
@@ -2089,7 +2093,7 @@ export function createArch({ silhouette, maxZ, frameDepth = 0.5,
   // or below the panel inlay.
   const lanternUpdaters = [];
   const lantCfg = cfg.lanterns;
-  if (lantCfg?.enabled !== false && silhouette[0]) {
+  if (lantCfg && lantCfg.enabled !== false && silhouette[0]) {
     let lminX = Infinity, lmaxX = -Infinity, lminY = Infinity, lmaxY = -Infinity;
     for (const p of silhouette[0]) {
       if (p.x < lminX) lminX = p.x; if (p.x > lmaxX) lmaxX = p.x;

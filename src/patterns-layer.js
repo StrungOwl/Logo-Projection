@@ -249,6 +249,30 @@ export function addPatternLayers(logoMesh, meta, renderer) {
   arch.group.position.set(cx, cy, 0);
   logoMesh.add(arch.group);
 
+  // Carved-mode arch — second parallel arch group built with a deeper
+  // brick wall + alternating tiers config. Toggled visible by viewMode
+  // 'carved' (key 5) so the user can hop between the regular fireplace
+  // and the experimental carved version without a page reload.
+  // Shallow-merge ANIM.archCarved over ANIM.arch so the carved block
+  // only needs to specify keys it overrides; everything else inherits.
+  const carvedCfg = ANIM.archCarved
+    ? { ...ANIM.arch, ...ANIM.archCarved }
+    : null;
+  let archCarved = null;
+  if (carvedCfg) {
+    archCarved = createArch({
+      silhouette:     silhouettePolygons,
+      maxZ,
+      frameDepth:     1.5,
+      gateFrameWidth,
+      configOverride: carvedCfg,
+      groupName:      'archCarved',
+    });
+    archCarved.group.position.set(cx, cy, 0);
+    archCarved.group.visible = false;          // shown via main.js mode gate
+    logoMesh.add(archCarved.group);
+  }
+
   // Sparks that hop along the arch's brick edges — same effect as the panel
   // sparks but the snap cloud is built from an invisible LineSegments layer
   // inside arch.group (see patterns/arch.js).
@@ -1145,13 +1169,25 @@ export function addPatternLayers(logoMesh, meta, renderer) {
     const revealSpread    = Math.min(0.95, Math.max(0, cfg.revealStaggerSpread ?? 0.0));
     const revealOvershoot = Math.max(0, cfg.revealOvershoot ?? 0.0);
     const fadeStagger     = Math.min(0.95, Math.max(0, cfg.cloneFadeStagger ?? 0.0));
+    const oneShotMode = !!cfg.oneShot;
     for (let k = 0; k < N; k++) {
       // Each clone's effective depth wraps modulo N into [-N/2, N/2).
       // Subtracting k staggers them by one Droste step apiece, so at any
       // instant the N clones occupy N evenly-spaced depths.
       let r = ((d - k + half) % N + N) % N - half;
-      const scale = Math.pow(g, r);
+      // OneShot mode: hide clones in the role-rotation half where they
+      // would grow PAST scale=1 (= the "larger flower" the user doesn't
+      // want). Clamping at r=0 means each clone is only visible while
+      // it's at or smaller than rest size — emerging from tiny → peak,
+      // never overgrowing past peak. The wrap (r jumping from +N/2 to
+      // -N/2) is hidden because both endpoints are clamped.
       const c = clones[k];
+      if (oneShotMode && r > 0) {
+        c.pivot.visible = false;
+        c.lastRevealMode = 'hidden';
+        continue;
+      }
+      const scale = Math.pow(g, r);
       // Gaussian opacity envelope around scale = 1 (r = 0). At r = ±N/2
       // the exponent is huge so opacity ≈ 0 — that's where the modular
       // wraparound happens, hiding the seam.
@@ -1390,52 +1426,54 @@ export function addPatternLayers(logoMesh, meta, renderer) {
       cloneScale = s;   // oneShot: leading clone grows 0 → 1
       d          = s;   // multi-shot: depth ramps 0 → 1 for handoff to dive
       if (u >= 1) {
-        if (cfg.oneShot) {
-          // Skip the Droste dive entirely — go straight to the held-at-rest
-          // window. holdD stays at 0 because applyDive isn't used in
-          // oneShot mode; cloneScale=1 freezes the leading clone at peak
-          // and the hold-fade-in path drops cloneOp + λ together so the
-          // canonical pattern emerges underneath. No "larger flower"
-          // copies appear because no clone ever grows past scale=1.
-          fractalState.phase      = 'hold';
-          fractalState.phaseStart = t;
-          fractalState.holdD      = 0;
-        } else {
-          fractalState.phase      = 'dive';
-          fractalState.phaseStart = t;
-          // Carry the d we ended intro at into the dive's start so the
-          // depth reading is continuous across the phase boundary.
-          fractalState.diveD0     = 1;
-        }
+        // Both oneShot and multi-shot flow into the Droste dive after
+        // intro completes. d is at 1 (one clone exactly at peak), so
+        // the dive picks up smoothly from there.
+        fractalState.phase      = 'dive';
+        fractalState.phaseStart = t;
+        fractalState.diveD0     = 1;
       }
     } else if (fractalState.phase === 'dive') {
-      // Eased Droste dive: d moves from startD → targetD with smoothstep
-      // over the full segment (slow start, peak speed midway, slow end).
-      // targetD is snapped to the next integer-d so the hold lands on an
-      // at-peak clone (visually identical to the pattern at rest). The
-      // Gaussian opacity envelope and modular role-rotation in applyDive
-      // don't depend on d's velocity, so easing is safe here.
-      lambda = 1;
+      // Droste dive: d advances continuously while clones role-rotate
+      // through the focal centre. In oneShot mode the dive is purely
+      // linear (no integer-snap, no easing) so the recursion looks
+      // continuous + infinite — clones cycle through emerge → peak →
+      // (clamped at 1, role swap) repeatedly. In multi-shot mode the
+      // dive eases to the next integer-d so a hold can land on an
+      // at-peak clone.
+      lambda     = 1;
+      cloneOp    = 1;
+      cloneScale = 1;
       const startD = fractalState.diveD0 ?? 1;
-      const stepsToCover = Math.max(1, Math.ceil(diveDur / Math.max(stepDur, 1e-3)));
-      const targetD = Math.round(startD + stepsToCover);
-      // Total segment duration = (targetD - startD) Droste steps at the
-      // configured stepDur (peak speed). With smoothstep the average
-      // speed is half of peak, so the segment takes 2× longer than the
-      // raw step count would suggest — that's the "slow it down" feel.
-      const segDur = (targetD - startD) * Math.max(stepDur, 1e-3);
-      const u = Math.min(1, introElapsed / segDur);
-      d = startD + (targetD - startD) * smoothstep(u);
-      if (u >= 1) {
-        d = targetD;
-        // Skip hold entirely if user dialed it to ≤ 0 (continuous dive).
-        if (holdDur > 0) {
+      if (cfg.oneShot) {
+        // Linear advance: d grows by 1 every stepDur seconds.
+        d = startD + introElapsed / Math.max(stepDur, 1e-3);
+        if (introElapsed >= diveDur) {
+          // Hand off to hold (which contains the outro fade-out and
+          // the static loopStaticDur window).
           fractalState.phase      = 'hold';
           fractalState.phaseStart = t;
           fractalState.holdD      = d;
-        } else {
-          fractalState.diveD0 = d;
-          fractalState.phaseStart = t;
+        }
+      } else {
+        // Multi-shot eased dive: smoothstep to the next integer-d so
+        // the hold lands on an at-peak clone (visually identical to
+        // pattern at rest).
+        const stepsToCover = Math.max(1, Math.ceil(diveDur / Math.max(stepDur, 1e-3)));
+        const targetD = Math.round(startD + stepsToCover);
+        const segDur = (targetD - startD) * Math.max(stepDur, 1e-3);
+        const u = Math.min(1, introElapsed / segDur);
+        d = startD + (targetD - startD) * smoothstep(u);
+        if (u >= 1) {
+          d = targetD;
+          if (holdDur > 0) {
+            fractalState.phase      = 'hold';
+            fractalState.phaseStart = t;
+            fractalState.holdD      = d;
+          } else {
+            fractalState.diveD0 = d;
+            fractalState.phaseStart = t;
+          }
         }
       }
     } else if (fractalState.phase === 'hold') {
@@ -1524,17 +1562,16 @@ export function addPatternLayers(logoMesh, meta, renderer) {
     fractalState.active = holding ? 1 : (1 - lambda);
 
     if (cfg.oneShot) {
-      // Single-clone path: render only clone 0 at the requested scale,
-      // and crossfade the originals' opacity to (1 - cloneOp) so they
-      // dissolve away as the clone grows in. No position displacement
-      // (originals stay at rest) — kills the "stagger back in" slide
-      // the user didn't want. Avoids the Droste role-rotation artefacts
-      // (a "larger flower" clone past scale=1 flashing in, several
-      // clones overlapping at the focal centre adding emissive
-      // brightness) that the multi-clone applyDive can't suppress.
+      // Multi-clone Droste with positive-r clamp (no past-peak growth).
+      // Originals stay at rest position (no slide) and crossfade via
+      // opacity instead. The r > 0 clamp inside applyDive hides any
+      // clone that would role-rotate past scale=1, so the user never
+      // sees a "larger flower" copy — only the at-peak clone (scale=1)
+      // and the smaller behind copies (scale 0.32, 0.10, ...) are
+      // visible, matching the requested infinite Droste look.
       applyDisplacement(0);                     // originals at rest, no slide
-      fadeOriginals(Math.max(0, 1 - cloneOp));  // originals fade out as clone fades in
-      applySingleClone(cloneScale, cloneOp);
+      fadeOriginals(Math.max(0, 1 - cloneOp));  // originals fade out as clones fade in
+      applyDive(d, cloneOp, fadeMode);
     } else {
       applyDisplacement(lambda);
       fadeOriginals(1);                         // multi-shot path doesn't fade originals
@@ -1549,6 +1586,8 @@ export function addPatternLayers(logoMesh, meta, renderer) {
            latticeGroup: underlay,
            gateFrameGroup: gate,
            archGroup: arch.group,
+           archCarvedGroup: archCarved ? archCarved.group : null,
+           updateArchCarved: archCarved ? archCarved.update : null,
            updateArch: arch.update,
            triggerArchCascade: arch.triggerCascade,
            flameGroup:   flame.group,
