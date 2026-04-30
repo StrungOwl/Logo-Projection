@@ -145,22 +145,36 @@ function outwardNormal2D(tx, ty) {
   return { x: ty, y: -tx };
 }
 
-// Closed polygon of the arch top — `clipArcAboveY` returns an OPEN
-// polyline (the arc above the cut, with a flat gap at yCut). We close
-// it by adding a horizontal bottom edge, producing a CCW closed polygon
-// suitable for inset / sample / point-in-polygon. Used so the muqarnas
-// tiles only the dome region above the springer line, not the full
-// silhouette (which would include the SDG side flares).
-function closedArcAboveY(poly, yCut) {
-  const arc = clipArcAboveY(poly, yCut);
-  if (arc.length < 2) return [];
-  // arc starts at the ascending crossing (left foot) and ends at the
-  // descending crossing (right foot) — both at y=yCut. Walking the arc
-  // forward then back along the cut closes the polygon. We don't add an
-  // extra bottom segment because the start and end already span the cut.
-  // Just return the arc as a closed loop (treat last → first as the
-  // bottom edge).
-  return arc.slice();
+// Outset a CCW polygon by `distance` (positive expands OUTWARD). Mirrors
+// gate-frame.js's insetPolygon but uses the outward (right-hand) bisector,
+// so the maxSpikeMul cap clamps with positive numbers and Math.min picks
+// the SHORTER spike — same behaviour insetPolygon has at sharp convex
+// corners. Required because insetPolygon with a negative distance picks
+// the MORE negative of the two clamps and overshoots ~maxSpikeMul× near
+// concave corners (the SDG side flares), causing the offset polygon to
+// self-intersect and land inside the original silhouette.
+function outsetPolygonCCW(poly, distance, maxSpikeMul = 3) {
+  const n = poly.length;
+  const out = new Array(n);
+  const maxLen = distance * maxSpikeMul;
+  for (let i = 0; i < n; i++) {
+    const a = poly[(i + n - 1) % n], b = poly[i], c = poly[(i + 1) % n];
+    const e1x = b.x - a.x, e1y = b.y - a.y;
+    const e2x = c.x - b.x, e2y = c.y - b.y;
+    const l1 = Math.hypot(e1x, e1y) || 1;
+    const l2 = Math.hypot(e2x, e2y) || 1;
+    // Right-90° rotation of each edge tangent = outward normal for CCW.
+    const n1x = e1y / l1, n1y = -e1x / l1;
+    const n2x = e2y / l2, n2y = -e2x / l2;
+    let bx = n1x + n2x, by = n1y + n2y;
+    const blen = Math.hypot(bx, by);
+    if (blen < 1e-6) { out[i] = { x: b.x + n1x * distance, y: b.y + n1y * distance }; continue; }
+    bx /= blen; by /= blen;
+    const cosHalf = blen * 0.5;
+    const len = Math.min(distance / Math.max(cosHalf, 1e-3), maxLen);
+    out[i] = { x: b.x + bx * len, y: b.y + by * len };
+  }
+  return out;
 }
 
 // Polygon perimeter length.
@@ -171,6 +185,88 @@ function polyPerimeter(poly) {
     p += Math.hypot(b.x - a.x, b.y - a.y);
   }
   return p;
+}
+
+// Even-odd point-in-silhouette test across all silhouette loops (outer +
+// any inner cutouts). True iff (x, y) is inside the SOLID region of the
+// logo — i.e., inside the outer loop and outside every cutout. Used to
+// reject muqarnas cells whose centre or tip falls into the star bay or
+// any other interior cutout, so cells never extend into a void.
+function insideSilhouette(x, y, silhouettes) {
+  let inside = pointInPolygon(x, y, silhouettes[0]);
+  for (let k = 1; k < silhouettes.length; k++) {
+    if (pointInPolygon(x, y, silhouettes[k])) inside = !inside;
+  }
+  return inside;
+}
+
+// Expand a polygon radially away from a centre point. Each vertex moves
+// directly away from (cx, cy) by `dist` units. For our star bay (4-point
+// star centred at the bay centroid), this preserves the angular shape
+// and just scales the radii outward — perfect for building the curved
+// brick rails that wrap the star at progressively larger offsets.
+function offsetPolygonFromPoint(poly, cx, cy, dist) {
+  const out = new Array(poly.length);
+  for (let i = 0; i < poly.length; i++) {
+    const p = poly[i];
+    const dx = p.x - cx, dy = p.y - cy;
+    const l  = Math.hypot(dx, dy) || 1;
+    out[i] = { x: p.x + (dx / l) * dist, y: p.y + (dy / l) * dist };
+  }
+  return out;
+}
+
+// Polygon centroid (simple vertex-average; accurate enough for our
+// near-symmetric star bay).
+function polyCentroid(poly) {
+  let cx = 0, cy = 0;
+  for (const p of poly) { cx += p.x; cy += p.y; }
+  return { x: cx / poly.length, y: cy / poly.length };
+}
+
+// 4 corners of an oriented bounding box centred at (cx, cy), with size
+// (w, h) along axes (ux, uy) and the perpendicular (-uy, ux). Used by
+// the brick collision check below.
+function obbCorners(cx, cy, halfW, halfH, ux, uy) {
+  const px = -uy, py = ux;
+  return [
+    { x: cx - ux * halfW - px * halfH, y: cy - uy * halfW - py * halfH },
+    { x: cx + ux * halfW - px * halfH, y: cy + uy * halfW - py * halfH },
+    { x: cx + ux * halfW + px * halfH, y: cy + uy * halfW + py * halfH },
+    { x: cx - ux * halfW + px * halfH, y: cy - uy * halfW + py * halfH },
+  ];
+}
+
+// Separating Axis Theorem overlap test for two convex 2D polygons. Used
+// to detect brick-vs-brick collisions in the curved rail layers — each
+// candidate brick is OBB-tested against every brick already placed in
+// the same ring; overlap → skip. With rotated rectangles AABBs would
+// produce many false-positives at corners, so we do proper OBB SAT.
+function obbsOverlap(a, b) {
+  for (const poly of [a, b]) {
+    const n = poly.length;
+    for (let i = 0; i < n; i++) {
+      const p1 = poly[i], p2 = poly[(i + 1) % n];
+      const ex = p2.x - p1.x, ey = p2.y - p1.y;
+      const len = Math.hypot(ex, ey) || 1;
+      // Edge normal (perpendicular to edge, unit-length).
+      const nx = -ey / len, ny = ex / len;
+      let amin =  Infinity, amax = -Infinity;
+      let bmin =  Infinity, bmax = -Infinity;
+      for (let k = 0; k < a.length; k++) {
+        const d = a[k].x * nx + a[k].y * ny;
+        if (d < amin) amin = d;
+        if (d > amax) amax = d;
+      }
+      for (let k = 0; k < b.length; k++) {
+        const d = b[k].x * nx + b[k].y * ny;
+        if (d < bmin) bmin = d;
+        if (d > bmax) bmax = d;
+      }
+      if (amax < bmin || bmax < amin) return false;  // separating axis
+    }
+  }
+  return true;
 }
 
 // -----------------------------------------------------------------------
@@ -222,13 +318,10 @@ function makeArchCellGeometry(length, width, thickness) {
 // adjacent tiers can stagger by half a cell (brick-course offset).
 // -----------------------------------------------------------------------
 function placeMuqarnasTier({ polygon, cellW, cellRadial, cellThick,
-                             zCenter, startOffset, material,
-                             group }) {
-  let perim = 0;
-  for (let i = 0; i < polygon.length; i++) {
-    const a = polygon[i], b = polygon[(i + 1) % polygon.length];
-    perim += Math.hypot(b.x - a.x, b.y - a.y);
-  }
+                             zCenter, startOffset, material, group,
+                             silhouettes, centerX, centerY,
+                             backWall }) {
+  const perim = polyPerimeter(polygon);
   const sampleCount = Math.max(6, Math.round(perim / cellW));
   let samples = samplePerimeter(polygon, sampleCount);
   samples = smoothTangents(samples);
@@ -244,6 +337,24 @@ function placeMuqarnasTier({ polygon, cellW, cellRadial, cellThick,
   }
 
   const geo = makeArchCellGeometry(cellRadial, cellW, cellThick);
+  // Optional shadow back-wall: a smaller, darker pointed-arch shape
+  // sitting INSIDE each cell, recessed in Z by `cellThick + offset`,
+  // so the eye reads it as the dark interior of the niche behind the
+  // visible arch frame. Built once per tier, reused for all cells.
+  let backGeo = null, backMat = null, backDz = 0;
+  if (backWall && backWall.scale > 0) {
+    backGeo = makeArchCellGeometry(
+      cellRadial * backWall.scale,
+      cellW      * backWall.scale,
+      Math.max(cellThick * 0.4, 0.06),
+    );
+    backMat = new THREE.MeshStandardMaterial({
+      color:     backWall.color,
+      metalness: 0.0,
+      roughness: 1.0,
+    });
+    backDz = -(cellThick * 0.5 + (backWall.offset || 0.15));
+  }
 
   const localX = new THREE.Vector3();
   const localY = new THREE.Vector3();
@@ -251,15 +362,68 @@ function placeMuqarnasTier({ polygon, cellW, cellRadial, cellThick,
 
   for (let i = 0; i < samples.length; i++) {
     const s = samples[i];
-    const out = outwardNormal2D(s.tx, s.ty);
-    // Radial INWARD = -outward.
-    localX.set(-out.x, -out.y, 0).normalize();
-    localY.set( s.tx,   s.ty,  0).normalize();
+
+    // Inward direction = -outwardNormal of local tangent, then sign-
+    // checked against the centroid direction. This keeps cells
+    // oriented along the LOCAL perimeter curve (architectural feel,
+    // adjacent cells follow the arc) but flips if the polygon's
+    // winding or a local concavity makes the tangent-based "inward"
+    // actually point AWAY from the centroid — fixes the right-side
+    // mis-orientation seen with pure tangent-based inward.
+    const out  = outwardNormal2D(s.tx, s.ty);
+    let   inX  = -out.x;
+    let   inY  = -out.y;
+    const toCx = centerX - s.x;
+    const toCy = centerY - s.y;
+    // If our chosen inward points away from the centroid (negative dot
+    // product), flip it. Tangent stays as the local edge tangent so
+    // cell width still aligns with the perimeter walk.
+    if (inX * toCx + inY * toCy < 0) {
+      inX = -inX;
+      inY = -inY;
+    }
+    const tanX = s.tx;
+    const tanY = s.ty;
+
+    // Cell's tip (radial-inward end) and mid point — tested against
+    // silhouette so cells whose footprint enters a cutout (the star
+    // bay) are rejected. This is what stops the muqarnas from
+    // outlining the inner star: cells whose tip would land in the
+    // cutout simply aren't placed.
+    const tipX = s.x + inX * cellRadial;
+    const tipY = s.y + inY * cellRadial;
+    const midX = s.x + inX * cellRadial * 0.5;
+    const midY = s.y + inY * cellRadial * 0.5;
+
+    if (silhouettes) {
+      if (!insideSilhouette(s.x,  s.y,  silhouettes)) continue;
+      if (!insideSilhouette(midX, midY, silhouettes)) continue;
+      if (!insideSilhouette(tipX, tipY, silhouettes)) continue;
+    }
+
+    localX.set(inX,  inY,  0);
+    localY.set(tanX, tanY, 0);
+    const q = basisQuat(localX, localY, localZ);
+
+    // Dark back-wall mesh recessed inside the cell — gives each cell a
+    // visible "shadow interior" so they read as 3D niches rather than
+    // flat extruded petals. Slightly inset on local-X (radial) so its
+    // tip doesn't poke past the parent cell's silhouette.
+    if (backGeo) {
+      const back = new THREE.Mesh(backGeo, backMat);
+      const insetRadial = cellRadial * (1 - (backWall.scale || 1)) * 0.5;
+      back.position.set(
+        s.x + inX * insetRadial,
+        s.y + inY * insetRadial,
+        zCenter + backDz,
+      );
+      back.quaternion.copy(q);
+      group.add(back);
+    }
+
     const mesh = new THREE.Mesh(geo, material);
-    // Cell's base (shape X=0) lands on the polygon sample; the tip then
-    // extends inward by cellRadial along localX.
     mesh.position.set(s.x, s.y, zCenter);
-    mesh.quaternion.copy(basisQuat(localX, localY, localZ));
+    mesh.quaternion.copy(q);
     group.add(mesh);
   }
 }
@@ -370,7 +534,7 @@ function placeInnerCascadeRow({ samples, apexIndex, totalLength, brickCfg,
 //   local-Z → world-Y (depth runs front-to-back across the floor)
 // -----------------------------------------------------------------------
 function placeFloor({ silhouettes, springerY = Infinity, brickCfg, floorCfg, zCenter,
-                      material, group, seedOffset }) {
+                      material, group, seedOffset, dropoutProb = 0, dropoutSalt = 0 }) {
   // Bbox of the entire silhouette (outer loop). We track maxY too so the
   // grid can fill all the way up when no springer cap is supplied.
   const outer = silhouettes[0];
@@ -380,8 +544,15 @@ function placeFloor({ silhouettes, springerY = Infinity, brickCfg, floorCfg, zCe
     if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
   }
   const yCap = Math.min(springerY, maxY);
-  const stepX = brickCfg.width  + brickCfg.mortarGap * 2;
-  const stepY = brickCfg.depth  + brickCfg.mortarGap * 2;
+  // Per-axis grid spacing. mortarGapX/mortarGapY override the default
+  // mortarGap on a single axis so we can space bricks apart horizontally
+  // while keeping vertical rows tight (or vice versa). The brick
+  // geometry's shrink still uses the symmetric mortarGap so individual
+  // bricks read as full-size; only the grid stepping changes.
+  const gapX  = brickCfg.mortarGapX ?? brickCfg.mortarGap;
+  const gapY  = brickCfg.mortarGapY ?? brickCfg.mortarGap;
+  const stepX = brickCfg.width + gapX * 2;
+  const stepY = brickCfg.depth + gapY * 2;
   const cols  = Math.ceil((maxX - minX) / stepX) + 2;
   const rows  = Math.ceil((yCap - minY) / stepY) + 1;
 
@@ -389,6 +560,15 @@ function placeFloor({ silhouettes, springerY = Infinity, brickCfg, floorCfg, zCe
   const localY = new THREE.Vector3(0, 0, 1);
   const localZ = new THREE.Vector3(0, 1, 0);
   const q = basisQuat(localX, localY, localZ);
+
+  // Brick footprint = halfWidth × halfDepth around its centre. We accept
+  // a brick if its centre OR any of its four corners is inside the
+  // solid silhouette region. This lets bricks at the edge get placed
+  // even when their centre falls outside the polygon — the visible
+  // ring of bricks then covers the whole interior right up to the
+  // silhouette boundary, instead of leaving a jagged gap one brick wide.
+  const halfBW = brickCfg.width  * 0.5;
+  const halfBD = brickCfg.depth  * 0.5;
 
   // Even-odd polygon test across all silhouette loops (so interior cutouts
   // are excluded).
@@ -413,6 +593,11 @@ function placeFloor({ silhouettes, springerY = Infinity, brickCfg, floorCfg, zCe
     for (let c = 0; c < cols; c++) {
       const x = minX + (c + 0.5) * stepX + rowOffset;
       if (!insideAll(x, y)) continue;
+      // Deterministic per-cell dropout: hash the grid cell so the same
+      // (r, c) always picks the same coin-flip across reloads. Pass
+      // dropoutProb=0.5 to skip ~half the bricks; salt lets two layers
+      // sharing the same grid drop different cells.
+      if (dropoutProb > 0 && hash01(c, r, 0, dropoutSalt) < dropoutProb) continue;
       const geo = makeBrickGeometry(seedOffset + seedCounter++, brickCfg);
       const mesh = new THREE.Mesh(geo, material);
       mesh.position.set(x, y, zCenter);
@@ -420,6 +605,512 @@ function placeFloor({ silhouettes, springerY = Infinity, brickCfg, floorCfg, zCe
       group.add(mesh);
       bricks.push(mesh);
     }
+  }
+  return bricks;
+}
+
+// -----------------------------------------------------------------------
+// Top-layer staircase — bricks stream IN from the LEFT, RIGHT, and TOP
+// edges of `outerSilhouette`'s bbox, stop after reaching `reachFraction`
+// of each half-dimension, and step DOWN in Z thickness as they go
+// inward. Result: an inverted-U band of bricks whose outer edge follows
+// the silhouette outline (because each candidate is filtered against
+// `outerSilhouette`) and whose tops rise from the centre outward like a
+// staircase. The bottom edge of the silhouette is intentionally bare
+// (no contributing edge there).
+//
+// Brick orientation matches `placeFloor` — local-X→worldX, local-Y→worldZ,
+// local-Z→worldY — so brickCfg.height is the Z (depth) extent. Each brick's
+// back face stays flush with `backZ`, so taller bricks protrude further
+// toward the camera.
+//
+// Per-step colour gradient: each brick is assigned a material from
+// `stepMats[stepIdx]`. Caller passes pre-built materials lerped from
+// `darkColor` (innermost step, closest to floor) to `lightColor`
+// (outermost step, closest to camera) so the staircase shifts in
+// value as it rises forward.
+//
+// No-overlap invariant: every brick is centred on a unique (row, col)
+// grid cell with stride (width + 2*gapX, depth + 2*gapY). Within-cell
+// vertex jitter is clamped to ±mortarGap by `makeBrickGeometry`, so
+// no brick ever crosses its cell boundary. Adjacent bricks at
+// different stair steps share the same back-face Z and only differ
+// in forward extent, so they touch on a shared side without
+// interpenetrating. Grid arithmetic guarantees collision-free
+// placement — no physics sim required.
+// -----------------------------------------------------------------------
+function placeTopLayer({ outerSilhouette, brickCfgBase, floorCfg, backZ,
+                         stepMats, group, seedOffset, topCfg }) {
+  const outer = outerSilhouette;
+  if (!outer || outer.length < 3) return;
+
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const p of outer) {
+    if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+  }
+  const halfW = (maxX - minX) * 0.5;
+  const halfH = (maxY - minY) * 0.5;
+
+  // reachFraction = how far the brick band reaches inward from each
+  // contributing edge, expressed as a fraction of that edge's half-
+  // dimension. 0.66 → bricks fill the outer ~2/3 of half-W from L/R
+  // and 2/3 of half-H from the top, leaving an inner column-of-the-
+  // bottom region bare.
+  const reachFraction = topCfg.reachFraction ?? 0.66;
+  const reachLR = reachFraction * halfW;
+  const reachT  = reachFraction * halfH;
+
+  // Stair depth: brick Z thickness ramps from maxStepHeight at the
+  // outermost step down to minStepHeight at the innermost step.
+  // stepCount discrete levels → bricks within the same step share a
+  // height, so adjacent bricks read as one stair tread (no smooth
+  // gradient).
+  const numSteps = Math.max(1, topCfg.stepCount ?? 4);
+  const minH     = topCfg.minStepHeight ?? 0.4;
+  const maxH     = topCfg.maxStepHeight ?? 1.6;
+
+  const gapX  = brickCfgBase.mortarGapX ?? brickCfgBase.mortarGap;
+  const gapY  = brickCfgBase.mortarGapY ?? brickCfgBase.mortarGap;
+  const stepX = brickCfgBase.width + gapX * 2;
+  const stepY = brickCfgBase.depth + gapY * 2;
+  const cols  = Math.ceil((maxX - minX) / stepX) + 2;
+  const rows  = Math.ceil((maxY - minY) / stepY) + 1;
+
+  const localX = new THREE.Vector3(1, 0, 0);
+  const localY = new THREE.Vector3(0, 0, 1);
+  const localZ = new THREE.Vector3(0, 1, 0);
+  const q = basisQuat(localX, localY, localZ);
+
+  const offsetFrac = (floorCfg.pattern === 'running-bond') ? floorCfg.rowOffset : 0;
+  let seedCounter = 0;
+
+  for (let r = 0; r < rows; r++) {
+    const rowOffset = (r % 2 === 1) ? offsetFrac * stepX : 0;
+    const y = minY + (r + 0.5) * stepY;
+    if (y > maxY) continue;
+    for (let c = 0; c < cols; c++) {
+      const x = minX + (c + 0.5) * stepX + rowOffset;
+      // Stay inside the actual logo silhouette so bricks never poke
+      // past the perimeter (per user request: "don't go past the
+      // perimeter of the logo").
+      if (!pointInPolygon(x, y, outer)) continue;
+
+      // tNorm = 1 at any contributing edge, 0 at the band's inner
+      // limit, max across L/R/T (so corners take the larger of the
+      // two contributing edges' progress).
+      const distL = x - minX;
+      const distR = maxX - x;
+      const distT = maxY - y;
+      let tNorm = 0;
+      if (distL < reachLR) tNorm = Math.max(tNorm, 1 - distL / reachLR);
+      if (distR < reachLR) tNorm = Math.max(tNorm, 1 - distR / reachLR);
+      if (distT < reachT ) tNorm = Math.max(tNorm, 1 - distT / reachT );
+      if (tNorm <= 0) continue;  // outside the L/R/T band
+
+      // Quantise to discrete stair steps. step 0 = outermost (tallest),
+      // step numSteps-1 = innermost (shortest).
+      const u       = 1 - tNorm;  // 0 at edge, 1 at inner
+      const stepIdx = Math.min(numSteps - 1, Math.floor(u * numSteps));
+      const sFrac   = numSteps > 1 ? stepIdx / (numSteps - 1) : 0;
+      const stepHeight = maxH - sFrac * (maxH - minH);
+
+      const cfg = { ...brickCfgBase, height: stepHeight };
+      const geo  = makeBrickGeometry(seedOffset + seedCounter++, cfg);
+      // Per-step material picks up the lerped colour for this stair
+      // level — outermost step uses the lightest colour, innermost
+      // sits one notch above the floor's dark colour.
+      const mesh = new THREE.Mesh(geo, stepMats[stepIdx]);
+      // Anchor each brick so its BACK face sits at backZ. Taller
+      // bricks therefore extend further toward the camera, which is
+      // what creates the stair tread.
+      mesh.position.set(x, y, backZ + stepHeight * 0.5);
+      mesh.quaternion.copy(q);
+      group.add(mesh);
+    }
+  }
+}
+
+// -----------------------------------------------------------------------
+// Lantern niche — a small recessed pointed-arch alcove with a glowing
+// flame mesh and a real PointLight inside, both flickered each frame
+// via a two-sine envelope (transcribed from src/3DOverlay.js's petal
+// shimmer math). Returns a group containing the niche frame, back
+// wall, lantern mesh, and light, plus an `update(t)` closure.
+// -----------------------------------------------------------------------
+function createLanternNiche({ x, y, frameZ, cfg }) {
+  const niche = new THREE.Group();
+
+  // Frame — pointed-arch ring sitting flush with the brick surface.
+  const frameGeo = makeArchCellGeometry(cfg.frameSize.radial,
+                                        cfg.frameSize.width,
+                                        cfg.frameSize.thickness);
+  const frameMat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(cfg.frameColor || '#7A5A30'),
+    metalness: 0.10, roughness: 0.85,
+  });
+  const frameMesh = new THREE.Mesh(frameGeo, frameMat);
+  // local-X = up (radial-up): cell tip points UP so the niche stands
+  // upright. We rotate by setting local axes manually.
+  frameMesh.quaternion.setFromRotationMatrix(
+    new THREE.Matrix4().makeBasis(
+      new THREE.Vector3(0, 1, 0),  // local-X → world-Y (up)
+      new THREE.Vector3(1, 0, 0),  // local-Y → world-X (cell width is horizontal)
+      new THREE.Vector3(0, 0, 1),  // local-Z → world-Z
+    ),
+  );
+  frameMesh.position.set(x, y, frameZ);
+  niche.add(frameMesh);
+
+  // Back wall — small dark rectangle recessed into the wall.
+  const backW = cfg.frameSize.width * 1.05;
+  const backH = cfg.frameSize.radial * 1.0;
+  const backGeo = new THREE.BoxGeometry(backW, backH, 0.08);
+  const backMat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color('#1a0d05'),
+    metalness: 0.05, roughness: 1.0,
+  });
+  const backMesh = new THREE.Mesh(backGeo, backMat);
+  backMesh.position.set(x, y + backH * 0.4, frameZ + cfg.zBack);
+  niche.add(backMesh);
+
+  // Lantern flame — small emissive sphere just in front of the back
+  // wall, inside the niche opening.
+  const flameMat = new THREE.MeshBasicMaterial({
+    color: new THREE.Color(cfg.flameColor || '#FFC070'),
+    transparent: true,
+    opacity: 0.95,
+  });
+  const flameGeo = new THREE.SphereGeometry(0.18, 8, 6);
+  const flameMesh = new THREE.Mesh(flameGeo, flameMat);
+  const flameY = y + backH * 0.25;
+  const flameZpos = frameZ + cfg.zBack * 0.3;
+  flameMesh.position.set(x, flameY, flameZpos);
+  niche.add(flameMesh);
+
+  // PointLight at the flame position with attenuation.
+  const light = new THREE.PointLight(
+    new THREE.Color(cfg.lightColor || '#FF9030'),
+    cfg.intensityMin || 4.0,
+    /* distance */ 0,
+    cfg.decay || 1.5,
+  );
+  light.position.set(x, flameY, flameZpos + 0.1);
+  niche.add(light);
+
+  // Per-niche random phase so all four lanterns flicker out of sync.
+  const phaseA = Math.random() * Math.PI * 2;
+  const phaseB = Math.random() * Math.PI * 2;
+  const speedA = cfg.flickerSpeedA || 6.0;
+  const speedB = cfg.flickerSpeedB || 11.0;
+  const intMin = cfg.intensityMin  || 4.0;
+  const intMax = cfg.intensityMax  || 9.0;
+
+  function update(t) {
+    // Two-sine envelope (matches the 3DOverlay petal-shimmer pattern):
+    // (sin(a) + 0.5*sin(b)) range ≈ [-1.5, 1.5] → remap to [0, 1].
+    const a = Math.sin(t * speedA + phaseA);
+    const b = Math.sin(t * speedB + phaseB);
+    const env = (a + 0.5 * b + 1.5) / 3.0;            // 0 .. 1
+    const intensity = intMin + (intMax - intMin) * env;
+    light.intensity = intensity;
+    flameMat.opacity = 0.6 + 0.35 * env;              // flame brightens
+  }
+
+  return { group: niche, update };
+}
+
+// -----------------------------------------------------------------------
+// 8-point geometric inlay — a flat extruded rosette built from an
+// outer 8-point star with a smaller 8-point star concentric inside it,
+// suitable for an embossed decorative medallion on a brick panel. The
+// shape lives in local-XY (radius `outerR`); extrusion along local-Z
+// gives a small relief. Single combined ExtrudeGeometry so all parts
+// share one material call.
+// -----------------------------------------------------------------------
+function makeOctaInlayGeometry(outerR, depth) {
+  const points = 8;
+
+  const buildStar = (rOuter, rInner, sweepRotate = 0) => {
+    const shape = new THREE.Shape();
+    for (let i = 0; i < points * 2; i++) {
+      const r = (i % 2 === 0) ? rOuter : rInner;
+      const theta = (i / (points * 2)) * Math.PI * 2 + sweepRotate;
+      const x = Math.cos(theta) * r;
+      const y = Math.sin(theta) * r;
+      if (i === 0) shape.moveTo(x, y);
+      else         shape.lineTo(x, y);
+    }
+    shape.closePath();
+    return shape;
+  };
+
+  // Outer 8-point star + inner concentric 8-point star (rotated half-step
+  // so its points sit between the outer star's points). Extrude both at
+  // once so the resulting geometry has both stars layered as a single
+  // mesh.
+  const shapes = [
+    buildStar(outerR,        outerR * 0.55, 0),
+    buildStar(outerR * 0.45, outerR * 0.20, Math.PI / points),
+  ];
+
+  return new THREE.ExtrudeGeometry(shapes, {
+    depth,
+    bevelEnabled:   true,
+    bevelThickness: 0.04,
+    bevelSize:      0.04,
+    bevelSegments:  2,
+    curveSegments:  4,
+  });
+}
+
+// -----------------------------------------------------------------------
+// Curved brick rail — a single ring of bricks tiled along the perimeter
+// of `railPolygon`, oriented so each brick's long axis (local-X) runs
+// along the local tangent. Heights extend radially outward (local-Y),
+// thicknesses run along world +Z (local-Z). Used to build the layered
+// curved rails that wrap the inner star in the reference muqarnas gate.
+// -----------------------------------------------------------------------
+function placeStarRail({ railPolygon, brickLength, brickHeight, brickThick,
+                         mortarGap, zCenter, color, group, seedOffset }) {
+  const perim = polyPerimeter(railPolygon);
+  if (perim < brickLength * 2) return [];
+
+  const sampleCount = Math.max(8, Math.round(perim / brickLength));
+  let samples = samplePerimeter(railPolygon, sampleCount);
+  samples = smoothTangents(samples);
+
+  const material = new THREE.MeshStandardMaterial({
+    color:     new THREE.Color(color),
+    metalness: 0.10,
+    roughness: 0.85,
+  });
+
+  const brickCfg = {
+    width:       brickLength,   // local-X (along tangent)
+    height:      brickHeight,   // local-Y (radial-outward)
+    depth:       brickThick,    // local-Z (Z protrusion)
+    mortarGap,
+    faultAmount: 0.04,
+    chamfer:     0.03,
+  };
+
+  const localX = new THREE.Vector3();
+  const localY = new THREE.Vector3();
+  const localZ = new THREE.Vector3(0, 0, 1);
+  const bricks = [];
+  // Track every placed brick's OBB so each new candidate can be
+  // collision-tested against its predecessors. On tight curve sections
+  // adjacent samples can rotate enough that the rectangles would
+  // overlap at their inner corners; SAT-rejecting the candidate keeps
+  // the ring clean without leaving large gaps elsewhere.
+  const placedOBBs = [];
+  const halfL = brickLength * 0.5;
+  const halfH = brickHeight * 0.5;
+  for (let i = 0; i < samples.length; i++) {
+    const s = samples[i];
+    // Tangent along the rail = local-X (brick length)
+    const tx = s.tx, ty = s.ty;
+    localX.set(tx, ty, 0).normalize();
+    const out = outwardNormal2D(tx, ty);
+    localY.set(out.x, out.y, 0).normalize();
+
+    // OBB candidate — the brick is centred at (s.x, s.y) with half-
+    // extent halfL along the tangent and halfH along the radial.
+    const obb = obbCorners(s.x, s.y, halfL, halfH, tx, ty);
+    let collided = false;
+    for (let k = 0; k < placedOBBs.length; k++) {
+      if (obbsOverlap(obb, placedOBBs[k])) { collided = true; break; }
+    }
+    if (collided) continue;
+    placedOBBs.push(obb);
+
+    const geo  = makeBrickGeometry(seedOffset + i, brickCfg);
+    const mesh = new THREE.Mesh(geo, material);
+    mesh.position.set(s.x, s.y, zCenter);
+    mesh.quaternion.copy(basisQuat(localX, localY, localZ));
+    group.add(mesh);
+    bricks.push(mesh);
+  }
+  return bricks;
+}
+
+// -----------------------------------------------------------------------
+// Outer-perimeter brick arch — a single ring of CHUNKY voussoir-style
+// bricks tiled along silhouette[0] inset inward by half a brick height,
+// then clipped to the arc ABOVE `springerYFrac` so the result is an
+// upside-down U (top + side curves of the logo). The bottom edge of the
+// silhouette is intentionally bare. Bricks are oriented:
+//   local-X → curve tangent (long axis runs along the arch curve)
+//   local-Y → outward normal (radial; brick height extends outward
+//             from the logo interior toward silhouette[0])
+//   local-Z → world +Z (brick thickness runs forward to the camera)
+// Inset by half a brick height pins each brick's outer face flush with
+// silhouette[0], so the whole brick body sits INSIDE the logo
+// perimeter — never poking past it — while the body extends only one
+// brick-height inward, never crossing into the inner region of the logo.
+// SAT OBB rejection on already-placed bricks keeps tight curve sections
+// gap-free without making any pair interpenetrate.
+// -----------------------------------------------------------------------
+function placeOuterBrickArch({
+  silhouette, springerYFrac, minSpringerY, brickLength, brickHeight, brickThick,
+  mortarGap, zCenter, color, group, seedOffset, outwardOffset = 0,
+  rotate90 = false, inwardSafety = 0,
+}) {
+  if (!silhouette || silhouette.length < 3) return [];
+
+  const halfH = brickHeight * 0.5;
+  // Always walk the ORIGINAL silhouette and apply the radial offset
+  // per-sample. Polygon-level offsetting (insetPolygon / outsetPolygonCCW)
+  // fails near the SDG's concave side flares: the bisector method
+  // self-intersects there and the resulting "polygon" walks weird
+  // segments. Per-sample offsetting along the local outward normal
+  // keeps the curve topologically clean regardless of polygon shape.
+  const walkPoly = silhouette;
+  if (!walkPoly || walkPoly.length < 3) return [];
+
+  let minY = Infinity, maxY = -Infinity;
+  for (const p of walkPoly) {
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  // springerY = base fraction of the polygon's Y range, but never
+  // below `minSpringerY` (passed in by the caller as the star bay's
+  // top + buffer). Guarantees the arch's feet stay clear of the star
+  // so the brick band can never wrap around it.
+  let springerY = minY + (maxY - minY) * (springerYFrac ?? 0.30);
+  if (typeof minSpringerY === 'number' && minSpringerY > springerY) {
+    springerY = minSpringerY;
+  }
+
+  // Build a clean upside-down-U arc by sampling the polygon perimeter
+  // uniformly and picking the LONGEST CONTIGUOUS RUN of samples whose
+  // Y is above springerY. clipArcAboveY only handles polygons that
+  // cross the cut line exactly twice — silhouettes with side flares
+  // (the SDG bottom flares) cross many times and confuse it. This
+  // approach is robust against multiple Y crossings: it always returns
+  // one connected upper segment regardless of how the lower polygon
+  // shape behaves.
+  let totalPerim = 0;
+  for (let i = 0; i < walkPoly.length; i++) {
+    const a = walkPoly[i], b = walkPoly[(i + 1) % walkPoly.length];
+    totalPerim += Math.hypot(b.x - a.x, b.y - a.y);
+  }
+  // Oversample by ~3× brick density so the longest-run search has fine
+  // resolution. We'll thin to brickLength spacing after picking the run.
+  const sampleCount = Math.max(48, Math.round(totalPerim / brickLength) * 3);
+  const perimSamples = samplePerimeter(walkPoly, sampleCount);
+  // Find the longest contiguous run of indices where Y > springerY.
+  // Wrap-around aware: the run can cross the seam (sample 0).
+  const above = perimSamples.map(s => s.y > springerY);
+  let bestStart = -1, bestLen = 0;
+  const N = perimSamples.length;
+  // Walk 2N to cover wrap-around runs (a run that crosses the seam is
+  // contiguous in [0, 2N) but split in [0, N)). Cap len at N to avoid
+  // double-counting if every sample is above (full-loop case).
+  let curStart = -1, curLen = 0;
+  for (let i = 0; i < N * 2; i++) {
+    if (above[i % N]) {
+      if (curStart < 0) curStart = i;
+      curLen++;
+      if (curLen > bestLen) { bestLen = curLen; bestStart = curStart; }
+    } else {
+      curStart = -1; curLen = 0;
+    }
+  }
+  if (bestLen > N) bestLen = N;
+  if (bestLen < 2) return [];
+  // Slice the run out (may wrap around the seam).
+  const arc = [];
+  for (let k = 0; k < bestLen; k++) arc.push(perimSamples[(bestStart + k) % N]);
+
+  // Re-thin to brickLength spacing along the arc — preserves per-sample
+  // tangents while giving us the right brick count.
+  let arcLen = 0;
+  for (let i = 0; i < arc.length - 1; i++) {
+    arcLen += Math.hypot(arc[i + 1].x - arc[i].x, arc[i + 1].y - arc[i].y);
+  }
+  const count = Math.max(3, Math.round(arcLen / brickLength));
+  let samples = samplePolyline(arc, count);
+  samples = smoothTangents(samples);
+
+  const material = new THREE.MeshStandardMaterial({
+    color:     new THREE.Color(color),
+    metalness: 0.10,
+    roughness: 0.85,
+  });
+
+  const brickCfg = {
+    width:       brickLength,   // local-X — along the tangent
+    height:      brickHeight,   // local-Y — radial-outward
+    depth:       brickThick,    // local-Z — Z protrusion forward
+    mortarGap:   mortarGap ?? 0.04,
+    faultAmount: 0.03,
+    chamfer:     0.03,
+  };
+
+  const localX = new THREE.Vector3();
+  const localY = new THREE.Vector3();
+  const localZ = new THREE.Vector3(0, 0, 1);
+  const halfL  = brickLength * 0.5;
+  const halfHr = brickHeight * 0.5;
+  const placedOBBs = [];
+  const bricks = [];
+
+  // Per-sample radial offset:
+  //   outwardOffset > 0 → push OUT by (outwardOffset + halfH); brick
+  //                       body sits entirely OUTSIDE silhouette[0].
+  //   outwardOffset = 0 → push IN by (halfH + inwardSafety); brick
+  //                       outer face sits inwardSafety units inside
+  //                       silhouette[0], so the brick's straight outer
+  //                       edge can't poke past the curving silhouette
+  //                       between sample points (esp. near concave
+  //                       corners — the SDG flare-to-dome transitions).
+  const pushDist = outwardOffset > 0
+    ? (outwardOffset + halfH)
+    : -(halfH + inwardSafety);
+  for (let i = 0; i < samples.length; i++) {
+    const s  = samples[i];
+    const tx = s.tx, ty = s.ty;
+    const out = outwardNormal2D(tx, ty);
+    // rotate90: swap which world direction each local brick axis maps
+    // to, rotating every brick 90° about its own local-Z. Default puts
+    // brickLength (local-X) along the tangent and brickHeight (local-Y)
+    // radial-outward. With rotate90, brickLength runs RADIAL and
+    // brickHeight runs along the tangent — visually rotating each
+    // voussoir a quarter turn relative to the curve.
+    if (rotate90) {
+      localX.set(out.x, out.y, 0).normalize();
+      localY.set(-tx, -ty, 0).normalize();
+    } else {
+      localX.set(tx, ty, 0).normalize();
+      localY.set(out.x, out.y, 0).normalize();
+    }
+    const cx = s.x + out.x * pushDist;
+    const cy = s.y + out.y * pushDist;
+
+    // SAT OBB collision against every brick already placed in this
+    // ring — on tight curve sections two adjacent samples can rotate
+    // enough that the rectangles would overlap at their inner
+    // corners. Skipping the collider keeps the ring clean. With
+    // rotate90 the brick's halfL extends along the OUTWARD axis, not
+    // the tangent — pass the matching orientation to obbCorners.
+    const obb = rotate90
+      ? obbCorners(cx, cy, halfL, halfHr, out.x, out.y)
+      : obbCorners(cx, cy, halfL, halfHr, tx, ty);
+    let collided = false;
+    for (let k = 0; k < placedOBBs.length; k++) {
+      if (obbsOverlap(obb, placedOBBs[k])) { collided = true; break; }
+    }
+    if (collided) continue;
+    placedOBBs.push(obb);
+
+    const geo  = makeBrickGeometry(seedOffset + i, brickCfg);
+    const mesh = new THREE.Mesh(geo, material);
+    mesh.position.set(cx, cy, zCenter);
+    mesh.quaternion.copy(basisQuat(localX, localY, localZ));
+    group.add(mesh);
+    bricks.push(mesh);
   }
   return bricks;
 }
@@ -446,6 +1137,22 @@ export function createArch({ silhouette, maxZ, frameDepth = 0.5,
     roughness: 0.75,
   });
 
+  // Dark / light gradient anchors. The floor (deepest, farthest from
+  // camera) uses `gradientDark`; each top-layer staircase step then
+  // lerps a notch lighter as it rises forward, with the outermost
+  // step pinned to `gradientBright`.
+  const gradientDark   = new THREE.Color(cfg.gradientDark   || '#5C4530');
+  const gradientBright = new THREE.Color(cfg.gradientBright || '#E0BE89');
+
+  // Floor material — explicit dark colour so the deepest layer reads
+  // as the value floor of the gradient. Keeps `archMat` (used by the
+  // outer / cascade rows) untouched.
+  const floorMat = new THREE.MeshStandardMaterial({
+    color:     gradientDark,
+    metalness: 0.10,
+    roughness: 0.85,
+  });
+
   // Outline curve — full closed perimeter of the gate-frame inner aperture
   // (so bricks wrap continuously around top + sides + bottom). Both arch
   // rows reuse these samples; the cascade row keeps the same source so
@@ -456,6 +1163,20 @@ export function createArch({ silhouette, maxZ, frameDepth = 0.5,
     brickHeight:   brickCfg.height,
     brickWidth:    brickCfg.width,
   });
+
+  // Springer Y — used by the muqarnas region clipper (we tile cells only
+  // above this Y so the SDG side flares aren't decorated with cells).
+  // Re-derived from the perimeter polygon's Y extent the same way
+  // buildArchCurve does it.
+  {
+    let minPy = Infinity, maxPy = -Infinity;
+    for (const p of curve.perimeterPoly) {
+      if (p.y < minPy) minPy = p.y;
+      if (p.y > maxPy) maxPy = p.y;
+    }
+    const sFrac = cfg.floor?.springerYFrac ?? 0.30;
+    curve.springerY = minPy + (maxPy - minPy) * sFrac;
+  }
 
   // Z anchor: arch bricks sit just in front of the gate frame. The brick's
   // local-X (longest dim, brickCfg.width) maps to world-Z, so it's `width`
@@ -479,51 +1200,86 @@ export function createArch({ silhouette, maxZ, frameDepth = 0.5,
     });
   }
 
-  // --- Muqarnas tiers ---
-  // Stack of pointed-arch cell rings stepping inward (radially) and
-  // BACKWARD (in -Z, dug into the wall thickness) toward the central
-  // star void. Tier 0 sits flush with the gate-frame front; each
-  // successive tier's cells are recessed by `tierStepZ`, so the eye
-  // reads the tiers as a vault descending into the model body. Each
-  // tier polygon is inset by exactly the cell's radial size so cells
-  // nest tier-to-tier without gaps. Adjacent tiers are angularly
-  // offset by half a cell so seams stagger like brick courses. Material
-  // darkens per tier toward `gradientDark`, so the innermost tiers fade
-  // into the central glow. Sparks pick these up via the edge-harvest
-  // pass below.
+  // --- Muqarnas vault (fractal-scaled) ---
+  // Pointed-arch niches DUG INTO the wall depth, restricted to the dome
+  // region above the springer line so the SDG side flares aren't tiled.
+  // Each tier r uses cell dimensions scaled by `fractalScale^r` from
+  // tier 0; because cell width shrinks geometrically while the inset
+  // polygon's perimeter shrinks roughly linearly, the cell COUNT per
+  // tier grows ~geometrically too — i.e. a self-similar/fractal packing
+  // where every successive tier exposes finer detail at half the scale.
+  // All cells stay strictly within the silhouette (clipped polygon) and
+  // strictly within the logo's depth (the deepest tier sits inside the
+  // gate-frame thickness plus a bite of the logo body, never forward of
+  // the gate-frame front face).
   const muqCfg = cfg.muqarnas || {};
   if (muqCfg.enabled !== false && (muqCfg.tierCount || 0) > 0) {
     const baseColor = new THREE.Color(cfg.color || '#9A7544');
     const darkColor = new THREE.Color(cfg.gradientDark || '#5C4530');
+
+    // Use the full inset perimeter as the base polygon. placeMuqarnasTier
+    // filters individual cells against the silhouette cutouts (so cells
+    // never enter the star bay) and orients each cell toward the dome's
+    // centroid (so cells point inward consistently regardless of
+    // concave silhouette features like the SDG side flares).
     let polygon = curve.perimeterPoly;
+
+    // Inward-pointing target for every cell. We prefer the centroid of
+    // the FIRST inner cutout (silhouette[1] — the star bay), so cells
+    // literally face the star regardless of how the SDG side flares
+    // pull the dome polygon's centroid off-axis. Fall back to the dome
+    // polygon's centroid if there's no inner cutout.
+    let cx = 0, cy = 0;
+    const inwardLoop = (silhouette.length > 1 && silhouette[1].length >= 3)
+      ? silhouette[1]
+      : curve.perimeterPoly;
+    for (const p of inwardLoop) { cx += p.x; cy += p.y; }
+    cx /= inwardLoop.length;
+    cy /= inwardLoop.length;
+
+    const silhouettesForFilter = silhouette;
+
+    const fractalScale = muqCfg.fractalScale ?? 0.78;
+
     for (let r = 0; r < muqCfg.tierCount; r++) {
-      // Bail out if the polygon has collapsed.
-      let perim = 0;
-      for (let i = 0; i < polygon.length; i++) {
-        const a = polygon[i], b = polygon[(i + 1) % polygon.length];
-        perim += Math.hypot(b.x - a.x, b.y - a.y);
+      const perim = polyPerimeter(polygon);
+      if (perim < (muqCfg.minPerimeter || 6)) break;
+
+      // Stop the tier loop once the inset polygon has entered a cutout.
+      // We measure what fraction of the polygon's vertices sit inside
+      // the SOLID silhouette region (= inside silhouette[0] AND outside
+      // every cutout). When more than `cutoutStopFrac` of vertices have
+      // crossed a cutout boundary, placing cells from this polygon
+      // creates a thin ring of cells around the cutout (the unwanted
+      // "star outline") so we abort instead.
+      let solidCount = 0;
+      for (const p of polygon) {
+        if (insideSilhouette(p.x, p.y, silhouettesForFilter)) solidCount++;
       }
-      if (perim < (muqCfg.minPerimeter || 8)) break;
+      const cutoutStopFrac = muqCfg.cutoutStopFrac ?? 0.85;
+      if (solidCount / polygon.length < cutoutStopFrac) break;
 
-      // Per-tier cell sizes. cellShrink^r squeezes all three dims.
-      const shrink     = Math.pow(muqCfg.cellShrink || 1.0, r);
-      const cellW      = (muqCfg.cellWidth       || 1.8) * shrink;
-      const cellRadial = (muqCfg.cellRadialDepth || 2.0) * shrink;
-      const cellThick  = (muqCfg.cellThickness   || 0.6) * shrink;
+      // Fractal-scaled cell dims for this tier.
+      const scale      = Math.pow(fractalScale, r);
+      const cellW      = (muqCfg.cellWidth       || 3.0) * scale;
+      const cellRadial = (muqCfg.cellRadialDepth || 2.4) * scale;
+      const cellThick  = (muqCfg.cellThickness   || 0.5) * scale;
 
-      // Tier z: front face at gateFrontZ for r=0, stepping deeper into
-      // the wall by `tierStepZ` per tier. Cell mesh is centred on
-      // mid-thickness, so position.z = frontFace - cellThick/2.
-      const tierStep  = muqCfg.tierStepZ || 0.35;
+      // Tier Z: front face stepping back from gateFrontZ by tierStepZ
+      // per tier. Tier 0 sits flush with the gate-frame front and the
+      // deepest tier sinks into the model body. Cell mesh centres on
+      // mid-thickness.
+      const tierStep  = muqCfg.tierStepZ || 0.5;
       const tierFront = gateFrontZ - r * tierStep;
       const zCenter   = tierFront - cellThick * 0.5;
 
-      // Material darkens toward gradientDark; deeper tiers more so.
-      const t        = muqCfg.tierCount > 1 ? r / (muqCfg.tierCount - 1) : 0;
-      const mixT     = Math.min(1, t * (muqCfg.colorMix || 0));
-      const tierCol  = baseColor.clone().lerp(darkColor, mixT);
-      const aDrop    = (muqCfg.opacityFalloff || 0) * t;
-      const tierMat  = new THREE.MeshStandardMaterial({
+      // Material darkens toward gradientDark per tier so deeper niches
+      // read as shaded interiors.
+      const t       = muqCfg.tierCount > 1 ? r / (muqCfg.tierCount - 1) : 0;
+      const mixT    = Math.min(1, t * (muqCfg.colorMix || 0));
+      const tierCol = baseColor.clone().lerp(darkColor, mixT);
+      const aDrop   = (muqCfg.opacityFalloff || 0) * t;
+      const tierMat = new THREE.MeshStandardMaterial({
         color:       tierCol,
         metalness:   0.15,
         roughness:   0.85,
@@ -531,9 +1287,16 @@ export function createArch({ silhouette, maxZ, frameDepth = 0.5,
         opacity:     1 - aDrop,
       });
 
-      // Stagger every other tier by half a cell so cell seams in
-      // adjacent tiers don't line up radially.
       const startOffset = (muqCfg.tierOffsetAlternate && (r % 2 === 1)) ? 0.5 : 0;
+
+      // Back-wall config — same dark wall material across tiers so the
+      // shadow read is consistent. Slightly less aggressive on the inner
+      // tiers (smaller scale) so they don't crowd out the visible cell.
+      const backWall = muqCfg.backWallEnabled !== false ? {
+        scale:  muqCfg.backWallScale  ?? 0.72,
+        offset: muqCfg.backWallOffset ?? 0.15,
+        color:  new THREE.Color(muqCfg.backWallColor || '#1A0A04'),
+      } : null;
 
       placeMuqarnasTier({
         polygon,
@@ -542,13 +1305,20 @@ export function createArch({ silhouette, maxZ, frameDepth = 0.5,
         cellThick,
         zCenter,
         startOffset,
-        material: tierMat,
+        material:    tierMat,
         group,
+        silhouettes: silhouettesForFilter,
+        centerX:     cx,
+        centerY:     cy,
+        backWall,
       });
 
-      // Next tier sits flush against this tier's inner edge — inset by
-      // exactly the cell's radial size.
-      polygon = insetPolygon(polygon, cellRadial);
+      // Inset by `cellRadial * tierOverlap` for the next tier — when
+      // tierOverlap < 1 the next tier's cells overlap radially with the
+      // current tier's, interlocking like a honeycomb instead of stacking
+      // edge-to-edge with gaps.
+      const tierOverlap = muqCfg.tierOverlap ?? 1.0;
+      polygon = insetPolygon(polygon, cellRadial * tierOverlap);
     }
   }
 
@@ -574,22 +1344,353 @@ export function createArch({ silhouette, maxZ, frameDepth = 0.5,
 
   // --- Floor fill ---
   if (cfg.floor?.enabled !== false) {
-    // Floor bricks lie flat: brick.height is the world-Z thickness. Park
-    // the brick BOTTOM on the logo's front face (maxZ) so the floor reads
-    // as resting inside the gate frame aperture, just above the model.
-    // Bounds = the inset polygon (gate-frame inner aperture) so the fill
-    // hugs the same boundary the outline ring sits on, with no springer
-    // cut — bricks tile the entire aperture interior.
+    // Flat brick layer that fills the gate-frame aperture interior.
+    // If `floor.innerInset` is set, an inner-cutout polygon is computed
+    // (perimeterPoly inset by that distance) and passed alongside the
+    // outer perimeter — placeFloor's even-odd silhouette test then
+    // skips bricks whose centre lands inside the cutout, leaving the
+    // central panel bare so only the OUTER BAND of bricks is laid.
     const floorZCenter = maxZ + (cfg.floor?.yLevel || 0) + brickCfg.height * 0.5;
+    const floorSilhouettes = [curve.perimeterPoly];
+    const innerInset = cfg.floor?.innerInset || 0;
+    if (innerInset > 0) {
+      const innerCutout = insetPolygon(curve.perimeterPoly, innerInset);
+      if (innerCutout && innerCutout.length >= 3) {
+        floorSilhouettes.push(innerCutout);
+      }
+    }
     placeFloor({
-      silhouettes: [curve.perimeterPoly],
+      silhouettes: floorSilhouettes,
       brickCfg,
       floorCfg: cfg.floor || {},
       zCenter: floorZCenter,
-      material: archMat,
+      material: floorMat,
       group,
       seedOffset: 5000,
     });
+  }
+
+  // --- Top-layer staircase (L/R/T band, depth steps inward) ---
+  // Bricks stream IN from the LEFT, RIGHT, and TOP edges of the logo
+  // silhouette and stop after reaching `topCfg.reachFraction` of the
+  // half-dimension in each direction. The bottom edge is bare. Each
+  // brick's Z thickness is quantised into `topCfg.stepCount` discrete
+  // levels — outermost bricks are tallest, innermost shortest — so
+  // the layer reads as a staircase building up depth as you move away
+  // from the centre. Bricks are filtered against silhouette[0] so they
+  // never poke past the logo perimeter.
+  const topCfg = cfg.topLayer;
+  if (topCfg?.enabled !== false && silhouette[0] && silhouette[0].length >= 3) {
+    const topBrickCfgBase = {
+      width:       brickCfg.width  * (topCfg.widthScale ?? 1.0),
+      height:      brickCfg.height,  // overridden per-brick by stair step
+      depth:       brickCfg.depth  * (topCfg.depthScale ?? 1.0),
+      mortarGap:   brickCfg.mortarGap ?? 0,
+      mortarGapX:  topCfg.mortarGapX ?? brickCfg.mortarGapX ?? 0,
+      mortarGapY:  topCfg.mortarGapY ?? brickCfg.mortarGapY ?? 0,
+      faultAmount: brickCfg.faultAmount ?? 0.05,
+      chamfer:     brickCfg.chamfer ?? 0.03,
+    };
+    // Stencil mask — render a flat fill of the logo silhouette into
+    // the stencil buffer first, then make the brick material only draw
+    // where stencil=1. Same technique as 3DOverlay.js's flower/rosette
+    // mask: any brick fragment that pokes past the silhouette outline
+    // is GPU-discarded by the stencil test, so the layer is clipped
+    // exactly to the logo shape regardless of where individual brick
+    // corners land relative to silhouette[0]. Inset by a hair so the
+    // mask sits just inside the perimeter and stencilled bricks don't
+    // produce a 1-px halo.
+    const maskInset = topCfg.maskInset ?? 0.4;
+    const sil = maskInset > 0
+      ? insetPolygon(silhouette[0], maskInset)
+      : silhouette[0];
+    const maskShape = new THREE.Shape();
+    maskShape.moveTo(sil[0].x, sil[0].y);
+    for (let i = 1; i < sil.length; i++) maskShape.lineTo(sil[i].x, sil[i].y);
+    const maskGeo = new THREE.ShapeGeometry(maskShape);
+    const maskMat = new THREE.MeshBasicMaterial({
+      colorWrite:   false,
+      depthWrite:   false,
+      depthTest:    false,
+      side:         THREE.DoubleSide,
+      stencilWrite: true,
+      stencilRef:   2,
+      stencilFunc:  THREE.AlwaysStencilFunc,
+      stencilZPass: THREE.ReplaceStencilOp,
+    });
+    const maskMesh = new THREE.Mesh(maskGeo, maskMat);
+    maskMesh.name = 'arch-toplayer-stencil-mask';
+    maskMesh.position.z = maxZ;     // depthTest off — z is irrelevant
+    maskMesh.renderOrder = -50;     // first in opaque pass for this group
+    group.add(maskMesh);
+
+    // Per-step gradient materials. Total levels = numSteps + 1
+    // (floor at level 0, outermost step at level numSteps). For step
+    // s in [0..numSteps-1], level = numSteps - s, so:
+    //   stepIdx 0 (outermost / closest to camera) → t = 1   → gradientBright
+    //   stepIdx numSteps-1 (innermost / by floor) → t = 1/N → just lighter
+    //                                                          than the floor
+    // Each material reads the stencil mask (stencilRef=2) so brick
+    // fragments outside the silhouette are GPU-discarded.
+    const numSteps = Math.max(1, topCfg.stepCount ?? 4);
+    const stepMats = [];
+    for (let s = 0; s < numSteps; s++) {
+      const t = numSteps > 0 ? (numSteps - s) / numSteps : 1.0;
+      const c = gradientDark.clone().lerp(gradientBright, t);
+      stepMats.push(new THREE.MeshStandardMaterial({
+        color:        c,
+        metalness:    0.10,
+        roughness:    0.85,
+        stencilWrite: true,
+        stencilRef:   2,
+        stencilFunc:  THREE.EqualStencilFunc,
+        stencilFail:  THREE.KeepStencilOp,
+        stencilZFail: THREE.KeepStencilOp,
+        stencilZPass: THREE.KeepStencilOp,
+      }));
+    }
+    // Back face of every top-layer brick sits on the floor's top
+    // surface plus zLift. Taller stair-steps then push out further
+    // toward the camera; shorter inner steps stay closer to the floor.
+    const floorTopZ = maxZ + (cfg.floor?.yLevel || 0) + brickCfg.height;
+    const backZ     = floorTopZ + (topCfg.zLift ?? 0.05);
+    placeTopLayer({
+      outerSilhouette: silhouette[0],
+      brickCfgBase:    topBrickCfgBase,
+      floorCfg:        cfg.floor || {},
+      backZ,
+      stepMats,
+      group,
+      seedOffset:      5500,
+      topCfg,
+    });
+  }
+
+  // --- Embossed geometric inlays ---
+  // Four 8-point geometric medallions, one centred in each quadrant
+  // formed by the star bay against the outer silhouette bbox. Sit flat
+  // on top of the brick floor (small relief depth) so they read as
+  // embossed decoration on the panel surface, matching the reference.
+  const inlayCfg = cfg.inlays;
+  if (inlayCfg?.enabled !== false && silhouette[0] && silhouette[1]
+      && silhouette[1].length >= 3) {
+    const star = silhouette[1];
+    const sc = polyCentroid(star);
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const p of silhouette[0]) {
+      if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+    }
+    // Panel centres = midpoint between silhouette bbox corner and star
+    // centroid, in each of the four quadrants.
+    const centres = [
+      { x: (minX + sc.x) * 0.5, y: (maxY + sc.y) * 0.5 },  // upper-left
+      { x: (maxX + sc.x) * 0.5, y: (maxY + sc.y) * 0.5 },  // upper-right
+      { x: (minX + sc.x) * 0.5, y: (minY + sc.y) * 0.5 },  // lower-left
+      { x: (maxX + sc.x) * 0.5, y: (minY + sc.y) * 0.5 },  // lower-right
+    ];
+    const inlayMat = new THREE.MeshStandardMaterial({
+      color:     new THREE.Color(inlayCfg.color || '#D4A06A'),
+      metalness: 0.20,
+      roughness: 0.65,
+    });
+    const floorTopZ = maxZ + (cfg.floor?.yLevel || 0) + brickCfg.height;
+    const inlayZ = floorTopZ + (inlayCfg.zLift ?? 0.05);
+    const radius = inlayCfg.radius ?? 1.6;
+    const depth  = inlayCfg.depth  ?? 0.18;
+    const geo = makeOctaInlayGeometry(radius, depth);
+    for (const c of centres) {
+      const m = new THREE.Mesh(geo, inlayMat);
+      m.position.set(c.x, c.y, inlayZ);
+      group.add(m);
+    }
+  }
+
+  // --- Lit lantern niches ---
+  // Four pointed-arch alcoves, one per panel quadrant. Each houses an
+  // emissive flame mesh and a real PointLight whose intensity flickers
+  // via a two-sine envelope. Lantern positions are interpolated between
+  // the panel-quadrant centroid (used for the inlays above) and a
+  // y-fraction parameter from config so the user can place them above
+  // or below the panel inlay.
+  const lanternUpdaters = [];
+  const lantCfg = cfg.lanterns;
+  if (lantCfg?.enabled !== false && silhouette[0] && silhouette[1]
+      && silhouette[1].length >= 3) {
+    const star = silhouette[1];
+    const sc = polyCentroid(star);
+    let lminX = Infinity, lmaxX = -Infinity, lminY = Infinity, lmaxY = -Infinity;
+    for (const p of silhouette[0]) {
+      if (p.x < lminX) lminX = p.x; if (p.x > lmaxX) lmaxX = p.x;
+      if (p.y < lminY) lminY = p.y; if (p.y > lmaxY) lmaxY = p.y;
+    }
+    const quadCentres = [
+      { x: (lminX + sc.x) * 0.5, y: (lmaxY + sc.y) * 0.5 },  // UL
+      { x: (lmaxX + sc.x) * 0.5, y: (lmaxY + sc.y) * 0.5 },  // UR
+      { x: (lminX + sc.x) * 0.5, y: (lminY + sc.y) * 0.5 },  // LL
+      { x: (lmaxX + sc.x) * 0.5, y: (lminY + sc.y) * 0.5 },  // LR
+    ];
+    const floorTopZL = maxZ + (cfg.floor?.yLevel || 0) + brickCfg.height;
+    const niches = lantCfg.positions || [
+      { panel: 0, yOffset:  1.6 }, { panel: 1, yOffset:  1.6 },
+      { panel: 2, yOffset: -1.6 }, { panel: 3, yOffset: -1.6 },
+    ];
+    for (const n of niches) {
+      const c = quadCentres[n.panel];
+      if (!c) continue;
+      const lx = c.x;
+      const ly = c.y + (n.yOffset ?? 0);
+      const niche = createLanternNiche({
+        x: lx, y: ly,
+        frameZ: floorTopZL + (lantCfg.zLift ?? 0.10),
+        cfg: lantCfg,
+      });
+      group.add(niche.group);
+      lanternUpdaters.push(niche.update);
+    }
+  }
+
+  // --- Outer brick arch (upside-down U on the logo perimeter) ---
+  // Chunky voussoir-style bricks tiled along silhouette[0] above the
+  // springer line. Bricks are tangent-aligned so each one's tangent
+  // face flushes with its neighbour's, reading as a real archway's
+  // wedge stones. Inset by half-brick-height so the outer face kisses
+  // silhouette[0] and the body extends ONLY one brick-height inward —
+  // no stone reaches into the inner region of the logo.
+  const obaCfg = cfg.outerBrickArch;
+  if (obaCfg?.enabled !== false && silhouette[0] && silhouette[0].length >= 3) {
+    const obaThick = obaCfg.brickThick ?? 1.5;
+    // Star bay clearance — keep the arch's feet above the star.
+    let starMaxY = -Infinity;
+    if (silhouette[1] && silhouette[1].length >= 3) {
+      for (const p of silhouette[1]) if (p.y > starMaxY) starMaxY = p.y;
+    }
+    const minSpringerY = starMaxY > -Infinity
+      ? starMaxY + (obaCfg.starClearance ?? 1.0)
+      : undefined;
+    placeOuterBrickArch({
+      silhouette:    silhouette[0],
+      springerYFrac: obaCfg.springerYFrac ?? 0.30,
+      minSpringerY,
+      brickLength:   obaCfg.brickLength ?? 5.0,
+      brickHeight:   obaCfg.brickHeight ?? 2.5,
+      brickThick:    obaThick,
+      mortarGap:     obaCfg.mortarGap ?? 0.06,
+      zCenter:       gateFrontZ + (obaCfg.zLift ?? 0.5) + obaThick * 0.5,
+      color:         obaCfg.color || cfg.gradientBright || '#E0BE89',
+      group,
+      seedOffset:    9500,
+    });
+  }
+
+  // --- Outer frame arch (outside the logo, left/right/top) ---
+  // Larger voussoir bricks tiled along silhouette[0] OUTSET by outwardOffset
+  // so the ring sits entirely outside the logo perimeter, framing it from
+  // the outside. Same upside-down U shape as outerBrickArch (top + sides;
+  // bottom edge bare) but the brick body lives in negative space beyond
+  // the silhouette instead of inside it.
+  const ofaCfg = cfg.outerFrameArch;
+  if (ofaCfg?.enabled !== false && silhouette[0] && silhouette[0].length >= 3) {
+    const ofaThick = ofaCfg.brickThick ?? 2.0;
+    placeOuterBrickArch({
+      silhouette:    silhouette[0],
+      springerYFrac: ofaCfg.springerYFrac ?? 0.20,
+      brickLength:   ofaCfg.brickLength ?? 8.0,
+      brickHeight:   ofaCfg.brickHeight ?? 4.0,
+      brickThick:    ofaThick,
+      mortarGap:     ofaCfg.mortarGap ?? 0.08,
+      zCenter:       gateFrontZ + (ofaCfg.zLift ?? 0.5) + ofaThick * 0.5,
+      color:         ofaCfg.color || cfg.gradientBright || '#E0BE89',
+      outwardOffset: ofaCfg.outwardOffset ?? 0.6,
+      rotate90:      ofaCfg.rotate90 ?? false,
+      inwardSafety:  ofaCfg.inwardSafety ?? 0,
+      group,
+      seedOffset:    9700,
+    });
+  }
+
+  // --- Outer frame bricks ---
+  // Visible cut-stone bricks tiled along the gate frame's outer
+  // perimeter. The polygon is silhouette[0] inset inward by half a
+  // brick's radial height so each brick sits FULLY inside the logo
+  // silhouette (its outer face just kisses silhouette[0], satisfying
+  // "nothing extends beyond the logo"). Z places the brick centre just
+  // in front of the gate-frame front face so the stones read as a ring
+  // of decorative blocks lining the frame.
+  const ofCfg = cfg.outerFrame;
+  if (ofCfg?.enabled !== false && silhouette[0] && silhouette[0].length >= 3) {
+    const halfH = ofCfg.brickHeight * 0.5;
+    const ofPoly = insetPolygon(silhouette[0], halfH);
+    placeStarRail({
+      railPolygon:  ofPoly,
+      brickLength:  ofCfg.brickLength,
+      brickHeight:  ofCfg.brickHeight,
+      brickThick:   ofCfg.thickness,
+      mortarGap:    ofCfg.mortarGap ?? 0.04,
+      zCenter:      gateFrontZ + ofCfg.thickness * 0.5,
+      color:        ofCfg.color || cfg.color || '#9A7544',
+      group,
+      seedOffset:   8000,
+    });
+  }
+
+  // --- Inner frame bricks (second ring framing the floor wall) ---
+  // A medium-sized brick ring sitting INSIDE the outer-frame stones,
+  // framing the inner floor brick wall. Its polygon = silhouette[0]
+  // inset by `inset` (so it lives radially inside the outer frame),
+  // and its Z sits above the floor wall but below the outer frame's
+  // forward Z, giving a layered "frame inside a frame" read.
+  const ifCfg = cfg.innerFrame;
+  if (ifCfg?.enabled !== false && silhouette[0] && silhouette[0].length >= 3) {
+    const ifPoly = insetPolygon(silhouette[0], ifCfg.inset);
+    if (ifPoly && ifPoly.length >= 3) {
+      const floorTopZ = maxZ + (cfg.floor?.yLevel || 0) + brickCfg.height;
+      placeStarRail({
+        railPolygon:  ifPoly,
+        brickLength:  ifCfg.brickLength,
+        brickHeight:  ifCfg.brickHeight,
+        brickThick:   ifCfg.thickness,
+        mortarGap:    ifCfg.mortarGap ?? 0.04,
+        zCenter:      floorTopZ + (ifCfg.zLift ?? 0.10) + ifCfg.thickness * 0.5,
+        color:        ifCfg.color || cfg.color || '#9A7544',
+        group,
+        seedOffset:   8500,
+      });
+    }
+  }
+
+  // --- Curved star rails ---
+  // Layered brick bands that wrap the inner star bay (silhouette[1]) at
+  // increasing outward offsets. Each rail = one ring of bricks tiled
+  // along the offset polygon. Together with the muqarnas above and the
+  // floor bricks below, this gives the reference's "framed star" read.
+  // Reference: ANIM.arch.starRails.rails — list of {offset, zLift,
+  // brickHeight, brickLength, color} entries.
+  const railsCfg = cfg.starRails;
+  if (railsCfg?.enabled !== false && silhouette.length > 1
+      && Array.isArray(railsCfg?.rails) && railsCfg.rails.length > 0) {
+    const star = silhouette[1];
+    const starC = polyCentroid(star);
+    // Same Z floor reference as the floor-fill back wall: rails sit just
+    // in front of the floor so they read as raised brick bands on top
+    // of the panel surface.
+    const floorTopZ = maxZ + (cfg.floor?.yLevel || 0) + brickCfg.height;
+    let seed = 9000;
+    for (const rail of railsCfg.rails) {
+      const railPoly = offsetPolygonFromPoint(star, starC.x, starC.y, rail.offset);
+      placeStarRail({
+        railPolygon:  railPoly,
+        brickLength:  rail.brickLength,
+        brickHeight:  rail.brickHeight,
+        brickThick:   rail.brickThick ?? 0.4,
+        mortarGap:    railsCfg.mortarGap ?? 0.04,
+        zCenter:      floorTopZ + (rail.zLift ?? 0),
+        color:        rail.color || cfg.color || '#9A7544',
+        group,
+        seedOffset:   seed,
+      });
+      seed += 500;
+    }
   }
 
   // Invisible LineSegments cloned from every brick's edges. Lives inside
@@ -603,11 +1704,13 @@ export function createArch({ silhouette, maxZ, frameDepth = 0.5,
   const _edgeVec = new THREE.Vector3();
   group.traverse(obj => {
     if (!obj.isMesh || !obj.geometry) return;
-    if (obj.userData.restPos) {
-      _edgeMat.compose(obj.userData.restPos, obj.quaternion, obj.scale);
-    } else {
-      _edgeMat.copy(obj.matrix);
-    }
+    // Compose from position/quaternion/scale rather than reading obj.matrix:
+    // mesh.matrix is only refreshed by updateMatrixWorld(), which the renderer
+    // hasn't run yet, so obj.matrix is still identity here. Cascade bricks
+    // substitute restPos because they're parked at startPos for the pre-
+    // cascade pose, and we want the snap cloud to reflect final geometry.
+    const posForMat = obj.userData.restPos || obj.position;
+    _edgeMat.compose(posForMat, obj.quaternion, obj.scale);
     const edges = new THREE.EdgesGeometry(obj.geometry);
     const arr = edges.attributes.position.array;
     for (let i = 0; i < arr.length; i += 3) {
@@ -634,6 +1737,9 @@ export function createArch({ silhouette, maxZ, frameDepth = 0.5,
   function triggerCascade(t) { cascadeStartTime = t; lastFireTime = t; }
 
   function update(t /*, dt */) {
+    // Tick every lantern's flicker (independent of cascade state).
+    for (const u of lanternUpdaters) u(t);
+
     const c = cfg.innerArch?.cascade;
     if (!c || cascadeBricks.length === 0) return;
     // Auto-fire on first call after triggerDelay; honour repeatPeriod.

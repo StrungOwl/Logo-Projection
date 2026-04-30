@@ -14,6 +14,10 @@ import { addParticles, updateParticles } from './particles.js';
 
 const { scene, camera, renderer, controls } = createScene();
 const lights = createLights(scene);
+// Captured here at scene-build time so the per-frame env toggle in
+// fireplace mode can restore the original PMREM cubemap when leaving
+// the mode (vs. permanently overwriting scene.environment with null).
+const baseEnvironment = scene.environment;
 
 // Shared per-frame context. Populated as async init resolves; `tick()`
 // no-ops on any null it finds, so the live loop can start immediately
@@ -26,6 +30,8 @@ const ctx = {
   sparkSystems:       [],
   updateRowCascade:   null,
   cascadeState:       null,
+  updateFractalZoom:  null,
+  fractalState:       null,
   updateRotations:    null,
   updateOverlay:      null,
   // Per-effect group handles. Keyed visibility (0–5 view modes) reads
@@ -41,7 +47,9 @@ const ctx = {
   triggerArchCascade: null,
   flameGroup:         null,
   updateFlame:        null,
-  flameLight:         null,
+  flameLights:        [],
+  fireplaceGroup:     null,
+  updateFireplace:    null,
   lights,
   scene,
   camera,
@@ -58,6 +66,8 @@ loadLogo().then((logo) => {
   ctx.sparkSystems.push(...patternResult.sparkSystems);
   ctx.updateRowCascade   = patternResult.updateRowCascade;
   ctx.cascadeState       = patternResult.cascadeState;
+  ctx.updateFractalZoom  = patternResult.updateFractalZoom;
+  ctx.fractalState       = patternResult.fractalState;
   ctx.updateRotations    = patternResult.updateRotations;
   ctx.panelGroup         = patternResult.panelGroup;
   ctx.latticeGroup       = patternResult.latticeGroup;
@@ -67,7 +77,9 @@ loadLogo().then((logo) => {
   ctx.triggerArchCascade = patternResult.triggerArchCascade;
   ctx.flameGroup         = patternResult.flameGroup;
   ctx.updateFlame        = patternResult.updateFlame;
-  ctx.flameLight         = patternResult.flameLight;
+  ctx.flameLights        = patternResult.flameLights || [];
+  ctx.fireplaceGroup     = patternResult.fireplaceGroup;
+  ctx.updateFireplace    = patternResult.updateFireplace;
 
   // cascadeState is passed in so the overlay can sync its brick↔petals
   // morph to the cascade's all-at-center window when ANIM.timings.playAll
@@ -99,8 +111,8 @@ loadLogo().then((logo) => {
 export function tick(t, dt) {
   if (ctx.galaxyMat) {
     ctx.galaxyMat.uniforms.uTime.value       = t * ANIM.galaxy.timeScale;
-    // In flame mode, lerp uBrightness toward the configured override so
-    // the backdrop is dimmer and the flame body reads clearly against
+    // In fireplace mode, lerp uBrightness toward the configured override
+    // so the backdrop is dimmer and the flame body reads clearly against
     // mostly-black sky-with-stars.
     const galStarry = ctx.galaxyMat.uniforms.uStarryMode.value;
     const flameBg = (ANIM.flame && ANIM.flame.galaxyStarry && ANIM.flame.galaxyStarry.brightness);
@@ -115,39 +127,61 @@ export function tick(t, dt) {
   // View-mode + master-toggle gating. The base scene (logo galaxy, gate
   // frame, particles, lights) stays on across every mode. Each effect
   // family is shown only in 'all' or its own solo mode.
-  //   0 → 'all'      panel + lattice + flower-overlay (NO arch, NO flame)
-  //   1 → 'pattern'  panel + lattice underlay (front-pattern combo)
-  //   2 → 'hex'      overlay BIG hex bricks only (entry/rotation/exit)
-  //   3 → 'flowers'  full flower overlay (hex bricks → roses → bricks)
-  //   4 → 'arch'     procedural-brick arch
-  //   5 → 'flame'    volumetric flame in the central cutout + starry sky
+  //   0 → 'all'        panel + lattice + flower-overlay
+  //   1 → 'pattern'    panel + lattice underlay (front-pattern combo)
+  //   2 → 'hex'        overlay BIG hex bricks only (entry/rotation/exit)
+  //   3 → 'flowers'    full flower overlay (hex bricks → roses → bricks)
+  //   4 → 'fireplace'  procedural-brick arch wrapping a volumetric flame
+  //                    in the central cutout, against a starry-sky sky.
   // `ANIM.patterns.enabled === false` is the legacy kill switch — when
   // off, panel + lattice stay hidden regardless of view mode.
   const mode = ANIM.viewMode || 'all';
   const legacyPatterns = !(ANIM.patterns && ANIM.patterns.enabled === false);
-  const showPanel    = legacyPatterns && (mode === 'all' || mode === 'pattern');
-  const showLattice  = legacyPatterns && (mode === 'all' || mode === 'pattern');
-  const showHexBrick = (mode === 'all' || mode === 'hex');
-  const showFlowers  = (mode === 'all' || mode === 'flowers');
-  const showArch     = (mode === 'arch');
-  const showFlame    = (mode === 'flame');
+  const showPanel     = legacyPatterns && (mode === 'all' || mode === 'pattern');
+  const showLattice   = legacyPatterns && (mode === 'all' || mode === 'pattern');
+  const showHexBrick  = (mode === 'all' || mode === 'hex');
+  const showFlowers   = (mode === 'all' || mode === 'flowers');
+  const showFireplace = (mode === 'fireplace');
   if (ctx.panelGroup)   ctx.panelGroup.visible   = showPanel;
   if (ctx.latticeGroup) ctx.latticeGroup.visible = showLattice;
-  if (ctx.archGroup)    ctx.archGroup.visible    = showArch;
-  if (ctx.flameGroup)   ctx.flameGroup.visible   = showFlame;
+  if (ctx.archGroup)    ctx.archGroup.visible    = showFireplace;
+  if (ctx.flameGroup)   ctx.flameGroup.visible   = showFireplace;
+  if (ctx.fireplaceGroup) ctx.fireplaceGroup.visible = showFireplace;
+  // Hide the smooth extruded gate-frame ring when fireplace mode wants
+  // to own the perimeter look — set ANIM.arch.hideGateFrame in config to
+  // drop the procedural frame so only the brick layers read.
+  if (ctx.gateFrameGroup) {
+    ctx.gateFrameGroup.visible = !(showFireplace && ANIM.arch && ANIM.arch.hideGateFrame);
+  }
   // Three.js checks light.visible directly when collecting scene lights —
   // hiding the parent group does NOT remove the light from the shader's
-  // light list. Set it explicitly so the flame's PointLight only colours
-  // the inner cutout walls while flame mode is active.
-  if (ctx.flameLight)   ctx.flameLight.visible   = showFlame;
-  // Hide the ember + white particle streams in flame mode. They emit
-  // from the inner-star outline and would visually clutter / compete
-  // with the flame body in the same negative-space region.
+  // light list. Toggle each PointLight in the flame stack so they only
+  // contribute to the inner cutout walls + arch bricks while fireplace
+  // mode is active.
+  if (ctx.flameLights) {
+    for (let i = 0; i < ctx.flameLights.length; i++) {
+      ctx.flameLights[i].visible = showFireplace;
+    }
+  }
+  // Hide the ember + white particle streams in fireplace mode. They
+  // emit from the inner-star outline and would visually clutter /
+  // compete with the flame body in the same negative-space region.
   if (ctx.particleMats) {
-    const showParticles = !showFlame;
+    const showParticles = !showFireplace;
     if (ctx.particleMats.emberPoints) ctx.particleMats.emberPoints.visible = showParticles;
     if (ctx.particleMats.whitePoints) ctx.particleMats.whitePoints.visible = showParticles;
   }
+  // Strip the scene-wide PMREM env cubemap in fireplace mode so the grey
+  // ambient wash baked into every MeshStandardMaterial (arch bricks,
+  // gate frame, logo) goes away — without this, those materials read at
+  // ~constant brightness from the env reflection regardless of light
+  // state, defeating the "only the flame illuminates" goal. Gated by
+  // ANIM.flame.stripEnvironment (default true) so the behaviour is
+  // toggleable live in devtools. Always restored when leaving fireplace
+  // mode regardless of the flag.
+  const stripEnv = showFireplace
+                && (ANIM.flame && ANIM.flame.stripEnvironment !== false);
+  scene.environment = stripEnv ? null : baseEnvironment;
   for (let i = 0; i < ctx.overlayFlowerRoots.length; i++) {
     ctx.overlayFlowerRoots[i].visible = showFlowers;
   }
@@ -167,11 +201,11 @@ export function tick(t, dt) {
     const k01 = 0.5 + 0.5 * Math.sin(phase);
     const factor = lb.brightnessMin + (lb.brightnessMax - lb.brightnessMin) * k01;
     ctx.baseColorScratch.set(COLORS.logo.base).multiplyScalar(factor);
-    // In flame mode, drop envMapIntensity heavily so the metallic env
-    // reflection doesn't wash the body warm-grey on its own — the
+    // In fireplace mode, drop envMapIntensity heavily so the metallic
+    // env reflection doesn't wash the body warm-grey on its own — the
     // flame's own point light should be the dominant illumination on
     // the logo body, with the body going dark between flicker peaks.
-    const envI = (ANIM.viewMode === 'flame')
+    const envI = (ANIM.viewMode === 'fireplace')
       ? ((ANIM.flame && ANIM.flame.envMapIntensity) ?? 0.08)
       : 1.0;
     for (let i = 0; i < ctx.logoMaterials.length; i++) {
@@ -185,20 +219,41 @@ export function tick(t, dt) {
   // Row cascade runs BEFORE both overlay and sparks: the overlay reads
   // cascadeState.playAllT to gate its brick↔petals morph to the all-at-
   // center window, and sparks read cascadeState.active for snap strength.
+  //
+  // Pattern mode (key 1) swaps the radial cascade out for the fractal
+  // lens (central magnification + back-layer fractal copies). Both
+  // updaters drive the same per-tile mesh.position/scale, so only one
+  // can run at a time. The fractal updater self-cleans when viewMode
+  // isn't 'pattern' (parks tiles back at rest, fades back layers out).
   if (ctx.updateRotations)  ctx.updateRotations(t);
-  if (ctx.updateRowCascade) ctx.updateRowCascade(t, dt);
+  const fractalActive = mode === 'pattern'
+                     && ctx.updateFractalZoom
+                     && !(ANIM.fractalZoom && ANIM.fractalZoom.enabled === false);
+  if (ctx.updateFractalZoom) ctx.updateFractalZoom(t, dt);
+  if (ctx.updateRowCascade && !fractalActive) ctx.updateRowCascade(t, dt);
+  // While the fractal lens drives pattern mode, project its λ-derived
+  // "active" value onto the existing cascade-state spark wiring: sparks
+  // snap fully when the lens is at rest (λ=0) and float free when the
+  // lens is at peak (λ=1). Disable the playAll window in this mode so
+  // the overlay doesn't try to sync to a non-existent cascade beat.
+  if (fractalActive && ctx.cascadeState && ctx.fractalState) {
+    ctx.cascadeState.active   = ctx.fractalState.active;
+    ctx.cascadeState.playAllT = -1;
+  }
   if (ctx.updateOverlay)    ctx.updateOverlay(t);
   if (ctx.updateArch)       ctx.updateArch(t, dt);
+  if (ctx.updateFireplace)  ctx.updateFireplace(t, dt);
   // Flame body shader, sparks, and flickering point light — runs every
   // frame regardless of mode so the flame keeps "warming up" off-screen
   // (no first-frame popping in when switching to mode 5).
   if (ctx.updateFlame)      ctx.updateFlame(t, dt);
 
-  // Galaxy starry-night blend — lerps toward 1 in flame mode (black sky
-  // + denser flickering stars), toward 0 otherwise (warm nebula). Eased
-  // exponentially using the configured fadeSpeed (1/sec).
+  // Galaxy starry-night blend — lerps toward 1 in fireplace mode (black
+  // sky + denser flickering stars behind the flame), toward 0 otherwise
+  // (warm nebula). Eased exponentially using the configured fadeSpeed
+  // (1/sec).
   if (ctx.galaxyMat && ctx.galaxyMat.uniforms.uStarryMode) {
-    const targetStarry = (mode === 'flame') ? 1.0 : 0.0;
+    const targetStarry = (mode === 'fireplace') ? 1.0 : 0.0;
     const fadeSpeed = (ANIM.flame && ANIM.flame.galaxyStarry && ANIM.flame.galaxyStarry.fadeSpeed) || 1.5;
     const blend = 1 - Math.exp(-fadeSpeed * dt);
     const u = ctx.galaxyMat.uniforms.uStarryMode;
@@ -225,26 +280,42 @@ export function tick(t, dt) {
   // mode). In 'all' mode they fade against the playAll overlay window
   // exactly as before.
   const inOverlayWindow = !!(ctx.cascadeState && ctx.cascadeState.playAllT >= 0);
+  // Pattern-mode dive suppression: gate sparks on λ alone, NOT cloneOp.
+  // Sparks anchor to the originals' stroke geometry — when originals are
+  // at rest (λ ≈ 0) they ride correctly, regardless of how visible the
+  // clones are. The split-fade design keeps λ at 0 for almost the entire
+  // hold window (clones do all the visible Droste-nesting work via
+  // cloneOp, originals stay still), so sparks now ride throughout the
+  // long opacity crossfade as well as the pure-static window — and only
+  // fade off during the brief λ-snap (intro tail / hold-fade edges) and
+  // the dive itself.
+  const fractalAnim = fractalActive && ctx.fractalState
+    && ctx.fractalState.lambda > 0.01;
   const sparkFadeDur = (ANIM.timings && ANIM.timings.overlay && ANIM.timings.overlay.sparkFade) || 0.8;
   const sparkBlend = 1 - Math.exp(-dt / Math.max(sparkFadeDur, 1e-3));
   for (let i = 0; i < ctx.sparkSystems.length; i++) {
     const sys = ctx.sparkSystems[i];
     // Per-system host gating: a spark system rides only when the layer it
     // attaches to is visible. panel/lattice hosts ride in 'all' or 'pattern';
-    // 'arch' rides only in arch mode. In 'all' mode they additionally fade
-    // out while the playAll overlay window is open.
+    // 'arch' rides only in fireplace mode. In 'all' mode they additionally
+    // fade out while the playAll overlay window is open.
     const host = sys.host;
     let hostVisible = false;
     if (host === 'panel' || host === 'lattice') {
       hostVisible = (mode === 'all' || mode === 'pattern');
     } else if (host === 'arch') {
-      hostVisible = (mode === 'arch');
+      hostVisible = (mode === 'fireplace');
     }
     let target = hostVisible ? 1 : 0;
     if (mode === 'all' && inOverlayWindow) target = 0;
+    if ((host === 'panel' || host === 'lattice') && fractalAnim) target = 0;
     const u = sys.uOpacity;
     if (u) u.value += (target - u.value) * sparkBlend;
     sys.snapScale = snapScale;
+    // Skip the spark physics step entirely once a system has fully faded
+    // out — saves the per-spark Verlet integration + stroke-snap lookup
+    // for the long stretches of the dive where they're invisible anyway.
+    if (u && u.value < 0.005 && target === 0) continue;
     sys.update(dt);
   }
 
@@ -293,22 +364,30 @@ if (typeof window !== 'undefined') {
     // the arch on demand.
     if (e.code === 'Space' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
       let handled = false;
-      if (ctx.cascadeState && ctx.cascadeState.triggerNow) {
+      // Pattern mode (with fractal zoom enabled) gets its own trigger that
+      // resets the loop to start a fresh zoom-in immediately. In every
+      // other mode, fall through to the radial cascade trigger.
+      const fractalEnabled = !(ANIM.fractalZoom && ANIM.fractalZoom.enabled === false);
+      if (ANIM.viewMode === 'pattern' && fractalEnabled
+          && ctx.fractalState && ctx.fractalState.triggerZoom) {
+        ctx.fractalState.triggerZoom(clock.elapsedTime);
+        handled = true;
+      } else if (ctx.cascadeState && ctx.cascadeState.triggerNow) {
         ctx.cascadeState.triggerNow(clock.elapsedTime);
         handled = true;
       }
-      if ((ANIM.viewMode === 'arch' || ANIM.viewMode === 'all') && ctx.triggerArchCascade) {
+      if ((ANIM.viewMode === 'fireplace' || ANIM.viewMode === 'all') && ctx.triggerArchCascade) {
         ctx.triggerArchCascade(clock.elapsedTime);
         handled = true;
       }
       if (handled) e.preventDefault();
       return;
     }
-    // Digit keys 0–5 (no modifiers) switch ANIM.viewMode.
+    // Digit keys 0–4 (no modifiers) switch ANIM.viewMode.
     if (!e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
       const modeByKey = {
         Digit0: 'all', Digit1: 'pattern', Digit2: 'hex',
-        Digit3: 'flowers', Digit4: 'arch', Digit5: 'flame',
+        Digit3: 'flowers', Digit4: 'fireplace',
       };
       const next = modeByKey[e.code];
       if (next) {

@@ -22,7 +22,7 @@ export function createGalaxyMaterial() {
       uFadeHeight: { value: 1.0 },
       uBrightness: { value: ANIM.galaxy.brightness },
       // Starry-night blend (0..1). Lerped toward 1 by main.js while
-      // viewMode === 'flame' — fades the nebula + warm core glow out and
+      // viewMode === 'fireplace' — fades the nebula + warm core glow out and
       // brings up an extra dense, flicker-heavy star layer over a black
       // background so the flame reads against a clear night sky.
       uStarryMode: { value: 0.0 },

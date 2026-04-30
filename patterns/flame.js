@@ -1180,30 +1180,55 @@ function buildSparks({ cutoutLoop, vpX, vpY, minY, maxY, zBack, zFront, renderer
 }
 
 // -----------------------------------------------------------------------
-// FLICKERING POINT LIGHT — sits at the flame's hot zone, modulated by
-// sine + stochastic noise. Picks up the flare colour during a flare
-// envelope so the surrounding inner-cutout walls glow cool with the
-// chromatic flame.
+// FLICKERING POINT-LIGHT STACK — multiple PointLights distributed along
+// the flame's vertical axis so the WHOLE flame illuminates its
+// surroundings, not just the hot zone at the base. Each layer has its
+// own base color (warm amber at the base → deep red at the tip,
+// matching the body palette), its own intensity scale, and an
+// independent flicker phase offset so the layers don't pulse in
+// lockstep — the surrounding walls read as a soft, organic, full-height
+// glow rather than a single bright point at the bottom.
+//
+// Returns an array of THREE.PointLight (one per stack entry). All
+// share the same flare-envelope colour blend during a chromatic flare.
 // -----------------------------------------------------------------------
-function buildLight({ vpX, minY, maxY, maxZ }) {
+function buildLights({ vpX, minY, maxY, maxZ }) {
   const cfg = ANIM.flame.light;
-  if (!cfg.enabled) return null;
-  const lightY = minY + (maxY - minY) * cfg.yFraction;
-  const light = new THREE.PointLight(
-    new THREE.Color(cfg.color),
-    cfg.intensityMin,
-    0,            // distance: 0 = unlimited
-    cfg.decay,
-  );
-  // Place INSIDE the cutout volume (behind the front face). With
-  // zOffsetFromFront negative, the light sits at maxZ + offset, which
-  // is < maxZ and therefore inside the model's depth.
-  light.position.set(vpX, lightY, maxZ + cfg.zOffsetFromFront);
-  // Default off — main.js sets it true only while viewMode === 'flame'.
-  // Three.js checks light.visible directly, not the parent group's, so
-  // this needs to be explicit.
-  light.visible = false;
-  return light;
+  if (!cfg.enabled) return [];
+  const stack = (cfg.stack && cfg.stack.length) ? cfg.stack
+              : [{ yFraction: cfg.yFraction ?? 0.20, intensityScale: 1,
+                   color: cfg.color, phaseOffset: 0 }];
+  const lights = [];
+  for (let i = 0; i < stack.length; i++) {
+    const entry = stack[i];
+    const yFrac = entry.yFraction ?? cfg.yFraction ?? 0.20;
+    const lightY = minY + (maxY - minY) * yFrac;
+    const colorHex = entry.color || cfg.color;
+    const light = new THREE.PointLight(
+      new THREE.Color(colorHex),
+      cfg.intensityMin * (entry.intensityScale ?? 1),
+      0,            // distance: 0 = unlimited
+      cfg.decay,
+    );
+    // Place INSIDE the cutout volume (behind the front face). With
+    // zOffsetFromFront negative, the light sits at maxZ + offset, which
+    // is < maxZ and therefore inside the model's depth. Per-stack
+    // entries can nudge the depth via `zOffsetExtra` for finer control.
+    const zOff = (cfg.zOffsetFromFront ?? -2.0) + (entry.zOffsetExtra ?? 0);
+    light.position.set(vpX, lightY, maxZ + zOff);
+    // Cache per-light flicker state on userData. The update loop reads
+    // these to drive the stochastic + sine flicker, intensity ramp, and
+    // base-colour blend independently for each layer.
+    light.userData.intensityScale = entry.intensityScale ?? 1;
+    light.userData.phaseOffset    = entry.phaseOffset ?? 0;
+    light.userData.baseColor      = new THREE.Color(colorHex);
+    // Default off — main.js sets it true only while viewMode === 'fireplace'.
+    // Three.js checks light.visible directly, not the parent group's, so
+    // this needs to be explicit.
+    light.visible = false;
+    lights.push(light);
+  }
+  return lights;
 }
 
 // -----------------------------------------------------------------------
@@ -1211,10 +1236,12 @@ function buildLight({ vpX, minY, maxY, maxZ }) {
 //   meta — the silhouette/centroid bundle from src/logo.js#computeSilhouetteMeta.
 //   renderer — passed through for pixel-ratio in the spark shader.
 //
-// Returns { group, update, light, flameMesh, sparkPoints }. Caller adds
+// Returns { group, update, lights, flameMesh, sparkPoints }. Caller adds
 // `group` to the logoMesh and calls `update(t, dt)` from the per-frame
 // tick. `group.visible` is the on/off switch — main.js gates it on
-// view mode.
+// view mode. `lights` is the stack of PointLights distributed up the
+// flame's vertical axis; main.js toggles each one's `.visible`
+// (Three.js samples light.visible directly, not the parent group's).
 // -----------------------------------------------------------------------
 export function createFlame({ logoMesh, meta, renderer }) {
   const { patternFadeCenter, cx, cy, maxZ } = meta;
@@ -1233,7 +1260,7 @@ export function createFlame({ logoMesh, meta, renderer }) {
   const cutoutMeshLocal = extractInnerCutout(logoMesh, meta);
   if (!cutoutMeshLocal || cutoutMeshLocal.length < 4) {
     console.warn('[flame] could not extract inner cutout; flame disabled');
-    return { group, update: () => {}, light: null, flameMesh: null, sparkPoints: null };
+    return { group, update: () => {}, lights: [], flameMesh: null, sparkPoints: null };
   }
   // Convert mesh-local -> flame-local (flame group sits at (cx, cy, 0)).
   const cutoutLoop = cutoutMeshLocal.map(p => ({ x: p.x - cx, y: p.y - cy }));
@@ -1354,9 +1381,12 @@ export function createFlame({ logoMesh, meta, renderer }) {
     if (rim) group.add(rim.mesh);
   }
 
-  // Light
-  const light = buildLight({ vpX, minY, maxY, maxZ });
-  if (light) group.add(light);
+  // Light stack — N PointLights distributed up the flame's height so
+  // the whole arch is illuminated, not just the hot zone. See
+  // buildLights for the per-layer config (yFraction, intensityScale,
+  // base color, phase offset).
+  const lights = buildLights({ vpX, minY, maxY, maxZ });
+  for (let i = 0; i < lights.length; i++) group.add(lights[i]);
 
   // Apply the rigid Y nudge now (cutout extents are finalised).
   const cutoutHeight = Math.max(maxY - minY, 0.001);
@@ -1367,7 +1397,6 @@ export function createFlame({ logoMesh, meta, renderer }) {
   let flareStartTime = -1;
   const flareColorVec = new THREE.Vector3(0, 0, 0);
   const tmpColor = new THREE.Color();
-  const baseLightColor = new THREE.Color(cfg.light.color);
   const coolLightColor = new THREE.Color(cfg.light.coolColor);
   const flareLightColor = new THREE.Color();
   const lerpedLightColor = new THREE.Color();
@@ -1564,33 +1593,45 @@ export function createFlame({ logoMesh, meta, renderer }) {
       sparks.uniforms.uFlareForward.value = ANIM.flame.sparks.flareForward ?? 3.0;
     }
 
-    // ----- Light flicker -----
-    if (light) {
+    // ----- Light-stack flicker -----
+    // Each stacked light carries its own phaseOffset + intensityScale +
+    // base color (set in buildLights). Driving the sine+stochastic mix
+    // per-light with offset phases keeps the layers from pulsing in
+    // lockstep, which would read as a single big light flickering
+    // rather than a tall organic flame.
+    if (lights && lights.length) {
       const lc = ANIM.flame.light;
-      // Sine + stochastic noise — gives the candle-like irregular flicker.
-      const sineWave  = 0.5 + 0.5 * Math.sin(t * lc.flickerSpeed * 6.28
-                                              + Math.sin(t * lc.flickerSpeed * 1.7) * 1.3);
-      const stochastic = Math.random();   // per-frame jitter
-      const flickerK   = (1 - lc.flickerJitter) * sineWave
-                       + lc.flickerJitter * stochastic;
-      let intensity = lc.intensityMin + (lc.intensityMax - lc.intensityMin) * flickerK;
-      // Flare boost — adds extra intensity during a flare.
-      intensity += (lc.flareIntensityBoost || 0) * flareEnv;
-      light.intensity = intensity;
-      light.decay     = lc.decay;
+      for (let li = 0; li < lights.length; li++) {
+        const lt = lights[li];
+        const ph = lt.userData.phaseOffset || 0;
+        const tt = t + ph;
+        const sineWave   = 0.5 + 0.5 * Math.sin(tt * lc.flickerSpeed * 6.28
+                                                + Math.sin(tt * lc.flickerSpeed * 1.7) * 1.3);
+        const stochastic = Math.random();   // independent per-light per-frame
+        const flickerK   = (1 - lc.flickerJitter) * sineWave
+                         + lc.flickerJitter * stochastic;
+        const scale = lt.userData.intensityScale || 1;
+        let intensity = (lc.intensityMin + (lc.intensityMax - lc.intensityMin) * flickerK) * scale;
+        // Flare boost — adds extra intensity during a flare. Scale per-
+        // light too so upper layers don't overpower the base on flares.
+        intensity += (lc.flareIntensityBoost || 0) * flareEnv * scale;
+        lt.intensity = intensity;
+        lt.decay     = lc.decay;
 
-      // Colour: lerp from base toward flare colour during a flare, with
-      // a cool tint mid-envelope for that "cooled flame" read.
-      if (flareEnv > 0.001) {
-        // Blend base → coolColor → flarePickedColor based on envelope.
-        // At low envelope, mostly base (warm). At peak, mostly flare colour
-        // (the picked palette colour).
-        lerpedLightColor.copy(baseLightColor);
-        lerpedLightColor.lerp(coolLightColor, flareEnv * 0.5);
-        lerpedLightColor.lerp(flareLightColor, flareEnv * 0.7);
-        light.color.copy(lerpedLightColor);
-      } else {
-        light.color.copy(baseLightColor);
+        // Colour: lerp from this layer's base toward the picked flare
+        // colour during a flare, with a cool tint mid-envelope. Each
+        // light keeps its own warm/red gradient stop as the resting
+        // colour so the inner walls show a vertical hue gradient that
+        // tracks the flame body's palette.
+        const baseC = lt.userData.baseColor;
+        if (flareEnv > 0.001) {
+          lerpedLightColor.copy(baseC);
+          lerpedLightColor.lerp(coolLightColor, flareEnv * 0.5);
+          lerpedLightColor.lerp(flareLightColor, flareEnv * 0.7);
+          lt.color.copy(lerpedLightColor);
+        } else {
+          lt.color.copy(baseC);
+        }
       }
     }
 
@@ -1709,7 +1750,7 @@ export function createFlame({ logoMesh, meta, renderer }) {
   return {
     group,
     update,
-    light,
+    lights,
     flameMesh: body.mesh,
     sparkPoints: sparks ? sparks.points : null,
     sparkOpacity: sparks ? sparks.uniforms.uOpacity : null,

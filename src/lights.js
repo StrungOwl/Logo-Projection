@@ -48,7 +48,7 @@ export function createLights(scene) {
 // take effect immediately. Key sweeps red→amber and glow/front-pattern
 // swell anti-phase; rim drifts on offset phase.
 //
-// In flame mode the warm scene lights are dimmed to a small fraction
+// In fireplace mode the warm scene lights are dimmed to a small fraction
 // (configurable via ANIM.flame.baseLightDim) so the flame's own point
 // light + galaxy stars dominate the illumination — otherwise the
 // existing innerGlow + key light wash the inner-cutout area in bright
@@ -58,8 +58,8 @@ export function updateLights(lights, t) {
   const pulse01 = 0.5 + 0.5 * pulse;
   const warm    = 1.0 - pulse01;
 
-  const flameMode = ANIM.viewMode === 'flame';
-  const dim = flameMode
+  const fireplaceMode = ANIM.viewMode === 'fireplace';
+  const dim = fireplaceMode
     ? ((ANIM.flame && ANIM.flame.baseLightDim) ?? 0.06)
     : 1.0;
 

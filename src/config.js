@@ -36,14 +36,16 @@ export const ANIM = {
   // visible on their own. Gate frame stays put.
   patterns: { enabled: true },
 
-  // Active view mode — driven by the digit keys 0–5 (handled in main.js).
+  // Active view mode — driven by the digit keys 0–4 (handled in main.js).
   // 'all' plays today's synchronized sequence (cascade + flowers + sparks
   // sync'd via ANIM.timings.playAll). Single-effect modes solo one layer
   // on its own clock; the base scene (logo, gate frame, particles, lights)
   // stays on underneath.
   //   0 → 'all'  | 1 → 'pattern'  | 2 → 'hex'
-  //   3 → 'flowers'  | 4 → 'arch'  | 5 → 'flame'
-  viewMode: 'arch',
+  //   3 → 'flowers'  | 4 → 'fireplace'
+  // 'fireplace' = procedural-brick arch wrapping a volumetric flame in
+  // the central cutout, against the starry-sky galaxy backdrop.
+  viewMode: 'fireplace',
 
   keyLight:          { intensityMin: 0.0,  intensityMax: 4.6,
                        colorAtMin: '#FF1400', colorAtMax: '#FFCC2E' },
@@ -104,13 +106,13 @@ export const ANIM = {
                    pointSize: 0.13, trailSize: 150,
                    startDelay: 2.0, startDelayMax: 18.0, brightness: 1.0 },
 
-  // Sparks for the procedural-brick arch (mode 4). Snap cloud is built from
-  // an invisible LineSegments layer cloned from each brick's edges, so
-  // sparks hop along brick outlines / mortar gaps the same way panelSparks
-  // hop along stroke lines.
+  // Sparks for the procedural-brick arch (fireplace mode). Snap cloud is
+  // built from an invisible LineSegments layer cloned from each brick's
+  // edges, so sparks hop along brick outlines / mortar gaps the same way
+  // panelSparks hop along stroke lines.
   archSparks:    { count: 90, gravity: 5, maxSpeed: 7, damping: 1.6,
-                   snapStrength: 18,
-                   tangentialFactor: 1.1, speedVariance: 0.55, sizeVariance: 0.75,
+                   snapStrength: 9,
+                   tangentialFactor: 0.6, speedVariance: 0.55, sizeVariance: 0.75,
                    color: '#FFD9A0', hueVariance: 0.08,
                    pointSize: 0.12, trailSize: 150 },
 
@@ -328,6 +330,144 @@ export const ANIM = {
     outerMargin: 5.0,    // distance past hull max-radius where entry rays begin, units
   },
 
+  // Fractal "telescope" zoom for the pattern effect (mode 1 only). One
+  // designated focal tile (the central rosette) slowly grows toward the
+  // camera while the rest of the pattern is pushed radially outward —
+  // anything past the silhouette is auto-masked by the existing hullClip,
+  // so nothing escapes the gate frame. As the focal tile grows huge, the
+  // entire original pattern fades out and a smaller cloned copy of the
+  // pattern simultaneously grows + fades IN at the same focal point. At
+  // the end of the ramp the clone is at scale 1 with full opacity — a
+  // pixel-identical replica of the original at rest — so the loop snaps
+  // back to start invisibly. Gives the impression of falling THROUGH the
+  // central tile to the next iteration of the pattern.
+  //
+  // Mode 0 ('all') is unaffected — this only fires when
+  // viewMode === 'pattern' AND fractalZoom.enabled !== false.
+  fractalZoom: {
+    enabled:        true,     // false → fall back to the radial cascade in mode 1
+
+    // Intro (one-shot, before the dive begins) -------------------------
+    // Focal tile grows, every other tile pushes outward past the
+    // silhouette. Runs ONCE when entering pattern mode (or when triggered
+    // via spacebar). After intro completes, hands off to the infinite
+    // continuous Droste dive below — there is no return-to-rest cycle.
+    focalGrowMax:  14.0,      // peak scale of the focal rosette. 14× =
+                              // the central tile completely fills the
+                              // silhouette by intro end, so the dive
+                              // reads as "we're falling INTO this one
+                              // shape" rather than "the whole pattern is
+                              // shrinking." hullClip silhouette mask
+                              // trims any overspill past the gate frame.
+    othersPushMax:  2.0,      // peak outward displacement of every other
+                              // tile, in maxR units. ~2 puts every tile
+                              // well outside the silhouette so they're
+                              // fully masked away by intro end.
+    introDuration:  6.0,      // seconds for the intro to play out. d ramps
+                              // 0 → 1 over the FULL introDuration so the
+                              // clone stack gradually emerges from the
+                              // central rosette. λ ramps 0 → 1 only in
+                              // the LAST `lambdaFadeDur` seconds — by
+                              // then the clones are at high opacity and
+                              // cover the originals' displacement so the
+                              // silhouette edge is never visible during
+                              // the focal-grow / push-out transition.
+    triggerDelay:   5.0,      // seconds in pattern mode before intro
+                              // starts (initial settle — viewer reads the
+                              // canonical pattern first so the dive lands
+                              // as a clear transition, not a startle).
+
+    // Continuous Droste dive --------------------------------------------
+    // After intro, d(t) ramps linearly forever — no easing, no wrap, no
+    // surfacing. For each clone k: effective depth r = mod(d - k +
+    // N/2, N) - N/2 ∈ [-N/2, N/2). Scale = growthFactor^r where
+    // growthFactor = 1/cloneScaleFactor. Opacity is a Gaussian centred
+    // on scale = 1 (r = 0). So at any moment one clone is near peak
+    // (visible at full size), one or two are growing in from the centre,
+    // and one or two are growing past full size and fading out as they
+    // exit the silhouette. When a clone wraps from r = N/2 (huge,
+    // opacity ≈ 0) back to r = -N/2 (tiny, opacity ≈ 0) the seam is
+    // hidden by the envelope being zero at both ends — true infinite-
+    // zoom feel without ever repeating the snap.
+    cloneCount:        5,     // total clones. 5 keeps ~2 partially
+                              // visible plus one at peak at all times;
+                              // higher = deeper recursion smoother dive,
+                              // costs draw calls.
+    cloneScaleFactor:  0.32,  // ratio between adjacent clone scales.
+                              // growthFactor = 1 / this. 0.32 means each
+                              // Droste step is a ~3.1× zoom (vs 2× at
+                              // 0.5) — much more dramatic per-step
+                              // emphasis on the focal centre, so a single
+                              // dive segment covers a lot more apparent
+                              // depth into one shape. Drop to ~0.25 for
+                              // even more aggressive zoom; raise to 0.5
+                              // for the classic gentler Droste.
+    droStepDuration:  12.0,   // seconds for d to advance by 1 (one full
+                              // Droste step) at peak dive speed. Bigger =
+                              // slower, more meditative dive.
+    diveDuration:     36.0,   // seconds of continuous diving before each
+                              // hold. Rounded up to the next integer-d so
+                              // the hold lands exactly on a clone-at-peak
+                              // (visually identical to the pattern at
+                              // rest). 36 with stepDur 12 = 3 Droste
+                              // steps per dive segment, so combined with
+                              // cloneScaleFactor 0.32 the apparent zoom
+                              // per dive is ~3.1^3 ≈ 30× into the focal
+                              // shape. Eased so the dive ramps up slowly
+                              // and slows again before settling.
+    holdDuration:     60.0,   // total seconds of static hold at the end
+                              // of each dive segment (includes fade-in +
+                              // pure static + fade-out windows below).
+                              // 0 → continuous dive (skip hold entirely).
+    holdFadeIn:        7.0,   // seconds at start of hold spent crossfading
+                              // the dive's clone stack out so the ORIGINAL
+                              // pattern at rest reads through. cloneOp
+                              // ramps 1 → 0 over the FULL holdFadeIn, so
+                              // the user sees the Droste-nested clones
+                              // gradually dissolve into the canonical
+                              // pattern. λ snaps 1 → 0 in the FIRST
+                              // `lambdaFadeDur` seconds (covered by the
+                              // still-opaque clones) so the silhouette
+                              // edge is never exposed during the focal
+                              // shrink / pushed-tile slide-in.
+    holdFadeOut:       7.0,   // seconds at end of hold spent crossfading
+                              // the other way. cloneOp ramps 0 → 1 over
+                              // the FULL holdFadeOut (Droste nesting
+                              // gradually appears inside the static
+                              // pattern), then λ snaps 0 → 1 in the LAST
+                              // `lambdaFadeDur` seconds (covered by the
+                              // now-opaque clones).
+    droSigma:          0.70,  // Gaussian envelope half-width in log-scale
+                              // units. Smaller = sharper crossfade
+                              // between layers (fewer visible at once);
+                              // larger = softer overlap. 0.70 keeps total
+                              // brightness roughly steady across the dive
+                              // (adjacent layers crossfade smoothly
+                              // through their handoff). Drop to ~0.45 for
+                              // a more "discrete depth steps" feel where
+                              // each layer briefly stands out as it peaks.
+    droLayerRotation:  0.0,   // radians of rotation accumulated per
+                              // Droste step (a clone at effective depth
+                              // r is rotated by r × this around the
+                              // focal centre). 0 = no twist; try 0.05–
+                              // 0.20 for a subtle Mandelbrot-style spiral
+                              // deepening as you fall in.
+    cloneZStep:        0.03,  // z recession added per clone level so
+                              // deeper copies render BEHIND shallower
+                              // ones in transparent-sort order.
+    lambdaFadeDur:     1.5,   // seconds for λ (originals' focal-grow +
+                              // push-out displacement) to ramp through
+                              // its full range. Always shorter than
+                              // introDuration / holdFadeIn / holdFadeOut
+                              // so the displacement transition is hidden
+                              // under the cover of mostly-opaque clones —
+                              // this is the knob that prevents the arch
+                              // silhouette from flashing during fades.
+                              // Lower → faster, more "snap" displacement
+                              // covered earlier; higher → softer but
+                              // risks revealing the arch edge.
+  },
+
   // ---------------------------------------------------------------------
   // TIMINGS — central knobs for orchestrating the cascade and the 3D overlay.
   //
@@ -412,17 +552,40 @@ export const ANIM = {
   arch: {
     enabled: true,
 
+    // When true, the smooth extruded gate-frame ring is HIDDEN while
+    // arch mode is active so the brick layers (outer frame stones +
+    // floor wall) own the perimeter look on their own. The gate frame
+    // returns to visible the instant another mode is selected.
+    hideGateFrame: true,
+
     brick: {
-      width:        7.0,    // long axis (length)
-      height:       2.75,   // short axis
-      depth:        4.25,   // Z-axis dimension on the arch / vertical on floor
-      mortarGap:    0.2,    // uniform per-brick shrink before fault, units
-      faultAmount:  0.06,   // max vertex displacement, fraction of brick depth
+      // Floor-fill brick orientation:
+      //   local-X → world-X (horizontal)
+      //   local-Y → world-Z (depth into wall, thin axis)
+      //   local-Z → world-Y (vertical) — `depth` field below
+      // So `width` = horizontal (X) extent, `depth` = vertical (Y) extent,
+      // `height` = thickness through the wall (Z).
+      width:        2.0,    // horizontal X — bumped up for chunkier bricks
+      height:       1.2,    // Z thickness on floor — bumped (thicker)
+      depth:        1.3,    // vertical Y — bumped up; rows still tight
+      mortarGap:    0.0,    // base joint (used for brick-geometry shrink
+                            // and as the default for the per-axis gaps
+                            // below).
+      mortarGapX:   0.08,   // horizontal joint — small gap between
+                            // adjacent bricks within a row.
+      mortarGapY:   0.0,    // vertical joint — bricks sit row-on-row
+                            // edge-to-edge for a tight stack.
+      faultAmount:  0.05,   // max vertex displacement, fraction of brick depth
       chamfer:      0.03,   // edge tuck, fraction of brick smallest dim
     },
 
     outerArch: {
-      enabled:      true,
+      // Disabled: the long bricks here had Z-extent = brick.width = 7.0
+      // units, which protrudes well past anything else in the scene and
+      // violates "nothing should extend beyond the logo". The gate frame
+      // itself already serves as the visible architectural ring around
+      // the muqarnas. Re-enable if you want a 3D brick rim again.
+      enabled:      false,
       insetExtra:   0.0,    // additional inset past gateFrameWidth, units
     },
 
@@ -447,63 +610,369 @@ export const ANIM = {
       pattern:        'running-bond',// or 'stack'
       rowOffset:      0.5,           // running-bond shift, fraction of brick.width
       yLevel:         0.0,           // brick top Z relative to maxZ + frameDepth
+      // Optional: clip the brick wall to an OUTER band by carving an
+      // inner cutout polygon (perimeterPoly inset by `innerInset`
+      // units). Bricks whose centre falls inside this cutout are
+      // skipped, leaving the inner panel bare so only the outer band
+      // of the wall is built. 0 = no cutout (fill entire interior).
+      innerInset:     0,
     },
 
-    // Muqarnas vault — fields the arch interior with small pointed-arch
-    // CELL niches DUG INTO the wall depth. Tier 0 sits flush with the
-    // gate-frame front; each successive tier is recessed by `tierStepZ`
-    // into the wall (negative Z), so the cells appear carved into the
-    // model rather than protruding out toward the camera. Each cell is
-    // a 2D pointed-arch shape (flat base on the tier polygon, point
+    // Top-layer staircase — a SECOND brick layer sitting in front of
+    // the floor wall. Bricks stream INWARD from the LEFT, RIGHT and
+    // TOP edges of the logo and stop after reaching `reachFraction`
+    // of each half-dimension; the bottom edge is bare and the inner
+    // column-of-bottom region is bare, so the band reads as an
+    // inverted U. Every brick is filtered against silhouette[0] so
+    // none extend past the logo outline.
+    //
+    // Brick Z thickness is quantised into `stepCount` discrete steps
+    // ramping from `maxStepHeight` at the outermost edge down to
+    // `minStepHeight` at the inner reach limit. All bricks share a
+    // back face flush with the floor top, so taller outer steps
+    // protrude further toward the camera — i.e. the layer "builds up
+    // depth as you move away from the centre", reading as a staircase.
+    //
+    //   reachFraction   — fraction of each half-dimension the brick
+    //                     band reaches inward from L/R/T edges
+    //                     (0..1). 0.66 ≈ user's "2/3 of the logo".
+    //   stepCount       — number of discrete stair levels.
+    //   minStepHeight   — Z thickness of the innermost step (units).
+    //   maxStepHeight   — Z thickness of the outermost step (units).
+    //   zLift           — Z above the floor brick top where the back
+    //                     face of every step sits.
+    //   widthScale,
+    //   depthScale      — multipliers on the floor brick width / depth
+    //                     for the in-plane footprint of each brick.
+    //   mortarGapX,
+    //   mortarGapY      — joint gaps used for grid stepping.
+    // Per-step colour comes from the arch-level `gradientDark` /
+    // `gradientBright` pair: the floor uses `gradientDark`, each step
+    // lerps a notch lighter, and the outermost step (closest to
+    // camera) lands on `gradientBright` — so no per-layer `color`
+    // override is needed here.
+    topLayer: {
+      enabled:        true,
+      reachFraction:  0.66,
+      stepCount:      4,
+      minStepHeight:  0.4,
+      maxStepHeight:  1.6,
+      zLift:          0.05,
+      widthScale:     1.0,
+      depthScale:     1.0,
+      mortarGapX:     0.08,
+      mortarGapY:     0.0,
+      // Stencil mask — bricks are clipped to silhouette[0] inset by
+      // this many units. Same technique as 3DOverlay's flower mask:
+      // a stencil fill of the silhouette is drawn first, then the
+      // brick material only renders where stencil=1, so any brick
+      // edge poking past the logo outline is GPU-discarded. 0 = use
+      // the raw silhouette; small positive value = avoid 1-px halo.
+      maskInset:      0.4,
+    },
+
+    // Muqarnas vault — fractal-scaled pointed-arch niches DUG INTO the
+    // wall thickness, restricted to the dome region above the springer
+    // line so the SDG side flares stay clean. Tier 0 sits flush with
+    // the gate-frame front; each successive tier is recessed by
+    // `tierStepZ` into the wall (negative Z), so the cells read as
+    // carved into the model rather than protruding outward. Each cell
+    // is a 2D pointed-arch shape (flat base on the tier polygon, point
     // facing radially inward toward the star) extruded by
-    // `cellThickness` on world-Z. Tier r+1's polygon is inset from
-    // tier r's by exactly `cellRadialDepth` (per-tier-shrunk) so cells
-    // nest tier-to-tier with no radial gap. Adjacent tiers are
-    // staggered by half a cell (`tierOffsetAlternate`) so the cell
-    // seams in neighbouring rings don't line up radially. Material
-    // darkens toward `gradientDark` per tier so the innermost tiers
-    // fade into the central glow.
+    // `cellThickness` on world-Z.
+    //
+    // FRACTAL SCALING — at tier r, every cell dimension is multiplied
+    // by `fractalScale^r` from its tier-0 value. Because the polygon's
+    // perimeter shrinks roughly linearly with each radial inset while
+    // cell width shrinks geometrically, the cell COUNT per tier grows
+    // ~geometrically (a self-similar packing where every successive
+    // tier exposes finer detail at a smaller scale — the muqarnas
+    // construction in the reference image is itself a recursive vault,
+    // so this scaling is the right mathematical fit).
+    //
+    // CONTAINMENT — every cell stays strictly within the silhouette
+    // (the dome polygon is an inset of silhouette[0] above the springer
+    // line) and strictly within the logo's Z budget (deepest tier's
+    // back face stays within the gate-frame thickness plus a bite of
+    // the logo body; never forward of the gate-frame front face).
+    //
     //   tierCount         — number of tiers. 0 disables.
-    //   cellWidth         — cell extent along the polygon tangent.
-    //                       Smaller = more cells per tier (denser
-    //                       honeycomb). ~1/3 of cellRadialDepth reads
-    //                       as a tall narrow lancet.
-    //   cellRadialDepth   — cell extent radially (how far each pointed
-    //                       arch extends inward from its tier polygon).
-    //                       Also = inset distance to the next tier.
-    //   cellThickness     — extruded depth on world-Z, units. Kept
-    //                       small so the cells read as recessed niches
-    //                       rather than protruding pads — most of the
-    //                       depth read comes from `tierStepZ` between
-    //                       tiers, not from each cell's own thickness.
-    //   cellShrink        — multiplier on all three cell dims per tier
-    //                       (tier r uses cellShrink^r). <1 gives
-    //                       smaller cells deeper in.
-    //   tierStepZ         — extra Z recession per tier, units. With
-    //                       8 tiers at 0.30, the deepest tier's front
-    //                       sits ~2.4 units behind the gate-frame
-    //                       front — within the gate's 1.5-unit
-    //                       thickness plus a bite of the logo body.
-    //   colorMix          — fraction of (color → gradientDark) lerp at
-    //                       the innermost tier; linear ramp.
+    //   cellWidth         — base cell extent along the polygon tangent
+    //                       at TIER 0. Tier r uses
+    //                       cellWidth * fractalScale^r.
+    //   cellRadialDepth   — base cell extent radially at tier 0 (how
+    //                       far each pointed arch extends inward from
+    //                       its tier polygon). Also = inset distance
+    //                       between successive tier polygons.
+    //   cellThickness     — base extruded depth on world-Z at tier 0.
+    //   fractalScale      — geometric scaling factor applied to all
+    //                       three cell dims per tier. ~0.7-0.85 gives
+    //                       a visible self-similar fractal effect; 1.0
+    //                       disables fractal scaling.
+    //   tierStepZ         — extra Z recession per tier, units. The
+    //                       deepest tier's front face sits this many
+    //                       units × tierCount behind the gate-frame
+    //                       front. Should fit within ~2.5 units total
+    //                       (gate-frame depth 1.5 + logo body 1.0).
+    //   colorMix          — fraction of (color → gradientDark) lerp
+    //                       at the innermost tier; linear ramp.
     //   opacityFalloff    — extra alpha drop at the innermost tier
     //                       (linear from 0 at outer). 0 = opaque.
     //   tierOffsetAlternate — true: every other tier rotates its cell
     //                       start by half a cell so seams stagger.
-    //   minPerimeter      — bail out of tier recursion once the inset
-    //                       polygon drops below this perimeter length.
+    //   minPerimeter      — bail out once the inset polygon drops
+    //                       below this perimeter length.
     muqarnas: {
-      enabled:             true,
+      enabled:             false,
+      // Fractal recursion: each tier's cell dims = previous × fractalScale.
+      // Loop runs for tierCount iterations OR until the inset polygon's
+      // perimeter drops below minPerimeter. With 8 tiers at fractalScale
+      // 0.78, tier 7's cells are 0.78^7 ≈ 19% of tier 0 — fine fractal
+      // detail, but each tier's cells stay visible.
       tierCount:           8,
-      cellWidth:           1.4,
-      cellRadialDepth:     1.6,
-      cellThickness:       0.45,
-      cellShrink:          0.94,
-      tierStepZ:           0.30,
-      colorMix:            0.85,
+      cellWidth:           5.0,    // tier-0 cell width (along tangent)
+      cellRadialDepth:     4.5,    // tier-0 radial extent
+      cellThickness:       0.6,    // niche front-face thickness
+      fractalScale:        0.78,   // per-tier shrink
+      tierOverlap:         0.55,   // adjacent tiers overlap radially by
+                                   // (1 − tierOverlap) so they interlock
+                                   // like a honeycomb
+      tierStepZ:           0.15,   // Z recession per tier (×8 tiers = 1.2
+                                   // total — fits gate-frame thickness;
+                                   // bricks underneath stay clear)
+      colorMix:            0.78,
       opacityFalloff:      0.0,
       tierOffsetAlternate: true,
-      minPerimeter:        6.0,
+      // No archMinYFrac — cells fill the entire face (per-cell
+      // silhouette filter still keeps them inside the logo + out of
+      // cutouts).
+      minPerimeter:        3.0,
+      // Stop tier recursion once the inset polygon has crossed into a
+      // cutout (the star bay) — measured as the fraction of polygon
+      // vertices that are still in the SOLID region. Below this
+      // threshold we abort, which prevents the "star outline" effect
+      // where cells near the cutout boundary form a thin ring around
+      // the void. 0.85 = stop when 15% of vertices are inside cutouts.
+      cutoutStopFrac:      0.90,
+      // Shadow back-wall: a smaller, darker pointed-arch shape sitting
+      // INSIDE each cell, recessed by ~half cellThick + offset. Reads
+      // as the dark interior of a 3D niche behind the cell's front rim.
+      backWallEnabled:     true,
+      backWallScale:       0.72,    // child shape size as fraction of parent
+      backWallOffset:      0.18,    // additional Z recession behind cell back face
+      backWallColor:       '#1A0A04',
+    },
+
+    // Lit lantern niches — four small pointed-arch alcoves embedded in
+    // the brick panels. Each contains a darkened back wall, a small
+    // emissive flame mesh, and a real THREE.PointLight whose intensity
+    // (and the flame's opacity) flicker via a two-sine envelope.
+    //   frameSize       — niche frame dims (radial = upward extent,
+    //                     width = horizontal opening, thickness = relief
+    //                     toward camera).
+    //   zBack           — relative Z behind the frame where the back
+    //                     wall sits (negative = recessed into wall).
+    //   zLift           — Z of the niche frame above the brick top.
+    //   intensityMin/Max — point-light intensity bounds.
+    //   flickerSpeedA/B  — angular speeds of the two flicker sines.
+    //   flameColor       — emissive flame mesh tint.
+    //   lightColor       — colour of the cast point light.
+    //   decay            — point-light distance falloff exponent.
+    //   positions        — list of {panel, yOffset} pairs, where
+    //                     panel ∈ {0=UL, 1=UR, 2=LL, 3=LR} selects the
+    //                     panel-quadrant centroid and yOffset is added
+    //                     to that centroid's Y.
+    lanterns: {
+      enabled:        false,
+      frameSize:      { radial: 1.4, width: 0.9, thickness: 0.18 },
+      zBack:         -0.55,
+      zLift:          0.15,
+      intensityMin:   3.0,
+      intensityMax:   8.0,
+      flickerSpeedA:  6.0,
+      flickerSpeedB:  11.0,
+      flameColor:    '#FFC070',
+      lightColor:    '#FF9030',
+      decay:          1.5,
+      frameColor:    '#7A5A30',
+      positions: [
+        { panel: 0, yOffset:  1.4 }, { panel: 1, yOffset:  1.4 },
+        { panel: 2, yOffset: -1.4 }, { panel: 3, yOffset: -1.4 },
+      ],
+    },
+
+    // Embossed geometric inlays — four flat 8-point star medallions,
+    // one centred in each quadrant of the panel area (formed by the
+    // star bay against the outer silhouette bbox). Mounted on top of
+    // the brick floor with a small relief depth so they read as
+    // embossed decoration in the reference image.
+    //   radius          — outer radius of the inlay's outer star.
+    //   depth           — extrusion depth (relief thickness).
+    //   zLift           — Z above the brick top (so the inlay sits
+    //                     flush on the brick surface).
+    inlays: {
+      enabled: false,
+      radius:  1.7,
+      depth:   0.18,
+      zLift:   0.05,
+      color:   '#D4A06A',
+    },
+
+    // Outer brick arch — chunky voussoir-style bricks tiled along
+    // silhouette[0] above the springer line, forming an upside-down U
+    // of stones over the top + sides of the logo (the bottom edge is
+    // bare). Each brick is tangent-aligned so neighbours share a face,
+    // reading as a real archway's wedge stones. Inset by half the
+    // brick height so outer faces kiss silhouette[0] and bodies extend
+    // only one brick-height inward — never crossing into the inner
+    // region of the logo.
+    //   springerYFrac   — Y cut as fraction of the inset polygon's
+    //                     Y range (0=bottom, 1=top). 0.30 keeps the
+    //                     foot of the arch near the bottom 1/3.
+    //   brickLength     — extent along the curve tangent (LONG axis).
+    //   brickHeight     — radial extent inward (visible thickness).
+    //   brickThick      — Z protrusion forward.
+    //   mortarGap       — joint gap between adjacent bricks.
+    //   zLift           — extra Z above the gate-frame front face.
+    //   color           — brick colour (defaults to cfg.gradientBright,
+    //                     so the outer arch lands on the lightest end
+    //                     of the depth gradient — closest to camera).
+    outerBrickArch: {
+      enabled:        false,
+      springerYFrac:  0.30,
+      brickLength:    5.0,
+      brickHeight:    2.5,
+      brickThick:     1.5,
+      mortarGap:      0.06,
+      zLift:          0.5,
+      // color overrides cfg.gradientBright. Leave undefined to inherit.
+    },
+
+    // Outer FRAME arch — chunky voussoir bricks tiled along silhouette[0]
+    // OUTSET outward (so the ring sits entirely outside the logo
+    // perimeter), forming an upside-down U over the top + left + right
+    // edges. Bricks here are intentionally LARGER than the outerBrickArch
+    // ones so the frame reads as a chunky stone surround around the logo.
+    //   outwardOffset   — how far past silhouette[0] the brick's INNER
+    //                     face sits. Increase to push the frame further
+    //                     out from the logo.
+    //   springerYFrac   — Y cut as fraction of the outset polygon's Y
+    //                     range (0=bottom, 1=top). Lower values let the
+    //                     legs reach further down.
+    //   brickLength     — extent along the curve tangent (LONG axis).
+    //   brickHeight     — radial extent outward (visible thickness).
+    //   brickThick      — Z protrusion forward of gate-frame front face.
+    //   mortarGap       — joint gap between adjacent bricks.
+    //   zLift           — extra Z above the gate-frame front face.
+    //   color           — brick colour (defaults to cfg.gradientBright).
+    outerFrameArch: {
+      enabled:        true,
+      // 0 = bricks sit INSIDE silhouette[0] (outer face flush with the
+      // perimeter, body extending one brickHeight inward). Increase to
+      // push the frame outside the logo.
+      outwardOffset:  0.0,
+      // Bbox-Y fraction where the upside-down U's feet sit. Higher values
+      // make the U shorter (only the dome); lower values let the legs
+      // reach further down the sides. The longest-connected-run picker
+      // in placeOuterBrickArch keeps things robust against multiple Y
+      // crossings caused by the SDG side flares.
+      springerYFrac:  0.05,
+      // Match the reference outer arch: rectangular stretchers with the
+      // long edge running ALONG the curve (tangent), shorter radially,
+      // subtle Z protrusion. Each brick is tangent-aligned, so its
+      // local-Z (camera axis) tilts/rotates around the arch as the
+      // tangent direction sweeps from horizontal at the apex to
+      // vertical at the legs — fan-of-stones effect.
+      brickLength:    3.0,    // tangent (along curve) — LONG axis
+      brickHeight:    2.0,    // radial depth into the wall — short
+      brickThick:     1.0,    // Z protrusion forward — subtle
+      // Tight joint so adjacent stones nearly touch (thin seam).
+      mortarGap:      0.04,
+      // false: brickLength stays along the tangent — long edge follows
+      // the curve, matching the reference outer ring.
+      rotate90:       false,
+      // Extra inward push so the brick's straight outer edge sits
+      // safely inside silhouette[0]. Without this, the chord between
+      // two sample points cuts past the actual curving silhouette
+      // (especially at concave SDG flare-to-dome transitions) and
+      // brick corners poke past the perimeter.
+      inwardSafety:   0.4,
+      zLift:          0.5,
+      // color overrides cfg.gradientBright. Leave undefined to inherit.
+    },
+
+    // Outer frame bricks — a ring of cut-stone blocks tiled along the
+    // gate frame's outer perimeter (silhouette[0]), sitting just in
+    // front of the gate-frame front face. Decorates the outer rim of
+    // the arch with visible stonework.
+    //   brickLength     — extent along the perimeter tangent.
+    //   brickHeight     — radial extent (visible thickness inward).
+    //                     Inset polygon = silhouette inset by half this
+    //                     value so the brick's outer face kisses
+    //                     silhouette[0] without poking past it.
+    //   thickness       — Z protrusion forward of gate-frame front.
+    //                     Keep small to satisfy the "nothing extends
+    //                     beyond the logo" rule.
+    outerFrame: {
+      enabled:     false,  // disabled — the gate-perimeter brick ring
+                           // didn't read well visually; the floor brick
+                           // wall + the innerFrame ring cover the look.
+      brickLength: 3.0,    // tangent-direction (along curve)
+      brickHeight: 2.4,    // radial (visible thickness inward)
+      thickness:   1.10,   // Z protrusion forward — thicker stones
+      mortarGap:   0.03,   // very tight joint so adjacent stones look snug
+      color:       '#C18E5A',
+    },
+
+    // Second brick ring inside the outerFrame, framing the inner floor
+    // wall. Sits just inside the outer-frame stones (silhouette inset
+    // by `inset` units) and at a Z between the floor wall and the outer
+    // frame so it reads as an intermediate "border" layer. Bricks here
+    // are slightly larger than the floor bricks but smaller than the
+    // outer-frame stones.
+    //   inset       — radial inset from silhouette[0] to this ring's
+    //                 polygon, units. Must clear the outerFrame's
+    //                 brickHeight so the rings don't overlap.
+    //   brickLength — extent along the perimeter tangent.
+    //   brickHeight — radial extent (visible thickness inward).
+    //   thickness   — Z extent (forward protrusion).
+    //   zLift       — Z above the floor brick top where this ring sits.
+    innerFrame: {
+      enabled:     false,   // disabled — the second outline ring also
+                            // didn't read well; just the floor brick
+                            // wall on its own for now.
+      inset:       3.6,     // sit clearly INSIDE the outerFrame stones
+                            // (outerFrame brickHeight is 2.4; pushing
+                            // this past it ensures no radial overlap
+                            // between the two rings)
+      brickLength: 2.2,     // a bit smaller than the outer-frame stones
+      brickHeight: 1.5,
+      thickness:   0.85,    // thicker stones
+      zLift:       0.10,    // Z above the floor brick top
+      mortarGap:   0.04,
+      color:       '#A87B47',
+    },
+
+    // Curved brick rails wrapping the inner star bay. Each entry in
+    // `rails` is one continuous ring of bricks placed along the star
+    // perimeter expanded radially outward by `offset` units. Multiple
+    // rails at increasing offsets and slightly different Z lifts give
+    // the layered "framed star" read from the reference image. Bricks
+    // run with their long axis along the curve (tangent), short axis
+    // radial-outward, thin axis along world-Z.
+    //   rails           — list of rings. Each: { offset, zLift,
+    //                     brickLength, brickHeight, brickThick?, color }.
+    //   mortarGap       — joint gap between adjacent bricks in a ring.
+    //   enabled         — master toggle (independent of other arch
+    //                     layers).
+    starRails: {
+      enabled:    false,
+      mortarGap:  0.04,
+      rails: [
+        { offset: 0.6, zLift: 0.40, brickLength: 1.6, brickHeight: 1.0, brickThick: 0.40, color: '#B58454' },
+        { offset: 1.7, zLift: 0.65, brickLength: 1.5, brickHeight: 0.9, brickThick: 0.40, color: '#A37544' },
+        { offset: 2.9, zLift: 0.85, brickLength: 1.4, brickHeight: 0.8, brickThick: 0.40, color: '#8E6A3E' },
+      ],
     },
 
     color:           '#9A7544',
@@ -513,7 +982,8 @@ export const ANIM = {
 
   // -----------------------------------------------------------------------
   // FLAME — fills the main central cutout of the logo with a volumetric,
-  // organic flame (mode 5 only). Three coordinated layers:
+  // organic flame (active in fireplace mode, alongside the brick arch).
+  // Three coordinated layers:
   //   • Body  — extruded mesh of the cutout shape, custom shader using
   //             domain-warped fbm noise for the licking, organic look.
   //             Vertical gradient (yellow → orange → deep red) with
@@ -526,9 +996,9 @@ export const ANIM = {
   //             Illuminates the inner walls of the cutout (StandardMaterial
   //             on the logo) for the "fire glow" reaction.
   //
-  // Flame is hidden in every mode except 'flame'. Galaxy backdrop stays
-  // visible behind it but lerps toward a black-sky-with-stars (`uStarryMode`)
-  // while flame mode is active.
+  // Flame is hidden in every mode except 'fireplace'. Galaxy backdrop
+  // stays visible behind it but lerps toward a black-sky-with-stars
+  // (`uStarryMode`) while fireplace mode is active.
   // -----------------------------------------------------------------------
   flame: {
     // Z extent of the flame volume relative to the model's front face
@@ -740,10 +1210,11 @@ export const ANIM = {
     opacity:    1.0,
 
     // Multiplier applied to all base-scene warm lights (key, innerGlow,
-    // front/rear pattern, rim, fill, ambient) while in flame mode. Drops
-    // the existing orange wash so the flame's own light dominates. Set
-    // to 1.0 to keep base lights at full strength alongside the flame.
-    baseLightDim: 0.06,
+    // front/rear pattern, rim, fill, ambient) while in fireplace mode.
+    // 0 = base lights fully off — only the flame's own flickering
+    // PointLight + spark particles illuminate the logo. Set to 1.0 to
+    // keep base lights at full strength alongside the flame.
+    baseLightDim: 0.0,
 
     // Multiplier on logo material's `envMapIntensity` in flame mode.
     // Default 1.0 lets the metallic logo reflect the neutral-grey env
@@ -752,6 +1223,16 @@ export const ANIM = {
     // peaks, letting the flame's PointLight be the visible source of
     // illumination on the surrounding logo.
     envMapIntensity: 0.05,
+
+    // While in fireplace mode, set `scene.environment = null` so the
+    // grey PMREM ambient wash on every MeshStandardMaterial (arch
+    // bricks, gate frame, logo) goes away — the only illumination on
+    // those surfaces becomes the flame light stack + sparks. Set to
+    // false to keep the env wash on (bricks/frame/logo will read
+    // ~constant brightness from env reflection regardless of flame
+    // flicker). The original env is restored as soon as you leave
+    // fireplace mode either way.
+    stripEnvironment: false,
 
     // Rim events — a thin ribbon along the inner-star cutout polygon
     // hosts two occasional gate-tracing effects, each with its own
@@ -880,16 +1361,26 @@ export const ANIM = {
       flareForward:  4.5,
     },
 
-    // Flickering point light at the flame's hot zone. Position is computed
-    // in flame-local coords from the cutout extents.
+    // Flickering point-light STACK — N lights distributed up the flame's
+    // vertical axis so the whole arch is illuminated, not just the hot
+    // zone. Each entry in `stack` becomes one THREE.PointLight; all
+    // share the same flicker speed/jitter, decay, and flare blend, but
+    // each carries its own yFraction (where on the flame's height it
+    // sits), intensityScale (relative to intensityMin/Max), base color
+    // (so the arch shows a vertical hue gradient — warm amber at the
+    // base, deep red near the tip), and phaseOffset (so the layers
+    // flicker out of sync — without this they pulse in lockstep and
+    // look like one big light).
+    //
     //   yFraction  — 0=bottom of cutout, 1=vanishing-point Y
-    //   intensityMin/Max — base flicker bounds
-    //   flareIntensityBoost — extra intensity added during a chromatic flare
+    //   intensityMin/Max — base flicker bounds, multiplied per-light
+    //                      by each stack entry's intensityScale
+    //   flareIntensityBoost — extra intensity added during a chromatic
+    //                         flare (also scaled per-light)
     //   flickerSpeed/Jitter — sine + stochastic noise frequencies
     //   coolColor — light tints toward this when a flare is active
     light: {
       enabled:    true,
-      yFraction:  0.20,
       // Light Z relative to maxZ. Negative = INSIDE the cutout volume so
       // only the inner walls of the hole are lit; the outer front face
       // (normal +z) keeps a strong negative dot-product with the
@@ -902,9 +1393,28 @@ export const ANIM = {
       flareIntensityBoost: 140,
       flickerSpeed:  2.4,
       flickerJitter: 0.55,
-      color:        '#FF7A22',
+      color:        '#FF7A22',   // fallback for stack entries that omit color
       coolColor:    '#5DAEFF',
-      decay:        1.6,
+      decay:        1.4,         // dropped from 1.6 → 1.4 so the upper stack
+                                 // lights still reach the arch top before
+                                 // attenuating to nothing
+      // Stack of lights along the flame's height. Add/remove entries
+      // to scale up or down. 4 entries is a good balance of even arch
+      // coverage vs. per-fragment lighting cost.
+      stack: [
+        // Hot base — yellow-amber, full intensity, no phase shift.
+        { yFraction: 0.15, intensityScale: 1.00,
+          color: '#FFB840', phaseOffset: 0.0 },
+        // Mid-low — saturated orange.
+        { yFraction: 0.40, intensityScale: 0.85,
+          color: '#FF8A20', phaseOffset: 0.7 },
+        // Mid-high — red-orange.
+        { yFraction: 0.65, intensityScale: 0.70,
+          color: '#E04A18', phaseOffset: 1.4 },
+        // Tip — deep red, dimmest. Reaches the top of the arch.
+        { yFraction: 0.85, intensityScale: 0.55,
+          color: '#A4220F', phaseOffset: 2.1 },
+      ],
     },
 
     // Secondary flame — a small saturated-blue flame that sits at the
@@ -1003,15 +1513,64 @@ export const ANIM = {
       },
     },
 
-    // Galaxy starry-night mode. When viewMode === 'flame' the galaxy
+    // Galaxy starry-night mode. When viewMode === 'fireplace' the galaxy
     // shader lerps `uStarryMode` toward 1: nebula + warm core glow fade
     // out, deep-space goes pure black, and an extra dense star layer
     // fades in. `fadeSpeed` is 1/sec. `brightness` overrides the
-    // galaxy's `uBrightness` uniform while flame mode is active so the
-    // backdrop is darker and the flame body reads clearly against it.
+    // galaxy's `uBrightness` uniform while fireplace mode is active so
+    // the backdrop is darker and the flame body reads clearly against it.
     galaxyStarry: {
       fadeSpeed:  1.5,
       brightness: 0.32,
+    },
+  },
+
+  // -----------------------------------------------------------------------
+  // FIREPLACE — standalone Roman-horseshoe brick frame that wraps the
+  // OUTSIDE of the logo's bounding box. Lives in its own module
+  // (patterns/fireplace.js) and reads ONLY this config block — does not
+  // touch ANIM.arch.* and is not affected by it. Visible only in the
+  // 'fireplace' view mode (key 4).
+  //   gap          — distance from the logo's bbox to the inner face of
+  //                  the brick frame (units = scene units).
+  //   domeRise     — height of the half-ellipse dome above the bbox top.
+  //                  Larger = taller arch; smaller = flatter arch.
+  //   legHeight    — how far down the vertical brick legs reach from the
+  //                  bbox top before stopping. The hearth (bottom edge)
+  //                  is intentionally open.
+  //   arcSegments  — polyline resolution of the dome arc (≥8 recommended).
+  //   brickColor   — surround stone colour.
+  //   brickZLift   — extra Z push toward the camera on the brick layer.
+  //   brick.*      — per-brick dimensions; `depth` is the spacing along
+  //                  the curve, so smaller = more bricks.
+  //   petals.*     — muqarnas-style pointed-arch cells lining the inner
+  //                  face with tips facing the logo. `spacing` controls
+  //                  cell pitch along the curve.
+  // -----------------------------------------------------------------------
+  fireplace: {
+    enabled:     true,
+    gap:         0.6,
+    domeRise:    undefined,   // undefined → defaults to bbox-width * 0.45
+    legHeight:   undefined,   // undefined → defaults to bbox-height * 0.55
+    arcSegments: 24,
+    brickColor:  '#9A7544',
+    brickZLift:  0.0,
+    bricks: { enabled: true },
+    brick: {
+      width:       1.4,   // local-X — long axis pointing at the camera
+      height:      2.4,   // local-Y — radial outward thickness
+      depth:       1.6,   // local-Z — along-curve spacing (≈ brick length tangentially)
+      mortarGap:   0.06,
+      faultAmount: 0.05,
+    },
+    petals: {
+      enabled:    true,
+      length:     2.0,    // radial extent toward logo centre
+      width:      1.6,    // tangential width along the curve
+      thickness:  0.4,    // Z protrusion
+      spacing:    1.6,    // along-curve pitch (smaller = denser)
+      zLift:      0.05,   // forward of gate-frame front face
+      color:      '#7A5A38',
     },
   },
 };
