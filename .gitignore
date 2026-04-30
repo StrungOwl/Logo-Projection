@@ -1,6 +1,10 @@
 # Playwright MCP debug artifacts (console logs + auto-screenshots)
 .playwright-mcp/
 
+# Throwaway snapshot scripts and captures
+.snapshot-*
+.snapshot.*
+
 # Local screenshot captures
 *.png
 !patterns/**/*.png
