@@ -652,7 +652,10 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
   const brickEnabled  = brickCfg.enabled !== false;
   let morphGroup     = null;
   let brickHexWall   = null;
-  let brickHexMeshes = [];
+  let brickHexMeshes = [];          // LARGE wall meshes (canonical layout)
+  let brickHexMeshesSmall = [];     // SMALL wall meshes (denser, fast wave)
+  let brickHexWallLarge   = null;
+  let brickHexWallSmall   = null;
   const ghosts = [];
 
   if (brickEnabled && silhouette && silhouette[0] && silhouette[0].length >= 3) {
@@ -696,10 +699,17 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
     // flush with the gate's inner lip instead of inside a smaller pocket.
     const wallInset = brickCfg.inset ?? cfg0.maskInset ?? 1.6;
     const inner     = insetPolygon(silhouette[0], wallInset);
-    const hexR      = brickCfg.hexRadius ?? starSize * 0.25;
     const hexDepth  = brickCfg.hexDepth  ?? starSize * 0.12;
     const sizeVar   = brickCfg.sizeJitter ?? 0.20;
-    const slots     = buildHexSlots(inner, hexR);
+
+    // Two-size hex wall — a LARGE wall (sparse, slow domino wave) and a
+    // SMALL wall (dense, fast wave) both built at load. Only one is
+    // visible at a time during effect 2; the size-switch state machine
+    // in updateOverlay alternates between them at random moments.
+    const largeFactor = brickCfg.largeRadiusFactor ?? 0.25;
+    const smallFactor = brickCfg.smallRadiusFactor ?? (0.25 / 3);
+    const largeHexR = brickCfg.hexRadius ?? starSize * largeFactor;
+    const smallHexR = starSize * smallFactor;
 
     morphGroup = new THREE.Group();
     morphGroup.name = 'overlay-morph';
@@ -709,18 +719,9 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
 
     const wallZ = maxZ + (cfg0.zOffset ?? 0.22);
 
-    // Shared hex geometry (flat-top). CylinderGeometry with 6 radial
-    // segments = hex prism; rotate its axis to Z then rotate 30° so a
-    // flat edge is on top. Depth is modest so hexes read as solid tiles
-    // rather than tall prisms.
-    const hexGeo = new THREE.CylinderGeometry(hexR, hexR, hexDepth, 6, 1);
-    hexGeo.rotateX(Math.PI / 2);
-    hexGeo.rotateZ(Math.PI / 6);
-
-    // Dedicated group for the hex wall. Hexes keep a STATIC size and
-    // instead do a domino-flip around their local +X axis (wave sweeps
-    // left-to-right across the wall). Opacity fade handles the
-    // brick↔rose hand-off so tiles don't pop.
+    // Outer parent group — main.js toggles this group's visibility for
+    // mode gating; the per-size sub-groups live as children, each with
+    // its own `visible` flag driven by the size-switch state machine.
     const hexWall = new THREE.Group();
     hexWall.name = 'brick-hex-wall';
     hexWall.visible = false;
@@ -739,96 +740,114 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
     const altChance    = Math.max(0, Math.min(1, backCfg.altChance ?? 0.30));
     const altColorHex  = backCfg.altColor ?? '#FFE08C';
     const altZOff      = backCfg.zOffset ?? 0.02;
-    // Shared flat hex shape (2D) for the back-face disc — built once,
-    // reused per alt-back tile via per-tile material clones.
-    const altGeo = backEnabled
-      ? (() => {
-          const shape = new THREE.Shape();
-          for (let i = 0; i < 6; i++) {
-            const a = i * (Math.PI / 3);
-            const x = Math.cos(a) * hexR, y = Math.sin(a) * hexR;
-            if (i === 0) shape.moveTo(x, y); else shape.lineTo(x, y);
+
+    // Builder: produce one self-contained hex wall set. Returns the
+    // sub-group, the per-tile mesh array, and the slot positions used.
+    function buildOneHexWall(hexR_) {
+      const slots_ = buildHexSlots(inner, hexR_);
+
+      // Flat-top hex prism — same shape recipe as before, just at the
+      // requested radius.
+      const hexGeo_ = new THREE.CylinderGeometry(hexR_, hexR_, hexDepth, 6, 1);
+      hexGeo_.rotateX(Math.PI / 2);
+      hexGeo_.rotateZ(Math.PI / 6);
+
+      // Flat 2D hex outline matching the prism cap, used for the alt
+      // back-face disc.
+      const altGeo_ = backEnabled
+        ? (() => {
+            const shape = new THREE.Shape();
+            for (let i = 0; i < 6; i++) {
+              const a = i * (Math.PI / 3);
+              const x = Math.cos(a) * hexR_, y = Math.sin(a) * hexR_;
+              if (i === 0) shape.moveTo(x, y); else shape.lineTo(x, y);
+            }
+            shape.closePath();
+            return new THREE.ShapeGeometry(shape);
+          })()
+        : null;
+
+      const wall_ = new THREE.Group();
+      hexWall.add(wall_);
+
+      const meshes_ = [];
+      for (const slot of slots_) {
+        const hMat = starMats[0].clone();
+        hMat.color = hexColor.clone();
+        hMat.emissive = hexColor.clone();
+        hMat.emissiveIntensity = 0;
+        hMat.transparent = true;       // needed for brickW-driven opacity
+        const mesh = new THREE.Mesh(hexGeo_, hMat);
+        mesh.position.set(slot.x, slot.y, wallZ);
+        wall_.add(mesh);
+        meshes_.push(mesh);
+
+        if (backEnabled && altGeo_ && Math.random() < altChance) {
+          const altMatOpts = {
+            color:       new THREE.Color(altColorHex),
+            transparent: true,
+            opacity:     1.0,
+            depthWrite:  false,
+            side:        THREE.DoubleSide,
+          };
+          if (maskClip) {
+            altMatOpts.stencilWrite = true;
+            altMatOpts.stencilRef   = 1;
+            altMatOpts.stencilFunc  = THREE.EqualStencilFunc;
+            altMatOpts.stencilFail  = THREE.KeepStencilOp;
+            altMatOpts.stencilZFail = THREE.KeepStencilOp;
+            altMatOpts.stencilZPass = THREE.KeepStencilOp;
           }
-          shape.closePath();
-          return new THREE.ShapeGeometry(shape);
-        })()
-      : null;
-
-    const hexMeshes = [];
-    for (const slot of slots) {
-      const hMat = starMats[0].clone();
-      hMat.color = hexColor.clone();
-      hMat.emissive = hexColor.clone();
-      hMat.emissiveIntensity = 0;
-      hMat.transparent = true;         // needed for brickW-driven opacity
-      const mesh = new THREE.Mesh(hexGeo, hMat);
-      mesh.position.set(slot.x, slot.y, wallZ);
-      hexWall.add(mesh);
-      hexMeshes.push(mesh);
-
-      if (backEnabled && altGeo && Math.random() < altChance) {
-        // This tile is tagged for alt back. Flat hex disc sits just
-        // behind the prism's back cap so it shows when the tile flips
-        // and the back becomes camera-facing.
-        const altMatOpts = {
-          color:       new THREE.Color(altColorHex),
-          transparent: true,
-          opacity:     1.0,
-          depthWrite:  false,
-          side:        THREE.DoubleSide,
-        };
-        // Mirror gate stencil clip so the disc never pokes past the
-        // gate-frame's inner aperture.
-        if (maskClip) {
-          altMatOpts.stencilWrite = true;
-          altMatOpts.stencilRef   = 1;
-          altMatOpts.stencilFunc  = THREE.EqualStencilFunc;
-          altMatOpts.stencilFail  = THREE.KeepStencilOp;
-          altMatOpts.stencilZFail = THREE.KeepStencilOp;
-          altMatOpts.stencilZPass = THREE.KeepStencilOp;
+          const altMat  = new THREE.MeshBasicMaterial(altMatOpts);
+          const altMesh = new THREE.Mesh(altGeo_, altMat);
+          altMesh.position.set(0, 0, -hexDepth * 0.5 - altZOff);
+          altMesh.renderOrder = 7;
+          mesh.add(altMesh);
+          mesh.userData.altMat = altMat;
         }
-        const altMat  = new THREE.MeshBasicMaterial(altMatOpts);
-        const altMesh = new THREE.Mesh(altGeo, altMat);
-        altMesh.position.set(0, 0, -hexDepth * 0.5 - altZOff);
-        // ShapeGeometry is built in the XY plane facing +Z. After
-        // positioning at the back face we want it visible from -Z too,
-        // hence DoubleSide above.
-        altMesh.renderOrder = 7;   // draw before the prism in opaque pass
-        mesh.add(altMesh);
-        mesh.userData.altMat = altMat;
       }
+
+      // Per-tile flipStep — sorted by spatial order so the wave reads
+      // as a clean left-to-right sweep across this wall.
+      const sortedHexes = [...meshes_].sort((a, b) =>
+        (a.position.x - b.position.x) || (a.position.y - b.position.y));
+      for (let i = 0; i < sortedHexes.length; i++) {
+        sortedHexes[i].userData.flipStep = i;
+      }
+
+      // Per-tile drift vector for the brick→rose transit. Drift base
+      // scales with this wall's hex radius so smaller hexes drift
+      // proportionally less.
+      const driftDistBase = brickCfg.hexDriftDist   ?? hexR_ * 4.0;
+      const driftJitter   = brickCfg.hexDriftJitter ?? 0.5;
+      for (const hex of meshes_) {
+        const sx = hex.position.x - cx;
+        const sy = hex.position.y - cy;
+        const len = Math.hypot(sx, sy) || 1;
+        const baseX = sx / len, baseY = sy / len;
+        const ja = (Math.random() - 0.5) * driftJitter * 2;
+        const ca = Math.cos(ja), sa = Math.sin(ja);
+        hex.userData.driftDirX = baseX * ca - baseY * sa;
+        hex.userData.driftDirY = baseX * sa + baseY * ca;
+        hex.userData.driftDist = driftDistBase * (0.7 + Math.random() * 0.6);
+        hex.userData.homeX = hex.position.x;
+        hex.userData.homeY = hex.position.y;
+      }
+
+      return { wall: wall_, meshes: meshes_, slots: slots_ };
     }
 
-    // Assign each hex a domino step index by spatial order — sort by X
-    // (then Y as tiebreaker) so the wave reads as a clean left-to-right
-    // sweep across the wall. flipStep is read at runtime to stagger the
-    // flip trigger times.
-    const sortedHexes = [...hexMeshes].sort((a, b) =>
-      (a.position.x - b.position.x) || (a.position.y - b.position.y));
-    for (let i = 0; i < sortedHexes.length; i++) {
-      sortedHexes[i].userData.flipStep = i;
-    }
+    const largeRes = buildOneHexWall(largeHexR);
+    const smallRes = buildOneHexWall(smallHexR);
+    largeRes.wall.name = 'brick-hex-wall-large';
+    smallRes.wall.name = 'brick-hex-wall-small';
 
-    // Per-hex drift vector for the "move out" transit animation. The
-    // base direction is radial from the model center so hexes scatter
-    // outward; a small angular jitter + distance variance breaks strict
-    // radial symmetry so it reads as organic scatter rather than an
-    // explosion.
-    const driftDistBase = brickCfg.hexDriftDist   ?? hexR * 4.0;
-    const driftJitter   = brickCfg.hexDriftJitter ?? 0.5; // radians
-    for (const hex of hexMeshes) {
-      const sx = hex.position.x - cx;
-      const sy = hex.position.y - cy;
-      const len = Math.hypot(sx, sy) || 1;
-      const baseX = sx / len, baseY = sy / len;
-      const ja = (Math.random() - 0.5) * driftJitter * 2;
-      const ca = Math.cos(ja), sa = Math.sin(ja);
-      hex.userData.driftDirX = baseX * ca - baseY * sa;
-      hex.userData.driftDirY = baseX * sa + baseY * ca;
-      hex.userData.driftDist = driftDistBase * (0.7 + Math.random() * 0.6);
-      hex.userData.homeX = hex.position.x;
-      hex.userData.homeY = hex.position.y;
-    }
+    // Ghost-petal pairing uses the LARGE wall's slots — the brick→rose
+    // morph snaps petals to their nearest hex slot, and the large wall
+    // is the canonical layout (the small wall is denser and not used as
+    // a morph reference).
+    const slots = largeRes.slots;
+    const hexMeshes = largeRes.meshes;
 
     // Pair each rosette petal with its nearest unused hex slot — the
     // slot becomes that petal's emergence point during transit. Unused
@@ -889,11 +908,15 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
       });
     }
 
-    // Stash the hex wall on the closure so updateOverlay can drive it.
-    // (Declared here so the update function can see it via `hexMeshesRef`
-    // captured above the function.)
-    brickHexWall    = hexWall;
-    brickHexMeshes  = hexMeshes;
+    // Stash both wall sets on the closure so updateOverlay can drive
+    // them. `brickHexMeshes` (the LARGE-wall array) is the canonical
+    // layout for the brick↔rose ghost morph; `brickHexMeshesSmall` is
+    // the denser variant the size-switch state machine alternates with.
+    brickHexWall        = hexWall;
+    brickHexWallLarge   = largeRes.wall;
+    brickHexWallSmall   = smallRes.wall;
+    brickHexMeshes      = hexMeshes;            // LARGE
+    brickHexMeshesSmall = smallRes.meshes;
   }
 
   // Large 3D hexagon — a neutral canvas for future "looks". Held in its
@@ -1003,6 +1026,12 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
   const _hexDriftColor = new THREE.Color();
   let _hexDriftBaseStr = null;
   let _hexDriftDeepStr = null;
+
+  // Size-switch state machine — only ticks in 'hex' viewMode. `null`
+  // until first init (the first hex-mode frame seeds it).
+  let _hexSizeMode    = null;   // 'large' | 'small'
+  let _hexNextSwitchT = -1;     // absolute t when the next swap fires
+  let _hexTransStart  = -1;     // -1 = stable; else t at which fade began
 
   function updateOverlay(t) {
     const cfg = ANIM.overlay;
@@ -1205,32 +1234,22 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
       const e      = 0.5 - 0.5 * Math.cos(ta * Math.PI);
       const brickW = 1 - e;            // 1 at brick hold, 0 at rose hold
 
-      // Hex wall: STATIC size. Tiles do a domino flip around their
+      // Hex walls: STATIC size. Tiles do a domino flip around their
       // local +X axis, with trigger times staggered by flipStep so a
       // left-to-right wave rolls across the wall. brickW drives the
       // material opacity so hexes fade (not shrink) across transits.
-      const hexTrigger = brickCfg.hexDominoTrigger ?? 0.18;
+      // Two parallel walls (LARGE + SMALL) live behind the visible one;
+      // the size-switch state machine alternates between them at random
+      // moments while in 'hex' mode.
       const hexFall    = brickCfg.hexDominoFall    ?? 2.2;
       const hexPause   = brickCfg.hexDominoPause   ?? 2.5;
-      const hexCount   = brickHexMeshes.length;
-      const hexMaxStep = Math.max(0, hexCount - 1);
-      const hexCycleLen = hexMaxStep * hexTrigger + hexFall;
-      const hexFullCyc  = hexCycleLen + hexPause;
-      const hexElapsed  = hexFullCyc > 0
-        ? ((t % hexFullCyc) + hexFullCyc) % hexFullCyc
-        : 0;
-      // Exit anchor — last hex (stepFrac=1) finishes at cyc = morphTotal.
-      // Each hex's exit start = exitTailEnd - hexExitGlide, offset back by
-      // (1 - stepFrac) * hexExitStagger so flipStep=0 leaves first.
       const exitTailEnd = morphTotal - hexExitGlide;
-      const stepDenom   = Math.max(1, brickHexMeshes.length - 1);
 
       // Compute the target hex colour for this frame: drifted while in
-      // solo 'hex' mode (effect 2), otherwise the static base hue. Same
-      // colour goes to the hex face and the nested line outlines below.
-      // Outside 'hex' mode the nesting + low opacity overlay is also
-      // suppressed (line opacity → 0, baseOpacity → 1) so the wall reads
-      // identically to its pre-effect-2 look in 'all' / fireplace.
+      // solo 'hex' mode (effect 2), otherwise the static base hue.
+      // Outside 'hex' mode the alt-back overlay + low opacity is also
+      // suppressed so the wall reads identically to its pre-effect-2
+      // look in 'all' / fireplace.
       const isHexMode = ANIM.viewMode === 'hex';
       const cd = brickCfg.colorDrift;
       const baseStr = brickCfg.color ?? '#D14A22';
@@ -1239,8 +1258,6 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
         const deepStr = cd.deepColor ?? '#5C0A04';
         if (deepStr !== _hexDriftDeepStr) { _hexDeepColor.set(deepStr); _hexDriftDeepStr = deepStr; }
         const dur = Math.max(cd.cycleDuration ?? 18, 0.001);
-        // 0 at base, 1 at deep, smooth-eased so the dwells at each end
-        // feel intentional rather than a constant slide.
         const phase = (t / dur) * Math.PI * 2;
         const lerpAmt = 0.5 - 0.5 * Math.cos(phase);
         _hexDriftColor.copy(_hexBaseColor).lerp(_hexDeepColor, lerpAmt);
@@ -1250,88 +1267,153 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
 
       const baseOpacity = isHexMode ? (brickCfg.baseOpacity ?? 1) : 1;
 
-      // Back-face alt-colour disc on random tiles — alpha gated to hex
-      // mode so other modes never reveal the contrast colour.
       const backCfgFrame = brickCfg.backFace || {};
       const altOpacity = isHexMode && backCfgFrame.enabled !== false
         ? (backCfgFrame.altOpacity ?? 1)
         : 0;
 
-      for (const hex of brickHexMeshes) {
-        hex.material.color.copy(_hexDriftColor);
-        const step = hex.userData.flipStep;
-        const ph   = (hexElapsed - step * hexTrigger) / hexFall;
-        let angle = 0;
-        if (ph > 0 && ph < 1) {
-          const eased = 0.5 - 0.5 * Math.cos(ph * Math.PI);
-          angle = eased * twoPi;
+      // Size-switch state machine. Outside 'hex' mode the LARGE wall is
+      // always shown at full alpha and the SMALL wall is fully hidden,
+      // so the brick→rose morph in 'all' mode keeps reading the same as
+      // before. Inside 'hex' mode the machine sequentially fades from
+      // one size to the other at random moments.
+      const ssCfg     = brickCfg.sizeSwitch || {};
+      const ssEnabled = isHexMode && ssCfg.enabled !== false;
+      const ssMinDwell = ssCfg.minDwell ?? 8;
+      const ssMaxDwell = Math.max(ssMinDwell, ssCfg.maxDwell ?? 25);
+      const ssTransDur = Math.max(ssCfg.transitionDuration ?? 1.6, 0.001);
+      const sampleDwell = () =>
+        ssMinDwell + Math.random() * (ssMaxDwell - ssMinDwell);
+
+      if (ssEnabled) {
+        if (_hexSizeMode === null) {
+          _hexSizeMode = (ssCfg.startSize === 'small') ? 'small' : 'large';
+          _hexNextSwitchT = t + sampleDwell();
         }
-        hex.rotation.x = angle;
-
-        // Per-hex window-edge envelope. `edgeDrift` (0..1) pushes the hex
-        // toward its drifted-out position; `edgeFade` (0..1) is the on-
-        // screen alpha multiplier. In free-running mode both stay at the
-        // identity (drift 0, fade 1) so only the natural brick↔rose drift
-        // (driven by `e`) takes effect.
-        let edgeDrift = 0;
-        let edgeFade  = 1;
-        if (wavesOn) {
-          const stepFrac = step / stepDenom;
-
-          // Entry wave — first hex (stepFrac=0) starts gliding at
-          // cyc=hexEntryDelay, last hex starts at cyc=hexEntryDelay+
-          // hexEntryStagger. Pre-trigger frames fall through the smoothstep
-          // (u clamped to 0 → eased=0 → edgeDrift=1, edgeFade=0), so each
-          // hex stays drifted + invisible until its turn.
-          const entryStart = hexEntryDelay + hexEntryStagger * stepFrac;
-          const entryEnd   = entryStart + hexEntryGlide;
-          if (cyc < entryEnd) {
-            const u = Math.max(0, (cyc - entryStart) / Math.max(hexEntryGlide, 1e-3));
-            const eased = u * u * (3 - 2 * u);     // smoothstep
-            edgeDrift = 1 - eased;                 // 1 at trigger → 0 settled
-            edgeFade  = eased;                     // 0 → 1 as it settles
-          }
-
-          // Exit wave — symmetric, anchored to the window close. flipStep=0
-          // exits first, last hex exits last (matches entry order so each
-          // hex's "life" inside the window has a coherent in/out direction).
-          const exitStart = exitTailEnd - hexExitStagger * (1 - stepFrac);
-          if (cyc > exitStart) {
-            const u = Math.min(1, (cyc - exitStart) / Math.max(hexExitGlide, 1e-3));
-            const eased = u * u * (3 - 2 * u);
-            if (eased > edgeDrift) edgeDrift = eased;       // drift back out
-            if (1 - eased < edgeFade) edgeFade = 1 - eased; // fade out
-          }
+        if (_hexTransStart < 0 && t >= _hexNextSwitchT) {
+          _hexTransStart = t;
         }
+      } else {
+        // Reset state when leaving hex mode so the next entry starts
+        // cleanly from the configured `startSize`.
+        _hexSizeMode    = null;
+        _hexNextSwitchT = -1;
+        _hexTransStart  = -1;
+      }
 
-        // Drift: max(natural-morph drift, window-edge drift). They never
-        // overlap meaningfully — natural drift is 0 in the brick-hold
-        // window where the edge waves live.
-        const driftFactor = e > edgeDrift ? e : edgeDrift;
-        hex.position.x = hex.userData.homeX + hex.userData.driftDirX * hex.userData.driftDist * driftFactor;
-        hex.position.y = hex.userData.homeY + hex.userData.driftDirY * hex.userData.driftDist * driftFactor;
-        const hexAlpha = brickW * edgeFade;
-        hex.material.opacity = hexAlpha * baseOpacity;
+      let largeAlpha, smallAlpha;
+      if (!ssEnabled) {
+        // Outside hex mode: LARGE is the canonical wall, SMALL hidden.
+        largeAlpha = 1;
+        smallAlpha = 0;
+      } else if (_hexTransStart < 0) {
+        // Stable: one size at full, the other hidden.
+        largeAlpha = (_hexSizeMode === 'large') ? 1 : 0;
+        smallAlpha = (_hexSizeMode === 'small') ? 1 : 0;
+      } else {
+        const tp = (t - _hexTransStart) / ssTransDur;
+        if (tp >= 1) {
+          // Transition complete — flip the active size and re-arm.
+          _hexSizeMode = (_hexSizeMode === 'large') ? 'small' : 'large';
+          _hexTransStart = -1;
+          _hexNextSwitchT = t + sampleDwell();
+          largeAlpha = (_hexSizeMode === 'large') ? 1 : 0;
+          smallAlpha = (_hexSizeMode === 'small') ? 1 : 0;
+        } else {
+          // Sequential fade: outgoing fades over [0, 0.5], incoming
+          // fades over [0.5, 1] — both walls hit alpha 0 at the
+          // mid-point so they never overlap visually.
+          const outA = Math.max(0, 1 - 2 * tp);
+          const inA  = Math.max(0, 2 * tp - 1);
+          if (_hexSizeMode === 'large') { largeAlpha = outA; smallAlpha = inA; }
+          else                          { largeAlpha = inA;  smallAlpha = outA; }
+        }
+      }
 
-        // Back-face alt colour (random-tile only). Smooth back-camera-
-        // facing factor: positive when the hex's local -Z (back face) is
-        // pointing toward the camera. Easing in over a 0.4 band gives a
-        // soft fade-in/out as the tile rotates past the perpendicular
-        // point during a flip.
-        if (hex.userData.altMat) {
-          let backVis = 0;
-          if (isHexMode) {
-            const backFacing = -Math.cos(hex.rotation.x);
-            if (backFacing > 0) {
-              if (backFacing >= 0.4) {
-                backVis = 1;
-              } else {
-                const u = backFacing / 0.4;
-                backVis = u * u * (3 - 2 * u);
-              }
+      if (brickHexWallLarge) brickHexWallLarge.visible = largeAlpha > 0.001;
+      if (brickHexWallSmall) brickHexWallSmall.visible = smallAlpha > 0.001;
+
+      // Per-wall flip-trigger config — small wall uses a much shorter
+      // trigger so many tiles flip simultaneously instead of a slow
+      // one-by-one wave.
+      const largeTrigger = brickCfg.largeDominoTrigger
+                       ?? brickCfg.hexDominoTrigger ?? 0.18;
+      const smallTrigger = brickCfg.smallDominoTrigger ?? 0.04;
+
+      const wallSpecs = [
+        { meshes: brickHexMeshes,      trigger: largeTrigger, sizeAlpha: largeAlpha },
+        { meshes: brickHexMeshesSmall, trigger: smallTrigger, sizeAlpha: smallAlpha },
+      ];
+
+      for (const ws of wallSpecs) {
+        if (ws.sizeAlpha <= 0.001 || !ws.meshes.length) continue;
+        const meshes = ws.meshes;
+        const hexTrigger = ws.trigger;
+        const sizeAlpha  = ws.sizeAlpha;
+        const hexCount   = meshes.length;
+        const hexMaxStep = Math.max(0, hexCount - 1);
+        const hexCycleLen = hexMaxStep * hexTrigger + hexFall;
+        const hexFullCyc  = hexCycleLen + hexPause;
+        const hexElapsed  = hexFullCyc > 0
+          ? ((t % hexFullCyc) + hexFullCyc) % hexFullCyc
+          : 0;
+        const stepDenom   = Math.max(1, hexCount - 1);
+
+        for (const hex of meshes) {
+          hex.material.color.copy(_hexDriftColor);
+          const step = hex.userData.flipStep;
+          const ph   = (hexElapsed - step * hexTrigger) / hexFall;
+          let angle = 0;
+          if (ph > 0 && ph < 1) {
+            const eased = 0.5 - 0.5 * Math.cos(ph * Math.PI);
+            angle = eased * twoPi;
+          }
+          hex.rotation.x = angle;
+
+          let edgeDrift = 0;
+          let edgeFade  = 1;
+          if (wavesOn) {
+            const stepFrac = step / stepDenom;
+            const entryStart = hexEntryDelay + hexEntryStagger * stepFrac;
+            const entryEnd   = entryStart + hexEntryGlide;
+            if (cyc < entryEnd) {
+              const u = Math.max(0, (cyc - entryStart) / Math.max(hexEntryGlide, 1e-3));
+              const eased = u * u * (3 - 2 * u);
+              edgeDrift = 1 - eased;
+              edgeFade  = eased;
+            }
+            const exitStart = exitTailEnd - hexExitStagger * (1 - stepFrac);
+            if (cyc > exitStart) {
+              const u = Math.min(1, (cyc - exitStart) / Math.max(hexExitGlide, 1e-3));
+              const eased = u * u * (3 - 2 * u);
+              if (eased > edgeDrift) edgeDrift = eased;
+              if (1 - eased < edgeFade) edgeFade = 1 - eased;
             }
           }
-          hex.userData.altMat.opacity = hexAlpha * altOpacity * backVis;
+
+          const driftFactor = e > edgeDrift ? e : edgeDrift;
+          hex.position.x = hex.userData.homeX
+                         + hex.userData.driftDirX * hex.userData.driftDist * driftFactor;
+          hex.position.y = hex.userData.homeY
+                         + hex.userData.driftDirY * hex.userData.driftDist * driftFactor;
+          const hexAlpha = brickW * edgeFade * sizeAlpha;
+          hex.material.opacity = hexAlpha * baseOpacity;
+
+          if (hex.userData.altMat) {
+            let backVis = 0;
+            if (isHexMode) {
+              const backFacing = -Math.cos(hex.rotation.x);
+              if (backFacing > 0) {
+                if (backFacing >= 0.4) {
+                  backVis = 1;
+                } else {
+                  const u = backFacing / 0.4;
+                  backVis = u * u * (3 - 2 * u);
+                }
+              }
+            }
+            hex.userData.altMat.opacity = hexAlpha * altOpacity * backVis;
+          }
         }
       }
 

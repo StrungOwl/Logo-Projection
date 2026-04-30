@@ -318,6 +318,30 @@ export const ANIM = {
       // back-face alt colour stays hidden at rest); drop toward 0.4 for
       // see-through tiles.
       baseOpacity: 1.0,
+      // Two parallel hex walls live behind the visible one — a LARGE
+      // (sparse, slow domino wave) and a SMALL (dense, more tiles
+      // flipping at once). At random moments in solo 'hex' mode the
+      // wall sequentially fades from one size to the other.
+      //   largeRadiusFactor — large hex circumradius as fraction of
+      //                       starSize (≈ original wall density)
+      //   smallRadiusFactor — small hex circumradius as fraction of
+      //                       starSize (1/3 of large = ~9× more tiles)
+      //   largeDominoTrigger — sec between adjacent large-wall flip
+      //                        starts (0.18 = the original wave)
+      //   smallDominoTrigger — sec between small-wall flip starts.
+      //                        Small value = tiles flip nearly together
+      //                        across a band, so the wall ripples fast.
+      largeRadiusFactor:  0.25,
+      smallRadiusFactor:  0.0833,    // 0.25 / 3
+      largeDominoTrigger: 0.18,
+      smallDominoTrigger: 0.04,
+      sizeSwitch: {
+        enabled:            true,
+        startSize:          'small',  // initial size when entering hex mode
+        minDwell:           8.0,      // min sec at one size before switching
+        maxDwell:           25.0,     // max sec; actual is uniform random
+        transitionDuration: 1.6,      // sec for the sequential out→in fade
+      },
       // Random subset of hexes get a CONTRASTING colour on their back
       // face. As each tile flips, those random tiles flash the alt
       // colour for ~1s before the tile rotates back. Other tiles flip
@@ -325,10 +349,8 @@ export const ANIM = {
       backFace: {
         enabled:     true,
         altChance:   0.30,       // fraction of tiles tagged for alt back (~30 %)
-        altColor:    '#FFE08C',  // creamy warm-yellow — reads as firelight
-                                 // peeking through. Try '#3DB7FF' (cool blue)
-                                 // or '#FFFFFF' (white-hot) for stronger
-                                 // contrast.
+        altColor:    '#89CFF0',  // baby blue — cool contrast against the
+                                 // warm hex wall.
         altOpacity:  1.0,        // peak alpha during a flip
         zOffset:     0.02,       // sit slightly behind the hex back face
       },
@@ -1260,29 +1282,26 @@ export const ANIM = {
   // block before passing as configOverride.
   // -----------------------------------------------------------------------
   archCarved: {
-    // Deeper wall: 8 stair tiers (vs 4 in fireplace), with a much
-    // larger maxStepHeight so the outermost step pops dramatically
-    // forward of the floor.
+    // Deep brick facade: 10 stair tiers, ALL bricks (no hex grooves),
+    // with a much larger maxStepHeight so the outermost step pops
+    // dramatically forward of the floor — reads as a thick masonry
+    // wall whose 10 receding courses can be sculpted via niches.
     topLayer: {
       enabled:        true,
       reachFraction:  0.66,
-      stepCount:      8,
+      stepCount:      10,
       minStepHeight:  0.6,
-      maxStepHeight:  6.0,
+      maxStepHeight:  7.0,
       zLift:          0.05,
-      // 8 tiers: alternate brick / hex / brick / hex / brick / hex /
-      // brick / hex so the carved deeper wall has a busier rhythm.
-      layerKinds:     ['brick','hex','brick','hex','brick','hex','brick','hex'],
+      // All 10 tiers brick — no hex layers in this carved facade.
+      layerKinds:     ['brick','brick','brick','brick','brick',
+                       'brick','brick','brick','brick','brick'],
       niches:         [],            // populated by createArch from lantern positions
       widthScale:     1.0,
       depthScale:     1.0,
       mortarGapX:     0.08,
       mortarGapY:     0.0,
       maskInset:      0.4,
-      // Larger hex Z scale so the recessed grooves are deeper / more
-      // visually pronounced against the chunkier brick steps.
-      hexZScale:      0.35,
-      // hexColor inherits gradientDark from below if undefined.
       underHexes: { enabled: false },
       cornerHexes: { enabled: false },
     },
@@ -1413,6 +1432,23 @@ export const ANIM = {
     widthNoiseFreq:    0.14,
     columnEdgeSoft:    0.45,
 
+    // Bottom flare — additive widening at the base that decays quickly
+    // with height, so the very bottom of the flame can match the wide
+    // span of the cutout at the logo's lower opening while the rest of
+    // the column stays at its slim `bodyHalfWidthBase` width.
+    //   bottomFlareWidth  — extra column half-width fraction added at
+    //                       t=0 (on top of `bodyHalfWidthBase`). Units
+    //                       are the same: fraction of cutout half-width.
+    //                       0.86 with base 0.14 fills the cutout at t=0.
+    //                       0 disables the flare entirely.
+    //   bottomFlareHeight — height fraction over which the flare decays
+    //                       from full to zero. Smaller = sharper/quicker
+    //                       transition back to the base column width.
+    // The decay is quadratic ease-out (pow 2), so the drop is fast just
+    // above the base and slow as it merges into the regular column.
+    bottomFlareWidth:  0.95,
+    bottomFlareHeight: 0.10,
+
     // Bottom fade — height fraction over which the flame ramps in from
     // invisible (at the polygon's bottom Y) to full intensity. The main
     // flame extends all the way to the bottom of the cutout polygon
@@ -1514,7 +1550,7 @@ export const ANIM = {
     // cutout's vertical extent. Positive shifts everything UP. Use this
     // to nudge the flame's resting position within the cutout without
     // changing the cutout geometry or the t-mapping shape.
-    yOffsetFrac: 0.06,
+    yOffsetFrac: 0.02,
 
     // Overall multiplier applied to the flame body. With additive
     // blending values >1 saturate after ACES tonemapping, giving the
@@ -1778,6 +1814,13 @@ export const ANIM = {
       bodyHalfWidthTop:  0.020,
       widthNoiseAmt:     0.30,
       columnWobble:      0.025,
+      // Bottom flare on the blue core — narrower than the main flame's
+      // flare so the blue still sits visibly INSIDE the orange's flared
+      // base. Main is ~0.95 (column nearly fills the cutout at t=0);
+      // 0.45 here puts the blue base at ~0.52 of cutout half-width,
+      // a comfortable margin inside the orange.
+      bottomFlareWidth:  0.45,
+      bottomFlareHeight: 0.10,
       colorBottom: '#5FBEFF',  // saturated cyan-blue at the hot base
       colorMid:    '#1A55FF',  // saturated electric blue mid-band
       colorTop:    '#0A1FA8',  // deep saturated blue at the cool tip
@@ -1992,7 +2035,7 @@ export const ANIM = {
     //   zLift             — extra Z above the brick centre. 0 = co-planar.
     //   color             — hex tile colour.
     innerHexes: {
-      enabled:          true,
+      enabled:          false,
       radius:           3.0,
       depth:            0.5,
       rowCount:         1,

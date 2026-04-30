@@ -292,6 +292,8 @@ function buildFlameBody({ cutoutLoop, vpX, vpY, minY, maxY, halfWidth, zBack, zF
     uThreshHigh:      { value: cfg.threshHigh },
     uColHalfBase:     { value: cfg.bodyHalfWidthBase },
     uColHalfTop:      { value: cfg.bodyHalfWidthTop },
+    uBottomFlareWidth:  { value: cfg.bottomFlareWidth  ?? 0 },
+    uBottomFlareHeight: { value: cfg.bottomFlareHeight ?? 0.1 },
     uColWobble:       { value: cfg.columnWobble },
     uWidthNoiseAmt:   { value: cfg.widthNoiseAmt },
     uWidthNoiseFreq:  { value: cfg.widthNoiseFreq },
@@ -361,6 +363,8 @@ function buildFlameBody({ cutoutLoop, vpX, vpY, minY, maxY, halfWidth, zBack, zF
       uniform float uThreshHigh;
       uniform float uColHalfBase;
       uniform float uColHalfTop;
+      uniform float uBottomFlareWidth;
+      uniform float uBottomFlareHeight;
       uniform float uColWobble;
       uniform float uWidthNoiseAmt;
       uniform float uWidthNoiseFreq;
@@ -464,6 +468,14 @@ function buildFlameBody({ cutoutLoop, vpX, vpY, minY, maxY, halfWidth, zBack, zF
         float w2Dx = (tClamp - uWaist2Y) / max(uWaist2Width, 0.001);
         float waist2Factor = 1.0 - uWaist2Amt * exp(-w2Dx * w2Dx);
         colHalfFrac *= max(waist2Factor, 0.05);
+        // Bottom flare — additive widening at the base that decays
+        // quickly with height. Lets the flame fill the wide bottom of
+        // the cutout while the rest of the column stays slim. Quadratic
+        // ease-out: fast drop just above the base, slow merge into the
+        // regular column width.
+        float flareT = clamp(tClamp / max(uBottomFlareHeight, 0.001), 0.0, 1.0);
+        float flareDecay = (1.0 - flareT) * (1.0 - flareT);
+        colHalfFrac += uBottomFlareWidth * flareDecay;
         float wobbleN = fbm2(vec2(11.7, vLocalPos.y * 0.14 - uTime * 1.5));
         float xCenter = uVanishingX
                       + (wobbleN - 0.5) * 2.0 * uColWobble * uHalfWidth;
@@ -612,6 +624,8 @@ function applyBodyUniforms(body, cfg) {
   u.uThreshHigh.value     = cfg.threshHigh;
   u.uColHalfBase.value    = cfg.bodyHalfWidthBase;
   u.uColHalfTop.value     = cfg.bodyHalfWidthTop;
+  u.uBottomFlareWidth.value  = cfg.bottomFlareWidth  ?? 0;
+  u.uBottomFlareHeight.value = cfg.bottomFlareHeight ?? 0.1;
   u.uColWobble.value      = cfg.columnWobble;
   u.uWidthNoiseAmt.value  = cfg.widthNoiseAmt;
   u.uWidthNoiseFreq.value = cfg.widthNoiseFreq;
@@ -770,6 +784,14 @@ function buildFlameShadow({ cutoutLoop, vpX, vpY, minY, maxY, halfWidth, zBack, 
         float w2Dx = (t - uWaist2Y) / max(uWaist2Width, 0.001);
         float waist2Factor = 1.0 - uWaist2Amt * exp(-w2Dx * w2Dx);
         colHalfFrac *= max(waist2Factor, 0.05);
+        // NOTE: the body's `bottomFlareWidth` is intentionally NOT
+        // applied here. The shadow is drawn even wider than the body
+        // (uHaloScale > 1), and the body's noise tongues don't fully
+        // fill the flared base — so widening the shadow to match would
+        // stamp a dark multiplicative halo across the whole bottom of
+        // the cutout, showing up as a "layer underneath" the flame.
+        // Keeping the shadow at the slim column shape means the halo
+        // only wraps the upper part of the flame as before.
         float colHalfWidth = uHalfWidth * colHalfFrac * uHaloScale;
         float xRel = (vLocalPos.x - uVanishingX) / max(colHalfWidth, 0.001);
         float xFade = 1.0 - smoothstep(0.7, 1.0, abs(xRel));
