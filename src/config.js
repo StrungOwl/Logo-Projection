@@ -54,7 +54,7 @@ export const ANIM = {
   rimLight:          { intensityMin: 0.5,  intensityMax: 2.5,
                        phaseOffset: Math.PI * 0.5, color: '#4D8AFF' },
 
-  ambientIntensity:     0.1,
+  ambientIntensity:     0.0,
   fillIntensity:        0.4,
   rearPatternIntensity: 1.2,
   rearPatternColor:     '#7A96C8',
@@ -110,7 +110,7 @@ export const ANIM = {
   // built from an invisible LineSegments layer cloned from each brick's
   // edges, so sparks hop along brick outlines / mortar gaps the same way
   // panelSparks hop along stroke lines.
-  archSparks:    { count: 90, gravity: 5, maxSpeed: 7, damping: 1.6,
+  archSparks:    { count: 0, gravity: 5, maxSpeed: 7, damping: 1.6,
                    snapStrength: 9,
                    tangentialFactor: 0.6, speedVariance: 0.55, sizeVariance: 0.75,
                    color: '#FFD9A0', hueVariance: 0.08,
@@ -338,9 +338,9 @@ export const ANIM = {
       sizeSwitch: {
         enabled:            true,
         startSize:          'small',  // initial size when entering hex mode
-        minDwell:           8.0,      // min sec at one size before switching
-        maxDwell:           25.0,     // max sec; actual is uniform random
-        transitionDuration: 1.6,      // sec for the sequential out→in fade
+        minDwell:           13.0,     // min sec at one size before switching
+        maxDwell:           30.0,     // max sec; actual is uniform random
+        transitionDuration: 3.5,      // sec for the cross-fade + scale morph
       },
       // Random subset of hexes get a CONTRASTING colour on their back
       // face. As each tile flips, those random tiles flash the alt
@@ -406,7 +406,7 @@ export const ANIM = {
                               // continuous Droste dive with periodic holds
                               // (the original infinite-loop behaviour, governed
                               // by holdDuration / holdFadeOut below).
-    loopStaticDur: 10.0,      // oneShot only. Seconds the canonical rest
+    loopStaticDur: 60.0,      // oneShot only. Seconds the canonical rest
                               // pattern stays static after fade-in completes
                               // before the intro re-triggers. 0 → park
                               // forever (no loop). Increase for longer
@@ -437,7 +437,7 @@ export const ANIM = {
                               // cover the originals' displacement so the
                               // silhouette edge is never visible during
                               // the focal-grow / push-out transition.
-    triggerDelay:   5.0,      // seconds in pattern mode before intro
+    triggerDelay:  60.0,      // seconds in pattern mode before intro
                               // starts (initial settle — viewer reads the
                               // canonical pattern first so the dive lands
                               // as a clear transition, not a startle).
@@ -454,32 +454,48 @@ export const ANIM = {
     // opacity ≈ 0) back to r = -N/2 (tiny, opacity ≈ 0) the seam is
     // hidden by the envelope being zero at both ends — true infinite-
     // zoom feel without ever repeating the snap.
-    cloneCount:        5,     // total clones. 5 keeps ~2 partially
-                              // visible plus one at peak at all times;
-                              // higher = deeper recursion smoother dive,
+    cloneCount:        7,     // total clones. 7 keeps 3-4 simultaneously
+                              // visible (one at peak, one or two emerging
+                              // from centre, one or two growing past peak
+                              // and dissolving) — reads as "many concentric
+                              // copies" rather than "one plus tiny ones".
+                              // Higher = deeper recursion smoother dive,
                               // costs draw calls.
-    cloneScaleFactor:  0.32,  // ratio between adjacent clone scales.
-                              // growthFactor = 1 / this. 0.32 means each
-                              // Droste step is a ~3.1× zoom (vs 2× at
-                              // 0.5) — much more dramatic per-step
-                              // emphasis on the focal centre, so a single
-                              // dive segment covers a lot more apparent
-                              // depth into one shape. Drop to ~0.25 for
-                              // even more aggressive zoom; raise to 0.5
-                              // for the classic gentler Droste.
-    droStepDuration:   8.0,   // seconds for d to advance by 1 (one full
-                              // Droste step) at peak dive speed. Bigger =
-                              // slower, more meditative dive.
-    diveDuration:      8.0,   // seconds of continuous diving before the
-                              // hold. Rounded up to the next integer-d so
-                              // the hold lands exactly on a clone-at-peak
-                              // (visually identical to the pattern at
-                              // rest). 8 with stepDur 8 = 1 Droste step
-                              // per dive segment, so the apparent zoom
-                              // per dive is ~3.1× into the focal shape —
-                              // a single zoom-in, not a cascade. Eased
-                              // so the dive ramps up slowly and slows
-                              // again before settling.
+    cloneScaleFactor:  0.45,  // ratio between adjacent clone scales.
+                              // growthFactor = 1 / this. 0.45 means each
+                              // Droste step is a ~2.2× zoom — the eye reads
+                              // continuous recursion (not dramatic jumps
+                              // between widely-spaced layers). Drop to
+                              // ~0.32 for more aggressive per-step zoom;
+                              // raise to 0.5 for the classic gentle Droste.
+    droStepDuration:   4.0,   // seconds for d to advance by 1 (one full
+                              // Droste step) at peak dive speed. Faster
+                              // step times keep visible motion in the
+                              // recursion across the dive duration.
+    diveDuration:     12.0,   // seconds of continuous diving before
+                              // landing. Rounded up to the next integer-d
+                              // so the landing lands exactly on a
+                              // clone-at-peak (visually identical to the
+                              // pattern at rest). 12s with stepDur 4 =
+                              // ~3 Droste steps per dive segment, so the
+                              // apparent zoom per dive is ~10× into the
+                              // focal shape — dramatic but readable.
+                              // Eased so the dive ramps up slowly and
+                              // slows again before settling.
+    landingDuration:   2.0,   // seconds of crossfade from the dive's
+                              // clone stack to the rest pattern. Holds
+                              // d at the integer target so the at-peak
+                              // clone stays at scale 1 (= rest pattern)
+                              // while cloneOp ramps 1 → 0 and originals'
+                              // opacity ramps 0 → 1 on a shared smoothstep.
+                              // The deeper nested copies (smaller centre,
+                              // larger outer hints) dissolve gradually
+                              // instead of snapping out, and the
+                              // `cloneFadeStagger` knob makes deeper
+                              // clones lead the fade so the recursion
+                              // simplifies progressively into the rest
+                              // pattern. Set to 0 for the legacy
+                              // single-frame atomic swap (no crossfade).
     holdDuration:     60.0,   // total seconds of static hold at the end
                               // of each dive segment (includes fade-in +
                               // pure static + fade-out windows below).
@@ -585,35 +601,55 @@ export const ANIM = {
                               // scale=1, silhouette flashes); 0.5 =
                               // outermost tiles take an extra half a
                               // Droste step to settle.
-    droSigma:          1.50,  // Gaussian envelope half-width in log-scale
+    droSigma:          0.85,  // Gaussian envelope half-width in log-scale
                               // units. Smaller = sharper crossfade
                               // between layers (fewer visible at once);
-                              // larger = softer overlap. CRUCIAL for
-                              // brightness flatness: with N transparent
-                              // clones, the visible coverage is
-                              //   1 − ∏(1 − αₖ)
-                              // — non-linear. At sigma=0.70 a half-step
-                              // moment had two clones at α≈0.52 each,
-                              // giving coverage ≈ 0.77 (vs 1.0 at the
-                              // integer-d moment), so the silhouette
-                              // strobed bright/dim across each Droste
-                              // step. sigma=1.5 spreads each clone's
-                              // envelope wide enough that adjacent
-                              // Gaussians overlap cleanly — coverage
-                              // stays >99% at every d, no perceptible
-                              // brightness oscillation. Trade-off: more
-                              // clones at substantial opacity at once,
-                              // so the Droste nesting reads "creamy"
-                              // (soft depth blend) rather than crisp
-                              // discrete steps. Drop to ~0.45 for
-                              // a more "discrete depth steps" feel where
-                              // each layer briefly stands out as it peaks.
-    droLayerRotation:  0.0,   // radians of rotation accumulated per
+                              // larger = softer overlap. With the new
+                              // shader-side `cloneScaleFadeStart/End`
+                              // fade handling past-peak clones, the wide
+                              // envelope (formerly 1.5) is no longer
+                              // needed to mask absent layers — 0.85 lets
+                              // each Droste step read as a distinct
+                              // depth band while still keeping coverage
+                              // ~unity across integer-d moments.
+                              // Drop to ~0.45 for crisper "discrete
+                              // depth steps" (each layer momentarily
+                              // peaks alone); raise toward 1.5 for a
+                              // creamier blended Droste.
+    droLayerRotation:  0.08,  // radians of rotation accumulated per
                               // Droste step (a clone at effective depth
                               // r is rotated by r × this around the
-                              // focal centre). 0 = no twist; try 0.05–
-                              // 0.20 for a subtle Mandelbrot-style spiral
-                              // deepening as you fall in.
+                              // focal centre). 0.08 ≈ 4.6° per step,
+                              // so deepest visible layer is ~14° offset
+                              // from shallowest — reads as a subtle
+                              // spiral twist as you fall in, without
+                              // disorienting the eye when a clone
+                              // arrives at peak. 0 = no twist; raise
+                              // toward 0.20 for a more aggressive
+                              // Mandelbrot-style spiral.
+    cloneScaleFadeStart: 1.5, // Per-fragment alpha falloff for clones
+    cloneScaleFadeEnd:   3.0, // grown PAST peak. fade = 1 -
+                              // smoothstep(start, end, uCloneScale).
+                              // 1.5→3.0 means clones fade smoothly from
+                              // visible (scale ≤ 1.5) to invisible
+                              // (scale ≥ 3) — well before the unit-sized
+                              // inner-star cutout would read as a giant
+                              // centred hole or the "larger flower"
+                              // overlay would stamp on top of the rest
+                              // pattern. Raise `Start` to let past-peak
+                              // clones linger longer (more "we're falling
+                              // through" frames); lower `End` to dissolve
+                              // them faster. Replaces the old hard
+                              // r > 0 clamp (see `clampPastPeak`).
+    clampPastPeak:     false, // Debug-only legacy clamp. true → hide
+                              // any clone that would render at scale > 1
+                              // in JS (the old workaround for past-peak
+                              // visual artifacts). false (default) lets
+                              // clones grow past peak and dissolve via
+                              // the shader-side scale fade above —
+                              // unlocks the "falling through" half of
+                              // the Droste recursion. Flip to true only
+                              // to A/B compare against the legacy look.
     cloneZStep:        0.03,  // z recession added per clone level so
                               // deeper copies render BEHIND shallower
                               // ones in transparent-sort order.
@@ -730,15 +766,19 @@ export const ANIM = {
       // So `width` = horizontal (X) extent, `depth` = vertical (Y) extent,
       // `height` = thickness through the wall (Z).
       width:        2.6,    // horizontal X — bumped up for chunkier bricks
-      height:       1.5,    // Z thickness on floor — bumped (thicker)
-      depth:        1.7,    // vertical Y — bumped up; rows still tight
-      mortarGap:    0.0,    // base joint (used for brick-geometry shrink
-                            // and as the default for the per-axis gaps
-                            // below).
+      height:       2.6,    // Z thickness on floor — chunkier wall depth
+      depth:        2.25,   // vertical Y — sized to match the hex
+                            // tessellation pitch (1.5 × hex-radius =
+                            // ~0.866 × brick.width) so hex tiers don't
+                            // overlap their row neighbours.
+      mortarGap:    0.04,   // base joint — used for geometric shrink
+                            // of every brick AND as the inset applied
+                            // to hex tiles (see placeTopLayer hex
+                            // dispatch in patterns/arch.js).
       mortarGapX:   0.08,   // horizontal joint — small gap between
                             // adjacent bricks within a row.
-      mortarGapY:   0.0,    // vertical joint — bricks sit row-on-row
-                            // edge-to-edge for a tight stack.
+      mortarGapY:   0.08,   // vertical joint — small gap between
+                            // adjacent rows so courses don't kiss.
       faultAmount:  0.05,   // max vertex displacement, fraction of brick depth
       chamfer:      0.03,   // edge tuck, fraction of brick smallest dim
     },
@@ -819,8 +859,24 @@ export const ANIM = {
       enabled:        true,
       reachFraction:  0.66,
       stepCount:      4,
-      minStepHeight:  0.8,
-      maxStepHeight:  3.2,
+      minStepHeight:  1.4,
+      maxStepHeight:  5.5,
+      hexZScale:      0.7,
+      // Islamic pointed-arch cutout — carves a curved-side, pointed-top
+      // opening through the inner edge of the brick band (instead of
+      // leaving the default rectangular hole). Geometry: two-centred
+      // lancet — each side is a circular arc from springer to apex.
+      //   springerYFrac  Y of the bottom of the arc (0=bottom of bbox, 1=top)
+      //   apexYFrac      Y of the apex (must be > springerYFrac)
+      //   springerXFrac  half-span at the springer as fraction of bbox half-W
+      //                  (0 = thin slit on centerline, 1 = arch reaches bbox edges)
+      //   enabled        false = rectangular reach band (legacy behavior)
+      archShape: {
+        enabled:        false,
+        springerYFrac:  0.10,
+        apexYFrac:      0.85,
+        springerXFrac:  0.55,
+      },
       zLift:          0.05,
       // Per-step kind. Length normalised to stepCount; missing entries
       // default to 'brick'. Setting alternating values gives a visible
@@ -1056,8 +1112,8 @@ export const ANIM = {
       // 1 = pure random per-frame noise. 0.5 mixes both for rapid
       // micro-flutter on top of slower breathing — reads as a real
       // candle's restless flame.
-      intensityMin:   25.0,
-      intensityMax:   80.0,
+      intensityMin:   10.0,
+      intensityMax:   35.0,
       flickerSpeedA:  7.0,
       flickerSpeedB:  13.0,
       flickerJitter:  0.5,
@@ -1068,7 +1124,7 @@ export const ANIM = {
       flameColor:    '#FFE090',
       lightColor:    '#FFB060',
       decay:          1.4,
-      frameColor:    '#7A5028',
+      frameColor:    '#2E2E2E',
       // Two lanterns matching the reference image's lower-left + lower-
       // right alcoves. Panel indices: 0=UL, 1=UR, 2=LL, 3=LR.
       // The SDG logo's bbox extends well below its visible body (the
@@ -1082,8 +1138,8 @@ export const ANIM = {
       // keep a +15 offset which lifts them past the descenders into
       // the lower-lower-wall band. Result: 2 stacked lanterns per side.
       positions: [
-        { panel: 0, yOffset: -45 }, { panel: 1, yOffset: -45 },
-        { panel: 2, yOffset:  30 }, { panel: 3, yOffset:  30 },
+        { panel: 0, yOffset: -45 },   { panel: 1, yOffset: -45 },
+        { panel: 2, yOffset:  36.8 }, { panel: 3, yOffset:  36.8 },
       ],
     },
 
@@ -1266,9 +1322,40 @@ export const ANIM = {
       ],
     },
 
-    color:           '#8B5A2B',
-    gradientDark:    '#5C3A1B',
-    gradientBright:  '#A87242',
+    color:           '#B8862F',     // mid gold
+    gradientDark:    '#5E441A',     // dark warm gold — FAR-from-camera tier
+                                    // (innermost staircase step + floor wall)
+    gradientBright:  '#D4AB48',     // satin gold — CLOSE-to-camera tier
+                                    // (outermost staircase step). Pulled back
+                                    // from #FFE48A so the staircase reads as
+                                    // gold rather than pale yellow.
+    // Semi-metallic gold material — fully-metallic surfaces dim hard
+    // under our low-ambient flame-only lighting (metals reflect light
+    // they receive; with little to receive, they go dark). 0.55 keeps
+    // a metallic specular sheen while letting the diffuse gold colour
+    // read on its own. roughness 0.4 = satin sheen, not mirror.
+    metalness:       0.55,
+    roughness:       0.40,
+
+    // Gold shimmer — pinpricks of bright gold that twinkle across the
+    // staircase surface, like light catching individual flakes in
+    // metallic-flake gold paint. Patched into each step material via
+    // src/shaders/gold-shimmer.js (onBeforeCompile). Sampled in world-XY
+    // so the pattern is coherent across adjacent bricks.
+    //   density    sparkle locations per world unit
+    //   prob       fraction of grid cells that ever sparkle
+    //   speed      blinks per second (sin-driven envelope)
+    //   sharpness  higher = briefer / sharper twinkles
+    //   strength   emissive multiplier for the sparkle peak
+    //   color      sparkle hue (warm gold-white reads best on gold)
+    //   enabled    false to skip the patch entirely
+    shimmer: {
+      enabled:       true,
+      color:         '#FFEFA8',  // sheen tint (warm gold-white)
+      sheenScale:    0.18,       // world-XY scale for sheen noise
+      sheenSpeed:    0.35,       // drift speed
+      sheenStrength: 1.2,        // emissive multiplier for sheen
+    },
   },
 
   // -----------------------------------------------------------------------
@@ -1304,11 +1391,23 @@ export const ANIM = {
       maskInset:      0.4,
       underHexes: { enabled: false },
       cornerHexes: { enabled: false },
+      archShape: {
+        enabled:        false,
+        springerYFrac:  0.10,
+        apexYFrac:      0.85,
+        springerXFrac:  0.55,
+      },
     },
-    // Lanterns + floor + colours intentionally OMITTED here so the
-    // shallow merge ({ ...ANIM.arch, ...ANIM.archCarved }) inherits
-    // them from ANIM.arch (an explicit `undefined` would clobber the
-    // inherited value).
+    // Override mode-4's gold metallic palette so mode 5 keeps the grey
+    // stone look. Lanterns + floor intentionally OMITTED so they still
+    // inherit from ANIM.arch via the shallow merge.
+    color:           '#888888',
+    gradientDark:    '#3F3F3F',
+    gradientBright:  '#C8C8C8',
+    metalness:       0.10,
+    roughness:       0.85,
+    // Disable the gold shimmer — stone shouldn't twinkle.
+    shimmer:         { enabled: false },
   },
 
   // -----------------------------------------------------------------------
@@ -1425,29 +1524,12 @@ export const ANIM = {
     //   columnEdgeSoft  — soft-edge fraction at the column boundary
     //                     (separate from `edgeSoftness` which still
     //                     fades against the cutout polygon edges)
-    bodyHalfWidthBase: 0.14,
+    bodyHalfWidthBase: 0.20,
     bodyHalfWidthTop:  0.005,
     columnWobble:      0.04,
-    widthNoiseAmt:     0.42,
+    widthNoiseAmt:     0.26,
     widthNoiseFreq:    0.14,
     columnEdgeSoft:    0.45,
-
-    // Bottom flare — additive widening at the base that decays quickly
-    // with height, so the very bottom of the flame can match the wide
-    // span of the cutout at the logo's lower opening while the rest of
-    // the column stays at its slim `bodyHalfWidthBase` width.
-    //   bottomFlareWidth  — extra column half-width fraction added at
-    //                       t=0 (on top of `bodyHalfWidthBase`). Units
-    //                       are the same: fraction of cutout half-width.
-    //                       0.86 with base 0.14 fills the cutout at t=0.
-    //                       0 disables the flare entirely.
-    //   bottomFlareHeight — height fraction over which the flare decays
-    //                       from full to zero. Smaller = sharper/quicker
-    //                       transition back to the base column width.
-    // The decay is quadratic ease-out (pow 2), so the drop is fast just
-    // above the base and slow as it merges into the regular column.
-    bottomFlareWidth:  0.95,
-    bottomFlareHeight: 0.10,
 
     // Bottom fade — height fraction over which the flame ramps in from
     // invisible (at the polygon's bottom Y) to full intensity. The main
@@ -1486,7 +1568,7 @@ export const ANIM = {
     // pinch depth needed. Set `waist2Amt: 0` to disable this second
     // pinch entirely.
     waist2Y:     0.62,
-    waist2Amt:   0.40,
+    waist2Amt:   0.68,
     waist2Width: 0.18,   // wider Gaussian so the tail thins the visible
                          // middle of the body (~t=0.5) while the peak
                          // pinch stays at t=0.62 to keep the column off
@@ -1550,7 +1632,7 @@ export const ANIM = {
     // cutout's vertical extent. Positive shifts everything UP. Use this
     // to nudge the flame's resting position within the cutout without
     // changing the cutout geometry or the t-mapping shape.
-    yOffsetFrac: 0.02,
+    yOffsetFrac: 0.06,
 
     // Overall multiplier applied to the flame body. With additive
     // blending values >1 saturate after ACES tonemapping, giving the
@@ -1687,8 +1769,10 @@ export const ANIM = {
     //   riseDistance — how far above their spawn Y they reach at end of life
     //   pointSize   — base px size at unit depth (load-only)
     sparks: {
-      count:         55,         // load-only; keeps sparks readable
-                                 // without overpowering the body.
+      count:         0,          // load-only; 0 disables the entire
+                                 // spark subsystem (no GPU buffers,
+                                 // no shader, no draw calls). Bump
+                                 // back to ~55 to re-enable sparks.
       cycleDuration: 3.6,
       lifeVariance:  0.5,
       spawnYMin:     0.05,       // stay in the lower half so sparks
@@ -1710,6 +1794,18 @@ export const ANIM = {
       // active, ending up visibly in FRONT of the logo. Synced with
       // ANIM.flame.flares (same envelope drives both). 0 disables.
       flareForward:  4.5,
+      // Burst-window spawn gate. New sparks may only spawn while the
+      // current time falls in an on-window: hidden for `burstStart`
+      // seconds at startup, then `burstDuration` seconds on followed by
+      // (burstPeriod - burstDuration) off, repeating. In-flight sparks
+      // ALWAYS finish their lifecycle, so off-window starts and ends
+      // fade gracefully over one spark cycle (~3.6s) rather than
+      // hard-cutting. With start=120, period=180, duration=60 the
+      // sequence is: 120s hidden, 60s on, 120s off, 60s on, ... loop.
+      // Set burstDuration to 0 to disable gating (always-on).
+      burstStart:    120.0,
+      burstPeriod:   180.0,
+      burstDuration: 60.0,
     },
 
     // Flickering point-light STACK — N lights distributed up the flame's
@@ -1739,9 +1835,9 @@ export const ANIM = {
       // illuminates the camera-facing side, not the back, so the front
       // face's outer surface is unaffected by lights placed behind it).
       zOffsetFromFront: -2.0,
-      intensityMin: 30,
-      intensityMax: 110,
-      flareIntensityBoost: 140,
+      intensityMin: 55,
+      intensityMax: 190,
+      flareIntensityBoost: 220,
       flickerSpeed:  2.4,
       flickerJitter: 0.55,
       color:        '#FF7A22',   // fallback for stack entries that omit color
@@ -1814,13 +1910,6 @@ export const ANIM = {
       bodyHalfWidthTop:  0.020,
       widthNoiseAmt:     0.30,
       columnWobble:      0.025,
-      // Bottom flare on the blue core — narrower than the main flame's
-      // flare so the blue still sits visibly INSIDE the orange's flared
-      // base. Main is ~0.95 (column nearly fills the cutout at t=0);
-      // 0.45 here puts the blue base at ~0.52 of cutout half-width,
-      // a comfortable margin inside the orange.
-      bottomFlareWidth:  0.45,
-      bottomFlareHeight: 0.10,
       colorBottom: '#5FBEFF',  // saturated cyan-blue at the hot base
       colorMid:    '#1A55FF',  // saturated electric blue mid-band
       colorTop:    '#0A1FA8',  // deep saturated blue at the cool tip
@@ -1960,9 +2049,9 @@ export const ANIM = {
     // upside-down U (top + sides) instead of wrapping across the floor.
     springerYFrac:  0.02,
     archInset:      2.0,
-    // Dark voussoir colour — sharp contrast against the tan brick wall
-    // fill (arch.floor + topLayer) so the rim reads as a distinct ring.
-    brickColor:  '#8B5A2B',
+    // Voussoir colour — distinct mid-grey so the rim reads against the
+    // gradient wall fill on either side of its tonal range.
+    brickColor:  '#C99940',
     // Push the whole fireplace forward so the entire brick body lands
     // in front of arch.topLayer's outermost step (~gateFrontZ + 2.85).
     // 3.0 = brick back face at gateFrontZ + 3.0, fully clearing the step.
@@ -1992,7 +2081,7 @@ export const ANIM = {
       coldColor: '#2A0700',
     },
     brick: {
-      width:       2.8,   // local-X — long axis pointing at the camera
+      width:       4.2,   // local-X — long axis pointing at the camera (chunkier voussoir)
       height:      5.0,   // local-Y — radial outward thickness (chunkier rim)
       depth:       2.3,   // local-Z — along-curve spacing
       mortarGap:   0.06,

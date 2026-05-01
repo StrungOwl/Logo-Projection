@@ -292,8 +292,6 @@ function buildFlameBody({ cutoutLoop, vpX, vpY, minY, maxY, halfWidth, zBack, zF
     uThreshHigh:      { value: cfg.threshHigh },
     uColHalfBase:     { value: cfg.bodyHalfWidthBase },
     uColHalfTop:      { value: cfg.bodyHalfWidthTop },
-    uBottomFlareWidth:  { value: cfg.bottomFlareWidth  ?? 0 },
-    uBottomFlareHeight: { value: cfg.bottomFlareHeight ?? 0.1 },
     uColWobble:       { value: cfg.columnWobble },
     uWidthNoiseAmt:   { value: cfg.widthNoiseAmt },
     uWidthNoiseFreq:  { value: cfg.widthNoiseFreq },
@@ -363,8 +361,6 @@ function buildFlameBody({ cutoutLoop, vpX, vpY, minY, maxY, halfWidth, zBack, zF
       uniform float uThreshHigh;
       uniform float uColHalfBase;
       uniform float uColHalfTop;
-      uniform float uBottomFlareWidth;
-      uniform float uBottomFlareHeight;
       uniform float uColWobble;
       uniform float uWidthNoiseAmt;
       uniform float uWidthNoiseFreq;
@@ -468,14 +464,6 @@ function buildFlameBody({ cutoutLoop, vpX, vpY, minY, maxY, halfWidth, zBack, zF
         float w2Dx = (tClamp - uWaist2Y) / max(uWaist2Width, 0.001);
         float waist2Factor = 1.0 - uWaist2Amt * exp(-w2Dx * w2Dx);
         colHalfFrac *= max(waist2Factor, 0.05);
-        // Bottom flare — additive widening at the base that decays
-        // quickly with height. Lets the flame fill the wide bottom of
-        // the cutout while the rest of the column stays slim. Quadratic
-        // ease-out: fast drop just above the base, slow merge into the
-        // regular column width.
-        float flareT = clamp(tClamp / max(uBottomFlareHeight, 0.001), 0.0, 1.0);
-        float flareDecay = (1.0 - flareT) * (1.0 - flareT);
-        colHalfFrac += uBottomFlareWidth * flareDecay;
         float wobbleN = fbm2(vec2(11.7, vLocalPos.y * 0.14 - uTime * 1.5));
         float xCenter = uVanishingX
                       + (wobbleN - 0.5) * 2.0 * uColWobble * uHalfWidth;
@@ -624,8 +612,6 @@ function applyBodyUniforms(body, cfg) {
   u.uThreshHigh.value     = cfg.threshHigh;
   u.uColHalfBase.value    = cfg.bodyHalfWidthBase;
   u.uColHalfTop.value     = cfg.bodyHalfWidthTop;
-  u.uBottomFlareWidth.value  = cfg.bottomFlareWidth  ?? 0;
-  u.uBottomFlareHeight.value = cfg.bottomFlareHeight ?? 0.1;
   u.uColWobble.value      = cfg.columnWobble;
   u.uWidthNoiseAmt.value  = cfg.widthNoiseAmt;
   u.uWidthNoiseFreq.value = cfg.widthNoiseFreq;
@@ -784,14 +770,6 @@ function buildFlameShadow({ cutoutLoop, vpX, vpY, minY, maxY, halfWidth, zBack, 
         float w2Dx = (t - uWaist2Y) / max(uWaist2Width, 0.001);
         float waist2Factor = 1.0 - uWaist2Amt * exp(-w2Dx * w2Dx);
         colHalfFrac *= max(waist2Factor, 0.05);
-        // NOTE: the body's `bottomFlareWidth` is intentionally NOT
-        // applied here. The shadow is drawn even wider than the body
-        // (uHaloScale > 1), and the body's noise tongues don't fully
-        // fill the flared base — so widening the shadow to match would
-        // stamp a dark multiplicative halo across the whole bottom of
-        // the cutout, showing up as a "layer underneath" the flame.
-        // Keeping the shadow at the slim column shape means the halo
-        // only wraps the upper part of the flame as before.
         float colHalfWidth = uHalfWidth * colHalfFrac * uHaloScale;
         float xRel = (vLocalPos.x - uVanishingX) / max(colHalfWidth, 0.001);
         float xFade = 1.0 - smoothstep(0.7, 1.0, abs(xRel));
@@ -1160,6 +1138,14 @@ function buildSparks({ cutoutLoop, vpX, vpY, minY, maxY, zBack, zFront, renderer
     // a flare. Set to 0 outside flares.
     uFlareBoost:    { value: 0 },
     uFlareForward:  { value: cfg.flareForward ?? 3.0 },
+    // Burst-window gate. Sparks whose current cycle started OUTSIDE an
+    // on-window are silenced (vAlpha = 0) so no NEW sparks appear during
+    // the off-window — but in-flight sparks finish their lifecycle and
+    // fade out naturally. Setting uBurstDuration to 0 disables gating
+    // entirely (always-on).
+    uBurstStart:    { value: cfg.burstStart    ?? 0 },
+    uBurstPeriod:   { value: cfg.burstPeriod   ?? 0 },
+    uBurstDuration: { value: cfg.burstDuration ?? 0 },
   };
 
   const material = new THREE.ShaderMaterial({
@@ -1179,6 +1165,9 @@ function buildSparks({ cutoutLoop, vpX, vpY, minY, maxY, zBack, zFront, renderer
       uniform float uVanishingY;
       uniform float uFlareBoost;
       uniform float uFlareForward;
+      uniform float uBurstStart;
+      uniform float uBurstPeriod;
+      uniform float uBurstDuration;
       attribute float aRandom;
       attribute float aLife;
       attribute float aSize;
@@ -1187,7 +1176,22 @@ function buildSparks({ cutoutLoop, vpX, vpY, minY, maxY, zBack, zFront, renderer
 
       void main() {
         float cycle = uCycleDuration * aLife;
-        float t = mod(uTime + aRandom * cycle, cycle) / cycle;
+        float phaseRaw = mod(uTime + aRandom * cycle, cycle);
+        float t = phaseRaw / cycle;
+        // Most-recent cycle-start time for THIS particle in absolute
+        // uTime units. Used to gate spawn during off-windows.
+        float spawnTime = uTime - phaseRaw;
+        float spawnAllowed = 1.0;
+        if (uBurstDuration > 0.0) {
+          float ts = spawnTime - uBurstStart;
+          if (ts < 0.0) {
+            spawnAllowed = 0.0;
+          } else {
+            float bp = max(uBurstPeriod, 0.0001);
+            float spawnPhase = mod(ts, bp);
+            spawnAllowed = step(spawnPhase, uBurstDuration);
+          }
+        }
 
         // Rise: ease-out so sparks decelerate as they climb (cooling).
         float ease = 1.0 - pow(1.0 - t, 1.6);
@@ -1223,7 +1227,7 @@ function buildSparks({ cutoutLoop, vpX, vpY, minY, maxY, zBack, zFront, renderer
         // the dome region above the central cutout. Keeps the hex band
         // along the inner brick wall free of any spark overlap.
         float yFade = 1.0 - smoothstep(uVanishingY - 6.0, uVanishingY, rawY);
-        vAlpha = fadeIn * fadeOut * yFade;
+        vAlpha = fadeIn * fadeOut * yFade * spawnAllowed;
         vT = t;
       }
     `,
@@ -1539,6 +1543,34 @@ export function createFlame({ logoMesh, meta, renderer }) {
       sparks.uniforms.uBrightness.value    = sc.brightness;
       sparks.uniforms.uBodyColor.value.fromArray(hexToRgb(sc.bodyColor));
       sparks.uniforms.uCoreColor.value.fromArray(hexToRgb(sc.coreColor));
+      // Burst-window spawn gate — pause spawning of NEW sparks during
+      // off-windows. The vertex shader checks each particle's most
+      // recent cycle-start time against these uniforms; in-flight sparks
+      // finish their lifecycle naturally so the population fades out
+      // smoothly instead of hard-cutting.
+      const bStart = sc.burstStart    ?? 0;
+      const bPer   = sc.burstPeriod   ?? 0;
+      const bDur   = sc.burstDuration ?? 0;
+      sparks.uniforms.uBurstStart.value    = bStart;
+      sparks.uniforms.uBurstPeriod.value   = bPer;
+      sparks.uniforms.uBurstDuration.value = bDur;
+      // Hard JS-side gate: hide the Points object entirely whenever the
+      // shader is guaranteed to silence every particle (no in-flight
+      // sparks possible). Saves a draw call AND insulates against any
+      // shader cache weirdness for the pre-first-burst window.
+      const cycleMax = (sc.cycleDuration ?? 1) * (1 + (sc.lifeVariance ?? 0));
+      let visible = true;
+      if (bDur > 0) {
+        if (t < bStart) {
+          visible = false;
+        } else {
+          const phase = ((t - bStart) % bPer + bPer) % bPer;
+          // Off-window starts at bDur. Allow cycleMax extra seconds for
+          // in-flight sparks to fade naturally before hiding.
+          if (phase >= bDur + cycleMax) visible = false;
+        }
+      }
+      sparks.points.visible = visible;
     }
 
     // Hot-swap body uniforms each frame so devtools edits take effect.

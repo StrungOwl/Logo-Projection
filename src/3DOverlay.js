@@ -737,8 +737,6 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
     // tile's domino flip when the back rotates camera-facing.
     const backCfg      = brickCfg.backFace || {};
     const backEnabled  = backCfg.enabled !== false;
-    const altChance    = Math.max(0, Math.min(1, backCfg.altChance ?? 0.30));
-    const altColorHex  = backCfg.altColor ?? '#FFE08C';
     const altZOff      = backCfg.zOffset ?? 0.02;
 
     // Builder: produce one self-contained hex wall set. Returns the
@@ -746,14 +744,16 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
     function buildOneHexWall(hexR_) {
       const slots_ = buildHexSlots(inner, hexR_);
 
-      // Flat-top hex prism — same shape recipe as before, just at the
-      // requested radius.
-      const hexGeo_ = new THREE.CylinderGeometry(hexR_, hexR_, hexDepth, 6, 1);
+      // Flat-top hex prism — depth scales with radius so smaller hexes
+      // stay proportionally thin (otherwise the small wall reads as
+      // chunky stubby cylinders rather than tiles).
+      const hexDepth_ = hexDepth * (hexR_ / largeHexR);
+      const hexGeo_ = new THREE.CylinderGeometry(hexR_, hexR_, hexDepth_, 6, 1);
       hexGeo_.rotateX(Math.PI / 2);
       hexGeo_.rotateZ(Math.PI / 6);
 
-      // Flat 2D hex outline matching the prism cap, used for the alt
-      // back-face disc.
+      // Flat 2D hex outline matching the prism cap, used for the
+      // unlit back-face disc that hides the lit cap.
       const altGeo_ = backEnabled
         ? (() => {
             const shape = new THREE.Shape();
@@ -782,28 +782,33 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
         wall_.add(mesh);
         meshes_.push(mesh);
 
-        if (backEnabled && altGeo_ && Math.random() < altChance) {
-          const altMatOpts = {
-            color:       new THREE.Color(altColorHex),
+        // Every tile gets an unlit back disc matching the front color
+        // (drift-tracked per-frame). MeshBasicMaterial with
+        // toneMapped:false keeps the scene lights from washing the
+        // back toward white, so both sides read as the same hue.
+        if (backEnabled && altGeo_) {
+          const backMatOpts = {
+            color:       hexColor.clone(),
             transparent: true,
             opacity:     1.0,
             depthWrite:  false,
+            toneMapped:  false,
             side:        THREE.DoubleSide,
           };
           if (maskClip) {
-            altMatOpts.stencilWrite = true;
-            altMatOpts.stencilRef   = 1;
-            altMatOpts.stencilFunc  = THREE.EqualStencilFunc;
-            altMatOpts.stencilFail  = THREE.KeepStencilOp;
-            altMatOpts.stencilZFail = THREE.KeepStencilOp;
-            altMatOpts.stencilZPass = THREE.KeepStencilOp;
+            backMatOpts.stencilWrite = true;
+            backMatOpts.stencilRef   = 1;
+            backMatOpts.stencilFunc  = THREE.EqualStencilFunc;
+            backMatOpts.stencilFail  = THREE.KeepStencilOp;
+            backMatOpts.stencilZFail = THREE.KeepStencilOp;
+            backMatOpts.stencilZPass = THREE.KeepStencilOp;
           }
-          const altMat  = new THREE.MeshBasicMaterial(altMatOpts);
-          const altMesh = new THREE.Mesh(altGeo_, altMat);
-          altMesh.position.set(0, 0, -hexDepth * 0.5 - altZOff);
-          altMesh.renderOrder = 7;
-          mesh.add(altMesh);
-          mesh.userData.altMat = altMat;
+          const backMat  = new THREE.MeshBasicMaterial(backMatOpts);
+          const backMesh = new THREE.Mesh(altGeo_, backMat);
+          backMesh.position.set(0, 0, -hexDepth_ * 0.5 - altZOff);
+          backMesh.renderOrder = 7;
+          mesh.add(backMesh);
+          mesh.userData.backMat = backMat;
         }
       }
 
@@ -1275,8 +1280,10 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
       // Size-switch state machine. Outside 'hex' mode the LARGE wall is
       // always shown at full alpha and the SMALL wall is fully hidden,
       // so the brick→rose morph in 'all' mode keeps reading the same as
-      // before. Inside 'hex' mode the machine sequentially fades from
-      // one size to the other at random moments.
+      // before. Inside 'hex' mode the machine cross-fades + scale-morphs
+      // between the two walls at random moments — but only fires when
+      // the active wall is in its inter-wave pause so the current sweep
+      // finishes cleanly before the morph begins.
       const ssCfg     = brickCfg.sizeSwitch || {};
       const ssEnabled = isHexMode && ssCfg.enabled !== false;
       const ssMinDwell = ssCfg.minDwell ?? 8;
@@ -1285,23 +1292,62 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
       const sampleDwell = () =>
         ssMinDwell + Math.random() * (ssMaxDwell - ssMinDwell);
 
+      // Per-wall flip-trigger config — defined early so the state
+      // machine can probe the active wall's wave clock to find the
+      // post-sweep pause window.
+      const largeTrigger = brickCfg.largeDominoTrigger
+                       ?? brickCfg.hexDominoTrigger ?? 0.18;
+      const smallTrigger = brickCfg.smallDominoTrigger ?? 0.04;
+
+      const computeWavePhase = (meshes, trigger) => {
+        const n = meshes.length;
+        const maxStep = Math.max(0, n - 1);
+        const cycleLen = maxStep * trigger + hexFall;
+        const fullCyc = cycleLen + hexPause;
+        if (fullCyc <= 0) return { elapsed: 0, cycleLen, fullCyc };
+        const elapsed = ((t % fullCyc) + fullCyc) % fullCyc;
+        return { elapsed, cycleLen, fullCyc };
+      };
+
+      // Native radius factor per wall — used to derive scale during the
+      // morph so tile sizes meet at a continuous interpolated value.
+      const ssLargeFactor = brickCfg.largeRadiusFactor ?? 0.25;
+      const ssSmallFactor = brickCfg.smallRadiusFactor ?? (0.25 / 3);
+      const ssScaleRatio  = ssLargeFactor / Math.max(ssSmallFactor, 1e-6);
+
       if (ssEnabled) {
         if (_hexSizeMode === null) {
           _hexSizeMode = (ssCfg.startSize === 'small') ? 'small' : 'large';
           _hexNextSwitchT = t + sampleDwell();
         }
         if (_hexTransStart < 0 && t >= _hexNextSwitchT) {
-          _hexTransStart = t;
+          // Wait for the active wall's current wave to finish — only
+          // start the morph during the inter-wave pause.
+          const activeMeshes = (_hexSizeMode === 'small')
+            ? brickHexMeshesSmall : brickHexMeshes;
+          const activeTrig   = (_hexSizeMode === 'small')
+            ? smallTrigger      : largeTrigger;
+          const wave = computeWavePhase(activeMeshes, activeTrig);
+          if (wave.elapsed >= wave.cycleLen) {
+            _hexTransStart = t;
+          }
         }
       } else {
         // Reset state when leaving hex mode so the next entry starts
-        // cleanly from the configured `startSize`.
+        // cleanly from the configured `startSize`. Also reset any
+        // lingering per-tile scale from an in-flight morph.
+        if (_hexTransStart >= 0 || _hexSizeMode !== null) {
+          for (const m of brickHexMeshes)      m.scale.setScalar(1);
+          for (const m of brickHexMeshesSmall) m.scale.setScalar(1);
+        }
         _hexSizeMode    = null;
         _hexNextSwitchT = -1;
         _hexTransStart  = -1;
       }
 
       let largeAlpha, smallAlpha;
+      let largeWallScale = 1;
+      let smallWallScale = 1;
       if (!ssEnabled) {
         // Outside hex mode: LARGE is the canonical wall, SMALL hidden.
         largeAlpha = 1;
@@ -1313,36 +1359,43 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
       } else {
         const tp = (t - _hexTransStart) / ssTransDur;
         if (tp >= 1) {
-          // Transition complete — flip the active size and re-arm.
+          // Transition complete — flip the active size, reset scales,
+          // and re-arm the next switch.
           _hexSizeMode = (_hexSizeMode === 'large') ? 'small' : 'large';
           _hexTransStart = -1;
           _hexNextSwitchT = t + sampleDwell();
           largeAlpha = (_hexSizeMode === 'large') ? 1 : 0;
           smallAlpha = (_hexSizeMode === 'small') ? 1 : 0;
+          for (const m of brickHexMeshes)      m.scale.setScalar(1);
+          for (const m of brickHexMeshesSmall) m.scale.setScalar(1);
         } else {
-          // Sequential fade: outgoing fades over [0, 0.5], incoming
-          // fades over [0.5, 1] — both walls hit alpha 0 at the
-          // mid-point so they never overlap visually.
-          const outA = Math.max(0, 1 - 2 * tp);
-          const inA  = Math.max(0, 2 * tp - 1);
-          if (_hexSizeMode === 'large') { largeAlpha = outA; smallAlpha = inA; }
-          else                          { largeAlpha = inA;  smallAlpha = outA; }
+          // Linear cross-fade with paired scale-tween: both walls hold
+          // matching visual tile sizes throughout, so the morph reads
+          // as a continuous size change rather than a fade-swap.
+          if (_hexSizeMode === 'small') {
+            // small → large: small grows, large unfolds from miniature.
+            smallAlpha     = 1 - tp;
+            largeAlpha     = tp;
+            smallWallScale = 1 + (ssScaleRatio - 1) * tp;
+            largeWallScale = (1 / ssScaleRatio) + (1 - 1 / ssScaleRatio) * tp;
+          } else {
+            // large → small: large shrinks, small comes in pre-grown.
+            largeAlpha     = 1 - tp;
+            smallAlpha     = tp;
+            largeWallScale = 1 - (1 - 1 / ssScaleRatio) * tp;
+            smallWallScale = ssScaleRatio - (ssScaleRatio - 1) * tp;
+          }
         }
       }
 
       if (brickHexWallLarge) brickHexWallLarge.visible = largeAlpha > 0.001;
       if (brickHexWallSmall) brickHexWallSmall.visible = smallAlpha > 0.001;
 
-      // Per-wall flip-trigger config — small wall uses a much shorter
-      // trigger so many tiles flip simultaneously instead of a slow
-      // one-by-one wave.
-      const largeTrigger = brickCfg.largeDominoTrigger
-                       ?? brickCfg.hexDominoTrigger ?? 0.18;
-      const smallTrigger = brickCfg.smallDominoTrigger ?? 0.04;
-
       const wallSpecs = [
-        { meshes: brickHexMeshes,      trigger: largeTrigger, sizeAlpha: largeAlpha },
-        { meshes: brickHexMeshesSmall, trigger: smallTrigger, sizeAlpha: smallAlpha },
+        { meshes: brickHexMeshes,      trigger: largeTrigger,
+          sizeAlpha: largeAlpha,       wallScale: largeWallScale },
+        { meshes: brickHexMeshesSmall, trigger: smallTrigger,
+          sizeAlpha: smallAlpha,       wallScale: smallWallScale },
       ];
 
       for (const ws of wallSpecs) {
@@ -1350,6 +1403,7 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
         const meshes = ws.meshes;
         const hexTrigger = ws.trigger;
         const sizeAlpha  = ws.sizeAlpha;
+        const wallScale  = ws.wallScale;
         const hexCount   = meshes.length;
         const hexMaxStep = Math.max(0, hexCount - 1);
         const hexCycleLen = hexMaxStep * hexTrigger + hexFall;
@@ -1361,6 +1415,7 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
 
         for (const hex of meshes) {
           hex.material.color.copy(_hexDriftColor);
+          hex.scale.setScalar(wallScale);
           const step = hex.userData.flipStep;
           const ph   = (hexElapsed - step * hexTrigger) / hexFall;
           let angle = 0;
@@ -1399,7 +1454,7 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
           const hexAlpha = brickW * edgeFade * sizeAlpha;
           hex.material.opacity = hexAlpha * baseOpacity;
 
-          if (hex.userData.altMat) {
+          if (hex.userData.backMat) {
             let backVis = 0;
             if (isHexMode) {
               const backFacing = -Math.cos(hex.rotation.x);
@@ -1412,7 +1467,11 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
                 }
               }
             }
-            hex.userData.altMat.opacity = hexAlpha * altOpacity * backVis;
+            const backMat = hex.userData.backMat;
+            // Back disc tracks the wall's color drift so both sides
+            // read as the same hue.
+            backMat.color.copy(_hexDriftColor);
+            backMat.opacity = hexAlpha * altOpacity * backVis;
           }
         }
       }

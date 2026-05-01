@@ -625,6 +625,15 @@ export function addPatternLayers(logoMesh, meta, renderer) {
   // The originals are never restored — re-entering pattern mode resets to
   // intro. `fractalState.triggerZoom(t)` re-runs the intro from scratch.
   // ---------------------------------------------------------------------
+  // Shared uniform refs read by every clone material's fragment shader.
+  // The fragment shader multiplies gl_FragColor.a by
+  //   1 - smoothstep(uCloneScaleFadeStart, uCloneScaleFadeEnd, uCloneScale)
+  // so clones grown PAST peak fade smoothly to invisible before their
+  // unit-sized inner-star cutout reads as a giant centred hole. Ranges
+  // are read fresh each frame from ANIM.fractalZoom so the knobs are
+  // live-editable.
+  const cloneScaleFadeStartUniform = { value: 99.0 };
+  const cloneScaleFadeEndUniform   = { value: 100.0 };
   function cloneMaterialPreservingTime(origMat, cloneScaleUniform) {
     if (!origMat) return origMat;
     if (Array.isArray(origMat)) {
@@ -671,7 +680,9 @@ export function addPatternLayers(logoMesh, meta, renderer) {
       };
       m.onBeforeCompile = (shader) => {
         origCb(shader);
-        shader.uniforms.uCloneScale = cloneScaleUniform;
+        shader.uniforms.uCloneScale          = cloneScaleUniform;
+        shader.uniforms.uCloneScaleFadeStart = cloneScaleFadeStartUniform;
+        shader.uniforms.uCloneScaleFadeEnd   = cloneScaleFadeEndUniform;
         // origCb just ran Object.assign(shader.uniforms, fadeGradUniforms,
         // pulseUniforms, strokeUniforms) which re-wired our shader to the
         // SAME shared time-driven uniforms the live render loop and the
@@ -725,6 +736,30 @@ export function addPatternLayers(logoMesh, meta, renderer) {
            float _csInv = 1.0 / clamp(uCloneScale, 0.001, 1.0);
            vPanelXY = (_origPanelXY - uFadeCenter) * _csInv + uFadeCenter;`
         );
+        // Fragment shader: declare the clone-scale-fade uniforms and
+        // multiply final alpha by a smoothstep falloff so clones grown
+        // past `uCloneScaleFadeStart` dissolve and are fully gone by
+        // `uCloneScaleFadeEnd`. The original onBeforeCompile already
+        // injected `uniform float uMaxOpacity;` and the
+        // `gl_FragColor.a *= _a * uMaxOpacity;` (or `* _twinkle`) line —
+        // we extend both. Materials without uMaxOpacity (e.g. a debug
+        // material) are unaffected because the replace target won't match.
+        shader.fragmentShader = shader.fragmentShader
+          .replace(
+            'uniform float uMaxOpacity;',
+            `uniform float uMaxOpacity;
+             uniform float uCloneScale;
+             uniform float uCloneScaleFadeStart;
+             uniform float uCloneScaleFadeEnd;`
+          )
+          .replace(
+            'gl_FragColor.a *= _a * uMaxOpacity * _twinkle;',
+            `gl_FragColor.a *= _a * uMaxOpacity * _twinkle * (1.0 - smoothstep(uCloneScaleFadeStart, uCloneScaleFadeEnd, uCloneScale));`
+          )
+          .replace(
+            'gl_FragColor.a *= _a * uMaxOpacity;',
+            `gl_FragColor.a *= _a * uMaxOpacity * (1.0 - smoothstep(uCloneScaleFadeStart, uCloneScaleFadeEnd, uCloneScale));`
+          );
       };
       // Force the cached compiled program (if any) to be discarded so
       // our wrapper actually runs. Without this, three.js's internal
@@ -829,6 +864,7 @@ export function addPatternLayers(logoMesh, meta, renderer) {
   // Their per-frame role (scale / opacity / rotation) is fully driven by
   // the global dive depth d in applyDive — no static per-clone state.
   const fractalState = { active: 1, phase: 'rest', phaseStart: 0,
+                         firstRest: true,
                          lambda: 0, diveD: 0 };
   const fractalRoot  = new THREE.Group();
   fractalRoot.name = 'fractal-clone';
@@ -1169,20 +1205,19 @@ export function addPatternLayers(logoMesh, meta, renderer) {
     const revealSpread    = Math.min(0.95, Math.max(0, cfg.revealStaggerSpread ?? 0.0));
     const revealOvershoot = Math.max(0, cfg.revealOvershoot ?? 0.0);
     const fadeStagger     = Math.min(0.95, Math.max(0, cfg.cloneFadeStagger ?? 0.0));
-    const oneShotMode = !!cfg.oneShot;
+    // Debug-only legacy clamp: hide clones grown past scale=1 in JS
+    // (was the old workaround for the inner-star cutout reading huge at
+    // past-peak scales). Replaced by a soft per-fragment alpha fade in
+    // the clone shader (cloneMaterialPreservingTime). Off by default;
+    // flip on only to A/B compare against the old behavior.
+    const clampPastPeak = !!cfg.clampPastPeak;
     for (let k = 0; k < N; k++) {
       // Each clone's effective depth wraps modulo N into [-N/2, N/2).
       // Subtracting k staggers them by one Droste step apiece, so at any
       // instant the N clones occupy N evenly-spaced depths.
       let r = ((d - k + half) % N + N) % N - half;
-      // OneShot mode: hide clones in the role-rotation half where they
-      // would grow PAST scale=1 (= the "larger flower" the user doesn't
-      // want). Clamping at r=0 means each clone is only visible while
-      // it's at or smaller than rest size — emerging from tiny → peak,
-      // never overgrowing past peak. The wrap (r jumping from +N/2 to
-      // -N/2) is hidden because both endpoints are clamped.
       const c = clones[k];
-      if (oneShotMode && r > 0) {
+      if (clampPastPeak && r > 0) {
         c.pivot.visible = false;
         c.lastRevealMode = 'hidden';
         continue;
@@ -1338,18 +1373,19 @@ export function addPatternLayers(logoMesh, meta, renderer) {
 
   function updateFractalZoom(t /*, dt */) {
     const cfg = ANIM.fractalZoom;
-    // Bail in any non-pattern mode. Snap state back to a clean rest so
-    // re-entering pattern mode starts fresh, and clear any accumulated
-    // displacement / opacity on both originals and clones.
+    // Bail in any non-pattern mode. Snap state back to clean rest, clear
+    // any accumulated opacity on both originals and clones, and re-arm
+    // the initial-settle wait for the next time pattern mode is entered.
     if (!cfg || cfg.enabled === false || ANIM.viewMode !== 'pattern') {
       if (fractalRoot.visible) {
         fractalRoot.visible = false;
         parkAllLensTiles();
         parkAllClones();
-        fadeOriginals(1);   // restore in case oneShot left them faded
+        fadeOriginals(1);
       }
       fractalState.phase      = 'rest';
       fractalState.phaseStart = t;
+      fractalState.firstRest  = true;
       fractalState.lambda     = 0;
       fractalState.diveD      = 0;
       fractalState.cloneOp    = 0;
@@ -1359,224 +1395,153 @@ export function addPatternLayers(logoMesh, meta, renderer) {
 
     fractalRoot.visible = true;
 
-    const introDur = cfg.introDuration    ?? 4.0;
-    const stepDur  = cfg.droStepDuration  ?? 9.0;
-    const diveDur  = cfg.diveDuration     ?? 18.0;
-    const holdDur  = cfg.holdDuration     ?? 60.0;
-    const holdIn   = cfg.holdFadeIn       ?? 1.5;
-    const holdOut  = cfg.holdFadeOut      ?? 1.5;
-    const trigDel  = cfg.triggerDelay     ?? 0.0;
-    const elapsed  = t - fractalState.phaseStart;
-    let lambda  = 0;   // intro displacement progress (0..1)
-    let d       = 0;   // dive depth — frozen at integer values during hold
-                       // (multi-shot mode only). In oneShot mode d stays
-                       // at 0 — we use cloneScale instead.
-    let cloneOp = 1;   // multiplier on clone opacity envelope (drops to 0
-                       // during the static window so the original pattern
-                       // is what's actually visible at rest)
-    let cloneScale = 0;// oneShot single-clone path: scale of clone 0
-                       // (0 = invisible, 1 = exactly fills silhouette =
-                       // pixel-identical to rest pattern). Ignored in
-                       // multi-shot mode where applyDive computes per-
-                       // clone scales from the global d.
-    let holding = false;
-    let fadeMode = 'steady';   // 'fadeIn' / 'fadeOut' during hold crossfade
-                               // windows — gates per-clone fadeStagger in
-                               // applyDive so the dive's steady state isn't
-                               // perturbed.
+    // Refresh shared clone-scale-fade uniform refs from config so the
+    // knobs are live-editable. These drive the per-fragment alpha falloff
+    // for clones grown past peak (see cloneMaterialPreservingTime).
+    cloneScaleFadeStartUniform.value = cfg.cloneScaleFadeStart ?? 1.5;
+    cloneScaleFadeEndUniform.value   = cfg.cloneScaleFadeEnd   ?? 3.0;
+
+    const introDur   = cfg.introDuration    ?? 4.0;
+    const stepDur    = cfg.droStepDuration  ?? 4.0;
+    const diveDur    = cfg.diveDuration     ?? 12.0;
+    const landingDur = cfg.landingDuration  ?? 2.0;
+    const trigDel    = cfg.triggerDelay     ?? 5.0;
+    const loopDur    = cfg.loopStaticDur    ?? 10.0;
+    const elapsed    = t - fractalState.phaseStart;
+
+    // ---------------------------------------------------------------------
+    // STATE MACHINE — three phases, a one-frame atomic landing tucked into
+    // the dive→rest transition.
+    //
+    //   rest  → originals at full opacity, parked at rest. Clones hidden.
+    //           Wait `triggerDelay` (first entry) or `loopStaticDur`
+    //           (between loops); 0 → park forever. Then enter intro.
+    //   intro → originals fade 1 → 0; clone stack emerges from focal
+    //           centre with d ramping 0 → 1 and cloneOp 0 → 1 on a
+    //           shared smoothstep. NO displacement on originals — they
+    //           stay at rest position the whole intro. The synchronised
+    //           ramp covers the silhouette interior exactly once at every
+    //           instant: never zero, never twice.
+    //   dive  → smoothstep ease from d=1 to the next integer target so a
+    //           clone lands at r=0 (scale 1, peak Gaussian opacity = 1)
+    //           — visually identical to the rest pattern. Originals stay
+    //           invisible. Visible past-peak clones (no r>0 clamp) +
+    //           droLayerRotation give the "falling through infinite
+    //           copies" motion.
+    //   landing → crossfade out of the dive over `landingDuration` so the
+    //           recursion dissolves smoothly into the rest pattern instead
+    //           of snapping. d is held at the integer target (the at-peak
+    //           clone stays at scale 1 = rest pattern). cloneOp ramps
+    //           1 → 0 with `fadeMode: 'fadeIn'` — `cloneFadeStagger` makes
+    //           deeper clones (smaller central + larger outer hints) lead
+    //           the fade so the recursion simplifies progressively. In
+    //           lockstep, originals' opacity ramps 0 → 1, replacing the
+    //           at-peak clone smoothly. Set landingDuration=0 for the
+    //           legacy single-frame atomic swap.
+    // ---------------------------------------------------------------------
 
     if (fractalState.phase === 'rest') {
-      // Initial settle before the very first dive. After triggerDelay
-      // seconds in pattern mode, kick into intro.
-      if (elapsed >= trigDel) {
+      parkAllLensTiles();
+      parkAllClones();
+      fadeOriginals(1);
+      fractalState.lambda  = 0;
+      fractalState.diveD   = 0;
+      fractalState.cloneOp = 0;
+      fractalState.active  = 1;
+      const firstRest = fractalState.firstRest !== false;
+      const dwellDur  = firstRest ? trigDel : loopDur;
+      if (dwellDur > 0 && elapsed >= dwellDur) {
+        fractalState.firstRest  = false;
         fractalState.phase      = 'intro';
         fractalState.phaseStart = t;
-      } else {
-        parkAllLensTiles();
-        parkAllClones();
-        fractalState.lambda  = 0;
-        fractalState.diveD   = 0;
-        fractalState.cloneOp = 0;
-        fractalState.active  = 1;
-        return;
       }
+      return;
     }
-    const introElapsed = t - fractalState.phaseStart;
+
     if (fractalState.phase === 'intro') {
-      // Single-track intro — every quantity ramps on the same smoothstep
-      // over the FULL introDuration:
-      //   • d        0 → 1    (clone stack emerges from the focal centre)
-      //   • λ        0 → 1    (originals slide outward and mask away)
-      //   • cloneOp  0 → 1    (clone Gaussian envelope fades in)
-      //
-      // Synchronising all three is what kills the brightness pulse: at
-      // t=0 there are no clones rendered (cloneOp=0), so the at-peak
-      // clone (k for which r=0) doesn't double the originals at rest. As
-      // d grows, λ pushes the originals out at the same rate that
-      // cloneOp brings the clones in — the silhouette interior is
-      // covered exactly once at every moment, never zero, never twice.
-      // No more "logo-shape" contour reading on the rim, no more
-      // half-second 2× brightness flash where clone-at-peak overlays
-      // resting originals.
-      const introTotal = Math.max(introDur, 1e-3);
-      const u = Math.min(1, introElapsed / introTotal);
+      const u = Math.min(1, elapsed / Math.max(introDur, 1e-3));
       const s = smoothstep(u);
-      lambda     = s;
-      cloneOp    = s;
-      cloneScale = s;   // oneShot: leading clone grows 0 → 1
-      d          = s;   // multi-shot: depth ramps 0 → 1 for handoff to dive
+      const cloneOp = s;
+      const d       = s;
+      parkAllLensTiles();
+      fadeOriginals(Math.max(0, 1 - cloneOp));
+      applyDive(d, cloneOp, 'steady');
+      fractalState.lambda  = 0;
+      fractalState.diveD   = d;
+      fractalState.cloneOp = cloneOp;
+      fractalState.active  = Math.max(0, 1 - cloneOp);
       if (u >= 1) {
-        // Both oneShot and multi-shot flow into the Droste dive after
-        // intro completes. d is at 1 (one clone exactly at peak), so
-        // the dive picks up smoothly from there.
         fractalState.phase      = 'dive';
         fractalState.phaseStart = t;
         fractalState.diveD0     = 1;
       }
-    } else if (fractalState.phase === 'dive') {
-      // Droste dive: d advances continuously while clones role-rotate
-      // through the focal centre. In oneShot mode the dive is purely
-      // linear (no integer-snap, no easing) so the recursion looks
-      // continuous + infinite — clones cycle through emerge → peak →
-      // (clamped at 1, role swap) repeatedly. In multi-shot mode the
-      // dive eases to the next integer-d so a hold can land on an
-      // at-peak clone.
-      lambda     = 1;
-      cloneOp    = 1;
-      cloneScale = 1;
+      return;
+    }
+
+    if (fractalState.phase === 'dive') {
       const startD = fractalState.diveD0 ?? 1;
-      if (cfg.oneShot) {
-        // Linear advance: d grows by 1 every stepDur seconds.
-        d = startD + introElapsed / Math.max(stepDur, 1e-3);
-        if (introElapsed >= diveDur) {
-          // Hand off to hold (which contains the outro fade-out and
-          // the static loopStaticDur window).
-          fractalState.phase      = 'hold';
+      const stepsToCover = Math.max(1, Math.ceil(diveDur / Math.max(stepDur, 1e-3)));
+      const targetD = Math.round(startD + stepsToCover);
+      const segDur  = (targetD - startD) * Math.max(stepDur, 1e-3);
+      const u = Math.min(1, elapsed / Math.max(segDur, 1e-3));
+      const d = startD + (targetD - startD) * smoothstep(u);
+      const cloneOp = 1;
+      parkAllLensTiles();
+      fadeOriginals(0);
+      applyDive(d, cloneOp, 'steady');
+      fractalState.lambda  = 0;
+      fractalState.diveD   = d;
+      fractalState.cloneOp = cloneOp;
+      fractalState.active  = 0;
+      if (u >= 1) {
+        // Hand off to the landing crossfade. d is now exactly at
+        // `targetD` (an integer), so the at-peak clone is at scale 1
+        // and op 1 — visually identical to the rest pattern.
+        if (landingDur > 0) {
+          fractalState.phase      = 'landing';
           fractalState.phaseStart = t;
-          fractalState.holdD      = d;
-        }
-      } else {
-        // Multi-shot eased dive: smoothstep to the next integer-d so
-        // the hold lands on an at-peak clone (visually identical to
-        // pattern at rest).
-        const stepsToCover = Math.max(1, Math.ceil(diveDur / Math.max(stepDur, 1e-3)));
-        const targetD = Math.round(startD + stepsToCover);
-        const segDur = (targetD - startD) * Math.max(stepDur, 1e-3);
-        const u = Math.min(1, introElapsed / segDur);
-        d = startD + (targetD - startD) * smoothstep(u);
-        if (u >= 1) {
-          d = targetD;
-          if (holdDur > 0) {
-            fractalState.phase      = 'hold';
-            fractalState.phaseStart = t;
-            fractalState.holdD      = d;
-          } else {
-            fractalState.diveD0 = d;
-            fractalState.phaseStart = t;
-          }
+          fractalState.diveD0     = targetD;
+        } else {
+          // landingDuration=0 → legacy single-frame atomic swap.
+          fractalState.phase      = 'rest';
+          fractalState.phaseStart = t;
         }
       }
-    } else if (fractalState.phase === 'hold') {
-      // Three sub-windows over holdDur. Within each fade window, λ and
-      // cloneOp run on SEPARATE schedules:
-      //   [0, holdIn)               — fade IN to static.
-      //     • cloneOp 1 → 0 over the FULL holdIn (slow opacity crossfade
-      //       — the Droste-nested clones gradually dissolve into the
-      //       canonical pattern at rest).
-      //     • λ 1 → 0 in the FIRST `lambdaFadeDur` seconds only. The
-      //       displacement transition (focal shrink / pushed-tile slide)
-      //       happens fast and is hidden under the still-opaque clones,
-      //       so the arch silhouette never flashes through.
-      //   [holdIn, holdDur-holdOut) — pure static. lambda=0, cloneOp=0.
-      //                               Sparks snap (holding=true). Viewer
-      //                               sees the canonical pattern at rest.
-      //   [holdDur-holdOut, holdDur)— fade OUT of static.
-      //     • cloneOp 0 → 1 over the FULL holdOut (Droste nesting
-      //       gradually appears inside the static pattern).
-      //     • λ 0 → 1 in the LAST `lambdaFadeDur` seconds, again under
-      //       cover of mostly-opaque clones. Then dive resumes.
-      d = fractalState.holdD ?? 1;
-      const tIn   = Math.max(holdIn,  1e-3);
-      const tOut  = Math.max(holdOut, 1e-3);
-      if (introElapsed < holdIn) {
-        // Fade IN to static — clone (held at scale=1) dissolves out as
-        // originals slide back into rest. Both ramp 1 → 0 on the SAME
-        // ease-out curve so coverage stays at ~1× the whole way: what
-        // the clone is releasing, the original is reclaiming. No more
-        // 2× brightness plateau where the at-peak clone (scale=1, fully
-        // opaque) sat on top of the resting originals while only the
-        // λ-driven displacement had snapped back.
-        const u = Math.min(1, introElapsed / tIn);
-        const ease = Math.pow(1 - u, 3);             // 1 → 0, ease-out
-        cloneOp    = ease;
-        lambda     = ease;
-        cloneScale = 1;   // oneShot: leading clone parked at peak, only op fades
-        fadeMode = 'fadeIn';
-      } else if (cfg.oneShot) {
-        // One-shot mode: clone has fully dissolved and originals are at
-        // rest. Stay here for `loopStaticDur` seconds (set 0 to park
-        // forever); then retrigger the intro for an automatic loop.
-        lambda     = 0;
-        cloneOp    = 0;
-        cloneScale = 0;
-        holding    = true;
-        const loopDur = cfg.loopStaticDur ?? 0;
-        const staticElapsed = introElapsed - holdIn;
-        if (loopDur > 0 && staticElapsed >= loopDur) {
-          fractalState.phase      = 'intro';
-          fractalState.phaseStart = t;
-        }
-      } else if (introElapsed < Math.max(0, holdDur - holdOut)) {
-        // Multi-shot pure-static window between fade-in and fade-out.
-        lambda     = 0;
-        cloneOp    = 0;
-        cloneScale = 0;
-        holding    = true;
-      } else if (introElapsed < holdDur) {
-        // Fade OUT of static — symmetric counterpart of fade-IN. λ and
-        // cloneOp ramp 0 → 1 together on the same ease-out curve, so
-        // originals slide outward at the same rate that clones bring
-        // the Droste nesting back. No double-render plateau.
-        const offset = introElapsed - (holdDur - holdOut);
-        const u = Math.min(1, offset / tOut);
-        const ease = 1 - Math.pow(1 - u, 3);         // 0 → 1, ease-out
-        cloneOp = ease;
-        lambda  = ease;
-        fadeMode = 'fadeOut';
-      } else {
-        // Hold complete — dive resumes from the held d.
-        fractalState.phase      = 'dive';
+      return;
+    }
+
+    if (fractalState.phase === 'landing') {
+      // Crossfade out of the dive into the rest pattern. d is held at
+      // the integer target so the at-peak clone (r=0, scale=1) sits
+      // pixel-identical to the rest pattern throughout. cloneOp ramps
+      // 1 → 0 on smoothstep with `fadeMode: 'fadeIn'`, which engages
+      // `cloneFadeStagger` so deeper clones (smaller centre + larger
+      // outer hints) fade out FIRST. Originals' opacity ramps 0 → 1
+      // on the same smoothstep so they bring the rest pattern in as
+      // the at-peak clone fades — no single-frame jump, no recursion
+      // snapping out of view.
+      const u = Math.min(1, elapsed / Math.max(landingDur, 1e-3));
+      const s = smoothstep(u);
+      const cloneOp = 1 - s;
+      const d = fractalState.diveD0 ?? 1;
+      parkAllLensTiles();
+      fadeOriginals(s);
+      applyDive(d, cloneOp, 'fadeIn');
+      fractalState.lambda  = 0;
+      fractalState.diveD   = d;
+      fractalState.cloneOp = cloneOp;
+      // Sparks ramp back as originals reappear (snap=s, float=1-s).
+      fractalState.active  = s;
+      if (u >= 1) {
+        fractalState.phase      = 'rest';
         fractalState.phaseStart = t;
-        fractalState.diveD0     = d;
-        lambda  = 1;
-        cloneOp = 1;
       }
+      return;
     }
 
-    fractalState.lambda  = lambda;
-    fractalState.diveD   = d;
-    fractalState.cloneOp = cloneOp;   // exposed for spark gating in main.js
-    // Sparks snap at rest AND during hold's pure-static window (where the
-    // canonical pattern is on screen); float free during intro, dive, and
-    // the hold's crossfade windows (where motion is happening).
-    fractalState.active = holding ? 1 : (1 - lambda);
-
-    if (cfg.oneShot) {
-      // Multi-clone Droste with positive-r clamp (no past-peak growth).
-      // Originals stay at rest position (no slide) and crossfade via
-      // opacity instead. The r > 0 clamp inside applyDive hides any
-      // clone that would role-rotate past scale=1, so the user never
-      // sees a "larger flower" copy — only the at-peak clone (scale=1)
-      // and the smaller behind copies (scale 0.32, 0.10, ...) are
-      // visible, matching the requested infinite Droste look.
-      applyDisplacement(0);                     // originals at rest, no slide
-      fadeOriginals(Math.max(0, 1 - cloneOp));  // originals fade out as clones fade in
-      applyDive(d, cloneOp, fadeMode);
-    } else {
-      applyDisplacement(lambda);
-      fadeOriginals(1);                         // multi-shot path doesn't fade originals
-      applyDive(d, cloneOp, fadeMode);
-    }
+    // Defensive: unknown phase → reset to rest (should never happen).
+    fractalState.phase      = 'rest';
+    fractalState.phaseStart = t;
   }
 
   return { strokeTimeUniforms, sparkSystems, patternsToRefresh,

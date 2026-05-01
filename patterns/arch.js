@@ -23,6 +23,7 @@ import * as THREE from 'three';
 import { ANIM } from '../src/config.js';
 import { insetPolygon, samplePolyline, clipArcAboveY, samplePerimeter } from './gate-frame.js';
 import { pointInPolygon } from './lattice-underlay.js';
+import { applyGoldShimmer } from '../src/shaders/gold-shimmer.js';
 
 // -----------------------------------------------------------------------
 // Brick geometry — BoxGeometry shrunk by mortarGap, then jittered per
@@ -533,8 +534,34 @@ function placeInnerCascadeRow({ samples, apexIndex, totalLength, brickCfg,
 //   local-Y → world-Z (short axis vertical, brick "stands on its face")
 //   local-Z → world-Y (depth runs front-to-back across the floor)
 // -----------------------------------------------------------------------
+// Build an inside-arch test from a bbox + archShape config. Returns null
+// if archShape is disabled or missing. Geometry: two-centred lancet —
+// each side is a circular arc through a springer at the side and the
+// apex at the top, with its center on the springer line on the OPPOSITE
+// side. Below the springer line the cutout extends as vertical walls.
+function makeInsideArch(minX, maxX, minY, maxY, archShape) {
+  if (!archShape || archShape.enabled === false) return null;
+  const halfWBox  = (maxX - minX) * 0.5;
+  const cxBox     = (maxX + minX) * 0.5;
+  const springerY = minY + (archShape.springerYFrac ?? 0.10) * (maxY - minY);
+  const apexY     = minY + (archShape.apexYFrac     ?? 0.85) * (maxY - minY);
+  const s         = (archShape.springerXFrac        ?? 0.55) * halfWBox;
+  const h         = apexY - springerY;
+  const c         = (h > s) ? (h * h - s * s) / (2 * s) : 0;
+  const r         = s + c;
+  return (px, py) => {
+    const localY = py - springerY;
+    if (localY > h) return false;
+    const localX = Math.abs(px - cxBox);
+    if (localY < 0) return localX < s;
+    const dx = localX + c;
+    return dx * dx + localY * localY < r * r;
+  };
+}
+
 function placeFloor({ silhouettes, springerY = Infinity, brickCfg, floorCfg, zCenter,
-                      material, group, seedOffset, dropoutProb = 0, dropoutSalt = 0 }) {
+                      material, group, seedOffset, dropoutProb = 0, dropoutSalt = 0,
+                      archShape = null }) {
   // Bbox of the entire silhouette (outer loop). We track maxY too so the
   // grid can fill all the way up when no springer cap is supplied.
   const outer = silhouettes[0];
@@ -580,6 +607,8 @@ function placeFloor({ silhouettes, springerY = Infinity, brickCfg, floorCfg, zCe
     return inside;
   }
 
+  const insideArchTest = makeInsideArch(minX, maxX, minY, maxY, archShape);
+
   const bricks = [];
   let seedCounter = 0;
   const offsetFrac = (floorCfg.pattern === 'running-bond') ? floorCfg.rowOffset : 0;
@@ -593,6 +622,7 @@ function placeFloor({ silhouettes, springerY = Infinity, brickCfg, floorCfg, zCe
     for (let c = 0; c < cols; c++) {
       const x = minX + (c + 0.5) * stepX + rowOffset;
       if (!insideAll(x, y)) continue;
+      if (insideArchTest && insideArchTest(x, y)) continue;
       // Deterministic per-cell dropout: hash the grid cell so the same
       // (r, c) always picks the same coin-flip across reloads. Pass
       // dropoutProb=0.5 to skip ~half the bricks; salt lets two layers
@@ -711,6 +741,13 @@ function placeTopLayer({ outerSilhouette, brickCfgBase, floorCfg, backZ,
     return false;
   };
 
+  // Islamic pointed-arch cutout — bricks falling inside the arch curve
+  // are skipped, carving an arch-shaped opening into the rectangular
+  // L/R/T brick band. Same helper used by placeFloor so all brick
+  // layers share the same opening.
+  const insideArch = makeInsideArch(minX, maxX, minY, maxY, topCfg.archShape);
+  const archActive = !!insideArch;
+
   const gapX  = brickCfgBase.mortarGapX ?? brickCfgBase.mortarGap;
   const gapY  = brickCfgBase.mortarGapY ?? brickCfgBase.mortarGap;
   const stepX = brickCfgBase.width + gapX * 2;
@@ -753,6 +790,11 @@ function placeTopLayer({ outerSilhouette, brickCfgBase, floorCfg, backZ,
       // for the lantern fixture / shelf to sit in.
       if (niches.length > 0 && insideNiche(x, y)) continue;
 
+      // Skip cells inside the Islamic-arch cutout so the brick band's
+      // inner edge follows the arch curve instead of the rectangular
+      // reach boundary.
+      if (insideArch && insideArch(x, y)) continue;
+
       // Quantise to discrete stair steps. step 0 = outermost (tallest),
       // step numSteps-1 = innermost (shortest).
       const u       = 1 - tNorm;  // 0 at edge, 1 at inner
@@ -769,7 +811,11 @@ function placeTopLayer({ outerSilhouette, brickCfgBase, floorCfg, backZ,
       if (kindFor(stepIdx) === 'hex') {
         const hexZScale = topCfg.hexZScale ?? 0.4;
         const hexZ      = stepHeight * hexZScale;
-        geo = makeStepHexGeometry(brickCfgBase.width, hexZ);
+        // Shrink the hex by 2 × mortarGap so it sits inside its grid
+        // cell with the same slight gap as adjacent bricks have on
+        // their faces — no kiss-edge contact, no overlap.
+        const hexShrink = (brickCfgBase.mortarGap ?? 0) * 2;
+        geo = makeStepHexGeometry(Math.max(brickCfgBase.width - hexShrink, 0.1), hexZ);
         // Choose hex material — defaults to a darker tint than the
         // step's gradient brick material so the hex tier reads as a
         // shadow band rather than blending with the bricks.
@@ -1564,13 +1610,20 @@ export function createArch({ silhouette, maxZ, frameDepth = 0.5,
   const gradientDark   = new THREE.Color(cfg.gradientDark   || '#5C4530');
   const gradientBright = new THREE.Color(cfg.gradientBright || '#E0BE89');
 
+  // Material PBR controls — bricks/hexes pick these up so a config can
+  // dial in stone (low metalness / high roughness) vs. metallic gold
+  // (metalness ~1, low roughness). Falls back to the previous "warm
+  // stone" defaults if the config doesn't set them.
+  const matMetalness = cfg.metalness ?? 0.10;
+  const matRoughness = cfg.roughness ?? 0.85;
+
   // Floor material — explicit dark colour so the deepest layer reads
   // as the value floor of the gradient. Keeps `archMat` (used by the
   // outer / cascade rows) untouched.
   const floorMat = new THREE.MeshStandardMaterial({
     color:     gradientDark,
-    metalness: 0.10,
-    roughness: 0.85,
+    metalness: matMetalness,
+    roughness: matRoughness,
   });
 
   // Outline curve — full closed perimeter of the gate-frame inner aperture
@@ -1787,6 +1840,7 @@ export function createArch({ silhouette, maxZ, frameDepth = 0.5,
       material: floorMat,
       group,
       seedOffset: 5000,
+      archShape: cfg.topLayer?.archShape,
     });
   }
 
@@ -1857,36 +1911,41 @@ export function createArch({ silhouette, maxZ, frameDepth = 0.5,
     for (let s = 0; s < numSteps; s++) {
       const t = numSteps > 0 ? (numSteps - s) / numSteps : 1.0;
       const c = gradientDark.clone().lerp(gradientBright, t);
-      stepMats.push(new THREE.MeshStandardMaterial({
+      const stepMat = new THREE.MeshStandardMaterial({
         color:        c,
-        metalness:    0.10,
-        roughness:    0.85,
+        metalness:    matMetalness,
+        roughness:    matRoughness,
         stencilWrite: true,
         stencilRef:   2,
         stencilFunc:  THREE.EqualStencilFunc,
         stencilFail:  THREE.KeepStencilOp,
         stencilZFail: THREE.KeepStencilOp,
         stencilZPass: THREE.KeepStencilOp,
-      }));
+      });
+      if (cfg.shimmer && cfg.shimmer.enabled !== false) {
+        applyGoldShimmer(stepMat);
+      }
+      stepMats.push(stepMat);
     }
-    // Hex tier material — single shared material so every hex step looks
-    // the same regardless of stepIdx, reading as a unified ornamental
-    // band. Defaults to gradientDark (the deepest brick tone) so the
-    // recessed hex layer reads as a shadow groove between brick tiers.
-    const hexColor = new THREE.Color(
-      topCfg.hexColor || (cfg.gradientDark || '#5C3A1B'),
-    );
-    stepMats.hexMat = new THREE.MeshStandardMaterial({
-      color:        hexColor,
-      metalness:    0.05,
-      roughness:    0.92,
-      stencilWrite: true,
-      stencilRef:   2,
-      stencilFunc:  THREE.EqualStencilFunc,
-      stencilFail:  THREE.KeepStencilOp,
-      stencilZFail: THREE.KeepStencilOp,
-      stencilZPass: THREE.KeepStencilOp,
-    });
+    // Hex tier material — only create a shared one when topCfg.hexColor
+    // is explicitly set, so the hex tiers read as a unified ornamental
+    // shadow band. Otherwise hex tiles inherit the per-step brick mat
+    // (stepMats[stepIdx]) and the gradient reads cleanly across both
+    // brick AND hex tiers — no bright→dark→medium→dark zigzag.
+    if (topCfg.hexColor) {
+      const hexColor = new THREE.Color(topCfg.hexColor);
+      stepMats.hexMat = new THREE.MeshStandardMaterial({
+        color:        hexColor,
+        metalness:    matMetalness,
+        roughness:    matRoughness,
+        stencilWrite: true,
+        stencilRef:   2,
+        stencilFunc:  THREE.EqualStencilFunc,
+        stencilFail:  THREE.KeepStencilOp,
+        stencilZFail: THREE.KeepStencilOp,
+        stencilZPass: THREE.KeepStencilOp,
+      });
+    }
     // Back face of every top-layer brick sits on the floor's top
     // surface plus zLift. Taller stair-steps then push out further
     // toward the camera; shorter inner steps stay closer to the floor.

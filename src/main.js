@@ -12,6 +12,7 @@ import { addPatternLayers } from './patterns-layer.js';
 import { addOverlay } from './3DOverlay.js';
 import { addParticles, updateParticles } from './particles.js';
 import { toggleDominoes, updateDominoes } from './dominoes.js';
+import { tickShimmer } from './shaders/gold-shimmer.js';
 
 const { scene, camera, renderer, controls } = createScene();
 const lights = createLights(scene);
@@ -284,6 +285,9 @@ export function tick(t, dt) {
   if (ctx.updateArch)       ctx.updateArch(t, dt);
   if (ctx.updateArchCarved) ctx.updateArchCarved(t, dt);
   if (ctx.updateFireplace)  ctx.updateFireplace(t, dt);
+  // Drive the gold-shimmer sparkle phase. Cheap — one uniform write —
+  // and a no-op on materials the shader patch wasn't applied to.
+  tickShimmer(t);
   // Domino-flip wave — no-op when idle; runs through all registered
   // bricks once per trigger (key 'd' or window.__triggerDominoes()).
   updateDominoes(t);
@@ -342,17 +346,18 @@ export function tick(t, dt) {
   // mode). In 'all' mode they fade against the playAll overlay window
   // exactly as before.
   const inOverlayWindow = !!(ctx.cascadeState && ctx.cascadeState.playAllT >= 0);
-  // Pattern-mode dive suppression: gate sparks on λ alone, NOT cloneOp.
-  // Sparks anchor to the originals' stroke geometry — when originals are
-  // at rest (λ ≈ 0) they ride correctly, regardless of how visible the
-  // clones are. The split-fade design keeps λ at 0 for almost the entire
-  // hold window (clones do all the visible Droste-nesting work via
-  // cloneOp, originals stay still), so sparks now ride throughout the
-  // long opacity crossfade as well as the pure-static window — and only
-  // fade off during the brief λ-snap (intro tail / hold-fade edges) and
-  // the dive itself.
+  // Pattern-mode dive suppression: gate sparks on cloneOp.
+  // Sparks anchor to the originals' stroke geometry. With the redesigned
+  // fractal zoom, originals stay parked at rest position throughout
+  // (no λ-driven displacement) and instead crossfade by opacity:
+  //   rest   → cloneOp = 0, originals visible → sparks ride.
+  //   intro  → cloneOp 0 → 1, originals fade 1 → 0 → sparks fade out.
+  //   dive   → cloneOp = 1, originals invisible → sparks fully off.
+  //   landing → cloneOp snaps back to 0 → sparks ramp back in.
+  // Exponential smoothing on the spark uOpacity (sparkBlend below) keeps
+  // the on/off transitions soft, no perceptible snap at the landing swap.
   const fractalAnim = fractalActive && ctx.fractalState
-    && ctx.fractalState.lambda > 0.01;
+    && ctx.fractalState.cloneOp > 0.01;
   const sparkFadeDur = (ANIM.timings && ANIM.timings.overlay && ANIM.timings.overlay.sparkFade) || 0.8;
   const sparkBlend = 1 - Math.exp(-dt / Math.max(sparkFadeDur, 1e-3));
   for (let i = 0; i < ctx.sparkSystems.length; i++) {
