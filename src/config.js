@@ -905,10 +905,10 @@ export const ANIM = {
       //            (avoids z-fight with bricks)
       lancetShadow: {
         enabled: true,
-        width:   0.45,
-        samples: 48,
+        width:   0.18,           // band width as fraction of one tier's s-step
+        samples: 64,
         color:   '#000000',
-        opacity: 0.80,
+        opacity: 0.55,
         zOffset: 0.04,
       },
       zLift:          0.05,
