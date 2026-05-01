@@ -862,20 +862,54 @@ export const ANIM = {
       minStepHeight:  1.4,
       maxStepHeight:  5.5,
       hexZScale:      0.7,
-      // Islamic pointed-arch cutout — carves a curved-side, pointed-top
-      // opening through the inner edge of the brick band (instead of
-      // leaving the default rectangular hole). Geometry: two-centred
-      // lancet — each side is a circular arc from springer to apex.
-      //   springerYFrac  Y of the bottom of the arc (0=bottom of bbox, 1=top)
+      // tierShape — geometry of the nested staircase rings:
+      //   'rect'   : nested rectangles (max of L/R/T edge progress)
+      //   'lancet' : nested two-centred pointed (Islamic) arches sharing
+      //              apex (cx, apexY) and springer line, with widths
+      //              ranging from sOuter to sInner across the rings.
+      // Independent of archShape.enabled (which gates a carve-out filter).
+      tierShape:      'lancet',
+      // Islamic pointed-arch parameters — shared by:
+      //   (a) the lancet tier metric (used when tierShape === 'lancet')
+      //   (b) the optional carve-out filter (used when archShape.enabled
+      //       is true) which skips cells INSIDE the lancet outline.
+      // Geometry: two-centred lancet — each side is a circular arc from
+      // springer to apex.
+      //   springerYFrac  Y of the springer line (0=bottom of bbox, 1=top)
       //   apexYFrac      Y of the apex (must be > springerYFrac)
       //   springerXFrac  half-span at the springer as fraction of bbox half-W
       //                  (0 = thin slit on centerline, 1 = arch reaches bbox edges)
-      //   enabled        false = rectangular reach band (legacy behavior)
+      //   innerSFrac     innermost lancet's half-span as a fraction of sOuter;
+      //                  smaller = sharper point at the apex of the inner ring.
+      //                  Only used by the lancet tier metric.
+      //   enabled        carve-out filter on/off (independent of tierShape)
       archShape: {
         enabled:        false,
-        springerYFrac:  0.10,
-        apexYFrac:      0.85,
-        springerXFrac:  0.55,
+        springerYFrac:  0.35,
+        apexYFrac:      0.95,
+        springerXFrac:  1.10,
+        innerSFrac:     0.04,
+      },
+      // Drop-shadow rings tracing each lancet tier boundary — flat dark
+      // 2D bands sitting on the recessed tier's surface, just inside the
+      // boundary curve. Mimics the shadow the projecting (front) tier
+      // would cast onto the recessed (back) tier, adding visual depth
+      // between adjacent tiers without any 3D mass.
+      //   enabled  master toggle
+      //   width    band width as a fraction of one tier's s-span
+      //            (sOuter - sInner) / numSteps. 0.5 = half a tier wide.
+      //   samples  arc subdivisions per side (smoothness)
+      //   color    shadow tint (defaults to pure black)
+      //   opacity  band opacity (lower = softer / lighter shadow)
+      //   zOffset  forward bias above recessed-tier surface
+      //            (avoids z-fight with bricks)
+      lancetShadow: {
+        enabled: true,
+        width:   0.45,
+        samples: 48,
+        color:   '#000000',
+        opacity: 0.80,
+        zOffset: 0.04,
       },
       zLift:          0.05,
       // Per-step kind. Length normalised to stepCount; missing entries
@@ -1140,6 +1174,10 @@ export const ANIM = {
       positions: [
         { panel: 0, yOffset: -45 },   { panel: 1, yOffset: -45 },
         { panel: 2, yOffset:  36.8 }, { panel: 3, yOffset:  36.8 },
+        // Two extra lanterns lower on each side wall — positioned
+        // BELOW the existing LL/LR pair, ~4-5 bricks above the floor
+        // edge of the silhouette.
+        { panel: 2, yOffset: -12.0 }, { panel: 3, yOffset: -12.0 },
       ],
     },
 
@@ -1323,19 +1361,20 @@ export const ANIM = {
     },
 
     color:           '#B8862F',     // mid gold
-    gradientDark:    '#5E441A',     // dark warm gold — FAR-from-camera tier
-                                    // (innermost staircase step + floor wall)
-    gradientBright:  '#D4AB48',     // satin gold — CLOSE-to-camera tier
-                                    // (outermost staircase step). Pulled back
-                                    // from #FFE48A so the staircase reads as
-                                    // gold rather than pale yellow.
-    // Semi-metallic gold material — fully-metallic surfaces dim hard
-    // under our low-ambient flame-only lighting (metals reflect light
-    // they receive; with little to receive, they go dark). 0.55 keeps
-    // a metallic specular sheen while letting the diffuse gold colour
-    // read on its own. roughness 0.4 = satin sheen, not mirror.
-    metalness:       0.55,
-    roughness:       0.40,
+    gradientDark:    '#080300',     // near-black umber — FAR-from-camera tier
+                                    // (innermost staircase step + floor wall);
+                                    // pushed very dark so adjacent tiers
+                                    // contrast sharply across the staircase.
+    gradientBright:  '#FFEFA0',     // bright luminous gold — CLOSE-to-camera tier
+                                    // (outermost staircase step). Pushed brighter
+                                    // so adjacent tiers read as distinct rings
+                                    // rather than a smooth wash.
+    // Lower metalness so the diffuse gradient colour reads cleanly
+    // tier-to-tier instead of being washed out by the lantern reflections
+    // off a semi-metallic surface. Roughness slightly higher → matte
+    // finish that emphasises the colour gradient over specular sheen.
+    metalness:       0.25,
+    roughness:       0.55,
 
     // Gold shimmer — pinpricks of bright gold that twinkle across the
     // staircase surface, like light catching individual flakes in
@@ -1391,12 +1430,20 @@ export const ANIM = {
       maskInset:      0.4,
       underHexes: { enabled: false },
       cornerHexes: { enabled: false },
+      // Mode 5 keeps the rectangular tier rings (nested rectangles).
+      // arch.topLayer.tierShape is 'lancet' for mode 4; the shallow merge
+      // would inherit it without this explicit override.
+      tierShape:      'rect',
       archShape: {
         enabled:        false,
         springerYFrac:  0.10,
         apexYFrac:      0.85,
         springerXFrac:  0.55,
+        innerSFrac:     0.05,
       },
+      // No lancet drop shadows on the rectangular carved facade —
+      // they only make sense around lancet tier boundaries.
+      lancetShadow: { enabled: false },
     },
     // Override mode-4's gold metallic palette so mode 5 keeps the grey
     // stone look. Lanterns + floor intentionally OMITTED so they still
@@ -1614,7 +1661,7 @@ export const ANIM = {
       enabled:        true,
       separation:     0.55,
       freqY:          0.04,
-      speed:          0.05,
+      speed:          0.022,
       presenceThresh: 0.55,
     },
 

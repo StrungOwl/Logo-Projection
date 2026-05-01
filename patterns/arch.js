@@ -559,6 +559,50 @@ function makeInsideArch(minX, maxX, minY, maxY, archShape) {
   };
 }
 
+// Lancet tier metric — for each cell (px, py), return the half-span
+// `s_cell` of the lancet (anchored at SHARED apex (cx, apexY) and SHARED
+// springer line) whose outline passes through that cell. Contours of
+// constant s_cell are nested two-centred lancet arches that all reach
+// the SAME apex point at the silhouette top — only their springer
+// widths vary. This guarantees every tier's apex tip sits at the same
+// high Y (above the inner star aperture), at the cost of inner tiers
+// being narrower (and therefore pointier). The alternative of scaling
+// uniformly around the springer centre (which preserves curvature)
+// drops the inner-tier apexes progressively lower, which the user has
+// rejected in favour of all-tips-high.
+//
+// Math: given a cell's (localX, localY) relative to (cx, springerY),
+// find c_cell such that the right-arc circle (centre (cx − c_cell, 0),
+// passing through apex (0, h)) also passes through the cell. From
+//   c_cell² + h² = (localX + c_cell)² + localY²
+// → c_cell = (h² − localX² − localY²) / (2·localX)
+// Then s_cell = sqrt(c_cell² + h²) − c_cell.
+function makeLancetTierMetric(minX, maxX, minY, maxY, archShape, innerSFrac) {
+  const cx        = (minX + maxX) * 0.5;
+  const halfWBox  = (maxX - minX) * 0.5;
+  const springerY = minY + (archShape?.springerYFrac ?? 0.05) * (maxY - minY);
+  const apexY     = minY + (archShape?.apexYFrac     ?? 0.95) * (maxY - minY);
+  const sOuter    = (archShape?.springerXFrac        ?? 0.95) * halfWBox;
+  const sInner    = sOuter * (innerSFrac ?? 0.05);
+  const h         = apexY - springerY;
+  const invSpan   = 1 / Math.max(1e-9, sOuter - sInner);
+  return {
+    cx, springerY, h, sOuter, sInner, invSpan,
+    sCell(px, py) {
+      const localX = Math.abs(px - cx);
+      const localY = py - springerY;
+      // Y-checks fire BEFORE the central-axis X-check so cells in those
+      // Y bands (even on the axis) get the correct shell.
+      if (localY > h)    return sOuter;       // above apex → outermost shell
+      if (localY < 0)    return localX;       // below springer: vertical-wall tier
+      if (localX < 1e-6) return 0;            // central axis (below apex) → innermost
+      const cCell = (h * h - localX * localX - localY * localY) / (2 * localX);
+      if (cCell <= 0)    return sOuter;       // outside lancet domain → outermost
+      return Math.sqrt(cCell * cCell + h * h) - cCell;
+    },
+  };
+}
+
 function placeFloor({ silhouettes, springerY = Infinity, brickCfg, floorCfg, zCenter,
                       material, group, seedOffset, dropoutProb = 0, dropoutSalt = 0,
                       archShape = null }) {
@@ -748,6 +792,16 @@ function placeTopLayer({ outerSilhouette, brickCfgBase, floorCfg, backZ,
   const insideArch = makeInsideArch(minX, maxX, minY, maxY, topCfg.archShape);
   const archActive = !!insideArch;
 
+  // Tier metric: 'rect' (default) uses the rectangular L/R/T edge-distance
+  // metric below; 'lancet' uses a two-centred pointed-arch metric so the
+  // tier rings nest as Islamic lancet arches converging on the apex.
+  // Built independently of archShape.enabled (which gates the carve-out).
+  const tierShape    = topCfg.tierShape ?? 'rect';
+  const lancetMetric = (tierShape === 'lancet')
+    ? makeLancetTierMetric(minX, maxX, minY, maxY,
+        topCfg.archShape, topCfg.archShape?.innerSFrac)
+    : null;
+
   const gapX  = brickCfgBase.mortarGapX ?? brickCfgBase.mortarGap;
   const gapY  = brickCfgBase.mortarGapY ?? brickCfgBase.mortarGap;
   const stepX = brickCfgBase.width + gapX * 2;
@@ -774,17 +828,39 @@ function placeTopLayer({ outerSilhouette, brickCfgBase, floorCfg, backZ,
       // perimeter of the logo").
       if (!pointInPolygon(x, y, outer)) continue;
 
-      // tNorm = 1 at any contributing edge, 0 at the band's inner
-      // limit, max across L/R/T (so corners take the larger of the
-      // two contributing edges' progress).
-      const distL = x - minX;
-      const distR = maxX - x;
-      const distT = maxY - y;
-      let tNorm = 0;
-      if (distL < reachLR) tNorm = Math.max(tNorm, 1 - distL / reachLR);
-      if (distR < reachLR) tNorm = Math.max(tNorm, 1 - distR / reachLR);
-      if (distT < reachT ) tNorm = Math.max(tNorm, 1 - distT / reachT );
-      if (tNorm <= 0) continue;  // outside the L/R/T band
+      // tNorm = 1 at the OUTERMOST tier (silhouette outline), 0 at the
+      // INNERMOST tier (centre / apex). Two metrics:
+      //  - 'rect'  : max across L/R/T edge progress → nested rectangles
+      //  - 'lancet': lancet half-span sCell of the lancet whose outline
+      //              passes through (x, y) → nested pointed arches
+      let tNorm;
+      if (lancetMetric) {
+        // Cell sits on the outline of a lancet of half-span sCell that
+        // shares the apex (cx, apexY) with all other tiers. Map sClamp
+        // linearly so the convention matches the rect branch:
+        // tNorm = 1 at the outer (s ≈ sOuter, silhouette-hugging) shell,
+        // tNorm = 0 at the inner (s ≈ sInner, axis-hugging) tier.
+        // Each tier's apex sits at the SAME Y (apexY), so every tip
+        // lands above the inner star aperture by construction.
+        const sC     = lancetMetric.sCell(x, y);
+        const sClamp = Math.max(lancetMetric.sInner,
+                                Math.min(lancetMetric.sOuter, sC));
+        tNorm = (sClamp - lancetMetric.sInner) * lancetMetric.invSpan;
+        // No `continue` — every silhouette cell stays placed (per user
+        // constraint: "do not lose any bricks"). Clamp into [0,1] so
+        // outermost shell catches cells outside the lancet domain.
+        if (tNorm < 0) tNorm = 0;
+        else if (tNorm > 1) tNorm = 1;
+      } else {
+        const distL = x - minX;
+        const distR = maxX - x;
+        const distT = maxY - y;
+        tNorm = 0;
+        if (distL < reachLR) tNorm = Math.max(tNorm, 1 - distL / reachLR);
+        if (distR < reachLR) tNorm = Math.max(tNorm, 1 - distR / reachLR);
+        if (distT < reachT ) tNorm = Math.max(tNorm, 1 - distT / reachT );
+        if (tNorm <= 0) continue;  // outside the L/R/T band
+      }
 
       // Skip cells that fall inside a carved niche so a gap is left
       // for the lantern fixture / shelf to sit in.
@@ -837,6 +913,80 @@ function placeTopLayer({ outerSilhouette, brickCfgBase, floorCfg, backZ,
       group.add(mesh);
     }
   }
+
+  // Drop-shadow rings tracing each lancet tier boundary — flat dark
+  // bands sitting on the SHALLOWER tier's front face, just inside the
+  // boundary curve where the next-deeper tier (k+1) recedes. Each ring
+  // visually mimics the shadow that the projecting tier (k) would cast
+  // onto the recessed tier (k+1), giving a sense of depth between
+  // adjacent tiers without any extra 3D mass. Built as a 2D ShapeGeometry
+  // (outer lancet curve + inner lancet curve as a hole) extruded a hair
+  // of thickness so it z-fights cleanly. Gated on lancetMetric.
+  if (lancetMetric && topCfg.lancetShadow?.enabled !== false) {
+    const sCfg          = topCfg.lancetShadow || {};
+    const shadowWidth   = sCfg.width        ?? 0.45;   // band width as frac of (sOuter - sInner) per step
+    const samplesPerArc = sCfg.samples      ?? 48;
+    const zOffset       = sCfg.zOffset      ?? 0.04;
+    const opacity       = sCfg.opacity      ?? 0.80;
+
+    const shadowMat = new THREE.MeshBasicMaterial({
+      color:       new THREE.Color(sCfg.color ?? '#000000'),
+      transparent: true,
+      opacity,
+      depthWrite:  false,                              // don't occlude bricks behind
+      side:        THREE.DoubleSide,
+    });
+
+    const span = lancetMetric.sOuter - lancetMetric.sInner;
+    const { cx, springerY, h } = lancetMetric;
+
+    // Sample a closed lancet outline (right arc → apex → left arc, with
+    // implicit close back to right springer along y = springerY) at a
+    // given half-span s. Returns array of THREE.Vector2.
+    const sampleLancet = (s) => {
+      const c = (h * h - s * s) / (2 * s);
+      const r = s + c;
+      const tApex = Math.atan2(h, c);
+      const pts = [];
+      pts.push(new THREE.Vector2(cx + s, springerY));   // right springer
+      // Right arc → apex (CCW)
+      for (let i = 1; i <= samplesPerArc; i++) {
+        const th = (i / samplesPerArc) * tApex;
+        pts.push(new THREE.Vector2(
+          cx - c + r * Math.cos(th),
+          springerY + r * Math.sin(th),
+        ));
+      }
+      // Left arc apex → left springer (continues CCW around the polygon)
+      for (let i = 1; i <= samplesPerArc; i++) {
+        const thL = (Math.PI - tApex) + (i / samplesPerArc) * tApex;
+        pts.push(new THREE.Vector2(
+          cx + c + r * Math.cos(thL),
+          springerY + r * Math.sin(thL),
+        ));
+      }
+      return pts;
+    };
+
+    for (let k = 0; k < numSteps - 1; k++) {
+      const sK     = lancetMetric.sInner + ((k + 1) / numSteps) * span;
+      const sKnext = Math.max(lancetMetric.sInner, sK - shadowWidth * (span / numSteps));
+      // Drop the shadow on the RECESSED tier (k+1)'s front face.
+      const stepHk1 = maxH - (numSteps > 1 ? (k + 1) / (numSteps - 1) : 0) * (maxH - minH);
+      const zRing   = backZ + stepHk1 + zOffset;
+
+      const outerPts = sampleLancet(sK);
+      const innerPts = sampleLancet(sKnext).reverse();   // reverse winding for hole
+
+      const shape = new THREE.Shape(outerPts);
+      shape.holes.push(new THREE.Path(innerPts));
+      const geo  = new THREE.ShapeGeometry(shape, 1);
+      const mesh = new THREE.Mesh(geo, shadowMat);
+      mesh.position.z = zRing;
+      group.add(mesh);
+    }
+  }
+
 }
 
 // -----------------------------------------------------------------------
