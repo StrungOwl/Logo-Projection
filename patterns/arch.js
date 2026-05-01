@@ -878,6 +878,9 @@ function placeTopLayer({ outerSilhouette, brickCfgBase, floorCfg, backZ,
       const sFrac   = numSteps > 1 ? stepIdx / (numSteps - 1) : 0;
       const stepHeight = maxH - sFrac * (maxH - minH);
 
+      const tierMat    = stepMats[stepIdx];
+      const tierHexMat = stepMats.hexMat || stepMats[stepIdx];
+
       // Dispatch on this step's kind. Brick = box geometry with running-
       // bond mortar fault; hex = flat hex extrusion with REDUCED Z extent
       // (hexZScale × stepHeight) so the hex tier recedes behind the
@@ -892,11 +895,7 @@ function placeTopLayer({ outerSilhouette, brickCfgBase, floorCfg, backZ,
         // their faces — no kiss-edge contact, no overlap.
         const hexShrink = (brickCfgBase.mortarGap ?? 0) * 2;
         geo = makeStepHexGeometry(Math.max(brickCfgBase.width - hexShrink, 0.1), hexZ);
-        // Choose hex material — defaults to a darker tint than the
-        // step's gradient brick material so the hex tier reads as a
-        // shadow band rather than blending with the bricks.
-        const hexMat = stepMats.hexMat || stepMats[stepIdx];
-        mesh = new THREE.Mesh(geo, hexMat);
+        mesh = new THREE.Mesh(geo, tierHexMat);
         // ExtrudeGeometry sweeps along +Z from its shape plane (XY); the
         // tile back face is at the shape's z=0, so positioning at
         // (x, y, backZ) puts the hex back face on the same plane the
@@ -906,91 +905,13 @@ function placeTopLayer({ outerSilhouette, brickCfgBase, floorCfg, backZ,
       } else {
         const cfg = { ...brickCfgBase, height: stepHeight };
         geo = makeBrickGeometry(seedOffset + seedCounter++, cfg);
-        mesh = new THREE.Mesh(geo, stepMats[stepIdx]);
+        mesh = new THREE.Mesh(geo, tierMat);
         mesh.position.set(x, y, backZ + stepHeight * 0.5);
         mesh.quaternion.copy(q);
       }
       group.add(mesh);
     }
   }
-
-  // Drop-shadow rings tracing each lancet tier boundary — narrow dark
-  // bands sitting on the recessed tier's front face along the boundary
-  // curve. Mimics the shadow the projecting tier would cast onto the
-  // recessed tier behind it, adding depth between adjacent tiers
-  // without any 3D mass. Built as a single closed polygon (outer arc
-  // forward + inner arc reversed) so triangulation is clean — no
-  // shape-with-holes complications. Gated on lancetMetric.
-  if (lancetMetric && topCfg.lancetShadow?.enabled !== false) {
-    const sCfg          = topCfg.lancetShadow || {};
-    const shadowWidth   = sCfg.width        ?? 0.10;   // band width in s-units (world units, since s is half-span)
-    const samplesPerArc = sCfg.samples      ?? 64;
-    const zOffset       = sCfg.zOffset      ?? 0.04;
-    const opacity       = sCfg.opacity      ?? 0.55;
-
-    const shadowMat = new THREE.MeshBasicMaterial({
-      color:       new THREE.Color(sCfg.color ?? '#000000'),
-      transparent: true,
-      opacity,
-      depthWrite:  false,                              // don't occlude bricks behind
-      side:        THREE.DoubleSide,
-    });
-
-    const span = lancetMetric.sOuter - lancetMetric.sInner;
-    const { cx, springerY, h } = lancetMetric;
-
-    // Sample one lancet's arcs (right springer → apex → left springer),
-    // returning a flat array of THREE.Vector2 in CCW order around the
-    // lancet interior.
-    const sampleLancetArcs = (s) => {
-      const c = (h * h - s * s) / (2 * s);
-      const r = s + c;
-      const tApex = Math.atan2(h, c);
-      const pts = [];
-      pts.push(new THREE.Vector2(cx + s, springerY));
-      for (let i = 1; i <= samplesPerArc; i++) {
-        const th = (i / samplesPerArc) * tApex;
-        pts.push(new THREE.Vector2(
-          cx - c + r * Math.cos(th),
-          springerY + r * Math.sin(th),
-        ));
-      }
-      for (let i = 1; i <= samplesPerArc; i++) {
-        const thL = (Math.PI - tApex) + (i / samplesPerArc) * tApex;
-        pts.push(new THREE.Vector2(
-          cx + c + r * Math.cos(thL),
-          springerY + r * Math.sin(thL),
-        ));
-      }
-      return pts;
-    };
-
-    // Resolve shadowWidth (world-units fraction of span). Width is a
-    // fraction of one tier's s-step (span / numSteps), so it scales with
-    // how dramatic the staircase is. 0.10 = 10% of one tier's s-step.
-    const shadowSWidth = Math.min(shadowWidth * (span / numSteps), span * 0.4);
-
-    for (let k = 0; k < numSteps - 1; k++) {
-      const sK      = lancetMetric.sInner + ((k + 1) / numSteps) * span;
-      const sKinner = Math.max(lancetMetric.sInner, sK - shadowSWidth);
-      // Drop the shadow on the RECESSED tier (k+1)'s front face.
-      const stepHk1 = maxH - (numSteps > 1 ? (k + 1) / (numSteps - 1) : 0) * (maxH - minH);
-      const zRing   = backZ + stepHk1 + zOffset;
-
-      const outerPts = sampleLancetArcs(sK);
-      const innerPts = sampleLancetArcs(sKinner);
-
-      // Build a single closed ring polygon: outer CCW, then inner
-      // reversed (still CCW around the ring annulus).
-      const ring = outerPts.concat(innerPts.slice().reverse());
-      const shape = new THREE.Shape(ring);
-      const geo  = new THREE.ShapeGeometry(shape, 1);
-      const mesh = new THREE.Mesh(geo, shadowMat);
-      mesh.position.z = zRing;
-      group.add(mesh);
-    }
-  }
-
 }
 
 // -----------------------------------------------------------------------

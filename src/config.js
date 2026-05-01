@@ -890,27 +890,6 @@ export const ANIM = {
         springerXFrac:  1.10,
         innerSFrac:     0.04,
       },
-      // Drop-shadow rings tracing each lancet tier boundary — flat dark
-      // 2D bands sitting on the recessed tier's surface, just inside the
-      // boundary curve. Mimics the shadow the projecting (front) tier
-      // would cast onto the recessed (back) tier, adding visual depth
-      // between adjacent tiers without any 3D mass.
-      //   enabled  master toggle
-      //   width    band width as a fraction of one tier's s-span
-      //            (sOuter - sInner) / numSteps. 0.5 = half a tier wide.
-      //   samples  arc subdivisions per side (smoothness)
-      //   color    shadow tint (defaults to pure black)
-      //   opacity  band opacity (lower = softer / lighter shadow)
-      //   zOffset  forward bias above recessed-tier surface
-      //            (avoids z-fight with bricks)
-      lancetShadow: {
-        enabled: true,
-        width:   0.18,           // band width as fraction of one tier's s-step
-        samples: 64,
-        color:   '#000000',
-        opacity: 0.55,
-        zOffset: 0.04,
-      },
       zLift:          0.05,
       // Per-step kind. Length normalised to stepCount; missing entries
       // default to 'brick'. Setting alternating values gives a visible
@@ -927,7 +906,10 @@ export const ANIM = {
       widthScale:     1.0,
       depthScale:     1.0,
       mortarGapX:     0.08,
-      mortarGapY:     0.0,
+      // Y joint must be > 0 so adjacent rows don't share coplanar faces
+      // at the running-bond seam (non-manifold geometry; the per-fragment
+      // shadow gradient makes the touching faces visually obvious).
+      mortarGapY:     0.08,
       // Stencil mask — bricks are clipped to silhouette[0] inset by
       // this many units. Same technique as 3DOverlay's flower mask:
       // a stencil fill of the silhouette is drawn first, then the
@@ -1394,6 +1376,14 @@ export const ANIM = {
       sheenScale:    0.18,       // world-XY scale for sheen noise
       sheenSpeed:    0.35,       // drift speed
       sheenStrength: 1.2,        // emissive multiplier for sheen
+      // Per-fragment overhang-shadow gradient. Each brick face fades
+      // from full gold at the top (uv.y = 1) to a darkened tone at the
+      // bottom (uv.y = 0), faking the soft shadow that would naturally
+      // fall under each step's lip without doing real shadow casting.
+      //   shadowStrength  0..1 — how dark the bottom edge gets
+      //   shadowFalloff   gamma curve; >1 concentrates dark at very bottom
+      shadowStrength: 0.55,
+      shadowFalloff:  1.6,
     },
   },
 
@@ -1426,7 +1416,7 @@ export const ANIM = {
       widthScale:     1.0,
       depthScale:     1.0,
       mortarGapX:     0.08,
-      mortarGapY:     0.0,
+      mortarGapY:     0.08,
       maskInset:      0.4,
       underHexes: { enabled: false },
       cornerHexes: { enabled: false },
@@ -1441,9 +1431,6 @@ export const ANIM = {
         springerXFrac:  0.55,
         innerSFrac:     0.05,
       },
-      // No lancet drop shadows on the rectangular carved facade —
-      // they only make sense around lancet tier boundaries.
-      lancetShadow: { enabled: false },
     },
     // Override mode-4's gold metallic palette so mode 5 keeps the grey
     // stone look. Lanterns + floor intentionally OMITTED so they still
