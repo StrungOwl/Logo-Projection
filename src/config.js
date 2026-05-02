@@ -1681,21 +1681,29 @@ export const ANIM = {
     // 0 = base lights fully off — only the flame's own flickering
     // PointLight + spark particles illuminate the logo. Set to 1.0 to
     // keep base lights at full strength alongside the flame.
-    baseLightDim: 0.35,
+    baseLightDim: 0.18,
 
-    // Slow breathing of the ENVIRONMENT only — the directional "room
-    // wash" (ambient + key + rim + fill) AND the scene-wide PMREM env
-    // cubemap reflection (scene.environmentIntensity) that every
-    // MeshStandardMaterial picks up. Both scale together by the same
-    // factor, oscillating between envDimMin and 1.0 over envDimPeriod
-    // seconds, so the brick room cycles dark→bright as one unit.
-    // Point lights (innerGlow, front/rear pattern) and the flame's own
-    // light stack are intentionally excluded — they stay at the
-    // constant baseLightDim level so the flame's halo on the logo is
-    // the consistently-lit anchor while the surrounding room breathes
-    // around it. Set envDimMin === 1.0 to lock (no breathing).
-    envDimMin:    0.0,
-    envDimPeriod: 9.0,
+    // Slow piecewise breath of everything EXCEPT the flame and the
+    // rearPatternLight: directional room wash (ambient + key + rim +
+    // fill), the scene-wide PMREM env cubemap reflection
+    // (scene.environmentIntensity), AND the innerGlow + frontPatternLight
+    // point lights all scale together by the same envelope so the trough
+    // can fall below the constant point-light floor. The flame's own
+    // light stack stays bright throughout — it's the steady anchor that
+    // catches the eye while everything else breathes around it.
+    //
+    // Cycle starts in the dark phase at t = 0 (page load) and loops:
+    //   darkHold seconds at `min` → rampUp seconds easing to 1.0 →
+    //   brightHold seconds at 1.0 → rampDown seconds easing back → loop.
+    //
+    // Set min === 1.0 (or all four times to 0) to lock — no breathing.
+    envDim: {
+      min:        0.15,   // floor multiplier during the dark hold
+      darkHold:   60.0,   // seconds at `min` (fire dominates)
+      rampUp:     30.0,   // seconds easing dark → bright
+      brightHold: 60.0,   // seconds at full (current look)
+      rampDown:   30.0,   // seconds easing bright → dark
+    },
 
     // Multiplier on logo material's `envMapIntensity` in flame mode.
     // Default 1.0 lets the metallic logo reflect the neutral-grey env

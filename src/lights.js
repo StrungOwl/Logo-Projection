@@ -54,17 +54,21 @@ export function createLights(scene) {
 // existing innerGlow + key light wash the inner-cutout area in bright
 // orange and make the flame body invisible.
 //
-// On top of that constant dim, the ENVIRONMENT (ambient + key + rim +
-// fill directional lights, AND the scene-wide PMREM env cubemap that
-// MeshStandardMaterial reflects) pulses between envDimMin and 1.0 over
-// envDimPeriod seconds, breathing the brick room dark→bright. Pulsing
-// the directional lights alone is invisible because the PMREM wash on
-// every MeshStandardMaterial dominates — so we also scale
-// scene.environmentIntensity by the same factor. Point lights
-// (innerGlow, front/rear pattern) and the flame's own light stack stay
-// at the constant baseLightDim, so the flame's halo on the logo is the
-// steady anchor while the surrounding room breathes — drawing the eye
-// to the flame during the dim half of the cycle.
+// On top of that constant dim, the room "breathes" through a piecewise
+// envelope shaped by ANIM.flame.envDim:
+//   darkHold seconds at envDim.min → rampUp seconds easing to 1.0 →
+//   brightHold seconds at 1.0      → rampDown seconds easing back → loop.
+// Cycle starts in the dark phase at t = 0 (page load).
+//
+// The envelope scales: ambient + key + rim + fill (directional room
+// wash), the scene-wide PMREM env cubemap (scene.environmentIntensity —
+// otherwise the cubemap floor masks the directional dim), and the
+// innerGlow + frontPatternLight point lights (without these in the
+// pulse, the constant point-light floor stops the trough from going
+// dark enough to make the flame stand out). The rearPatternLight and
+// the flame's own light stack are excluded — the flame stays the
+// steady bright anchor in the centre while everything else breathes
+// around it.
 export function updateLights(lights, t, scene) {
   const pulse   = Math.sin(t * ANIM.pulseSpeed);
   const pulse01 = 0.5 + 0.5 * pulse;
@@ -75,14 +79,26 @@ export function updateLights(lights, t, scene) {
     ? ((ANIM.flame && ANIM.flame.baseLightDim) ?? 0.06)
     : 1.0;
 
-  // Environment-only breathing multiplier — sine between envDimMin and 1.0.
+  // Piecewise dark-hold → ease-up → bright-hold → ease-down → loop.
   let envPulse = 1.0;
   if (fireplaceMode) {
-    const f      = ANIM.flame || {};
-    const eMin   = f.envDimMin    ?? 1.0;
-    const period = Math.max(0.001, f.envDimPeriod ?? 9.0);
-    const u      = 0.5 + 0.5 * Math.sin((t / period) * Math.PI * 2);
-    envPulse = eMin + (1.0 - eMin) * u;
+    const ed     = (ANIM.flame && ANIM.flame.envDim) || {};
+    const min    = ed.min        ?? 0.0;
+    const dark   = Math.max(0, ed.darkHold   ?? 60);
+    const up     = Math.max(0, ed.rampUp     ?? 30);
+    const bright = Math.max(0, ed.brightHold ?? 60);
+    const down   = Math.max(0, ed.rampDown   ?? 30);
+    const total  = dark + up + bright + down;
+    let shape = 1.0;
+    if (total > 0) {
+      let phase = t % total;
+      if (phase < 0) phase += total;
+      if      (phase < dark)              shape = 0;
+      else if (phase < dark + up)         shape = smoothstep01((phase - dark) / Math.max(1e-6, up));
+      else if (phase < dark + up + bright) shape = 1;
+      else                                shape = 1 - smoothstep01((phase - dark - up - bright) / Math.max(1e-6, down));
+    }
+    envPulse = min + (1.0 - min) * shape;
   }
   const envDim = pointDim * envPulse;
 
@@ -96,12 +112,15 @@ export function updateLights(lights, t, scene) {
     klMinB + (klMaxB - klMinB) * pulse01,
   );
 
+  // innerGlow + frontPatternLight ride the env breath too, so the trough
+  // can fall below the constant point-light floor and the flame becomes
+  // the only visibly-lit element during the dark hold.
   const ig = ANIM.innerGlow;
-  lights.innerGlow.intensity = (ig.intensityMin + (ig.intensityMax - ig.intensityMin) * warm) * pointDim;
+  lights.innerGlow.intensity = (ig.intensityMin + (ig.intensityMax - ig.intensityMin) * warm) * envDim;
   lights.innerGlow.color.set(ig.color);
 
   const fp = ANIM.frontPatternLight;
-  lights.frontPatternLight.intensity = (fp.intensityMin + (fp.intensityMax - fp.intensityMin) * warm) * pointDim;
+  lights.frontPatternLight.intensity = (fp.intensityMin + (fp.intensityMax - fp.intensityMin) * warm) * envDim;
   lights.frontPatternLight.color.set(fp.color);
 
   const rl = ANIM.rimLight;
@@ -120,4 +139,10 @@ export function updateLights(lights, t, scene) {
   // never visibly darkens. Reset to 1.0 outside fireplace/carved so other
   // modes keep their full env wash.
   if (scene) scene.environmentIntensity = fireplaceMode ? envPulse : 1.0;
+}
+
+function smoothstep01(x) {
+  if (x <= 0) return 0;
+  if (x >= 1) return 1;
+  return x * x * (3 - 2 * x);
 }
