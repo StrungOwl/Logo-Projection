@@ -33,8 +33,13 @@ function buildRegistry(scene) {
   scene.traverse(host => {
     if (!BRICK_HOST_NAMES.includes(host.name)) return;
     host.traverse(child => {
-      if (!child.isMesh) return;
-      if (!child.geometry || child.geometry.type !== 'BoxGeometry') return;
+      if (!child.isMesh || !child.geometry) return;
+      // BoxGeometry catches every brick. The dominoFlippable tag opts in
+      // non-brick meshes (currently the fireplace inner-hex band) that
+      // share the host group but aren't BoxGeometry-based.
+      const isBox  = child.geometry.type === 'BoxGeometry';
+      const tagged = child.userData && child.userData.dominoFlippable === true;
+      if (!isBox && !tagged) return;
       const wp = new THREE.Vector3();
       child.getWorldPosition(wp);
       bricks.push({

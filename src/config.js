@@ -85,7 +85,7 @@ export const ANIM = {
   // wheel from `color` at spawn time (0 = monochrome, 0.1 ≈ ±36°).
   // `trailSize` is the ring-buffer length of past positions drawn behind each
   // spark (load-only; reload after editing). Higher = longer tracer.
-  panelSparks:   { count: 220, gravity: 5, maxSpeed: 7, damping: 1.6,
+  panelSparks:   { count: 190, gravity: 5, maxSpeed: 7, damping: 1.6,
                    snapStrength: 18,
                    tangentialFactor: 1.1, speedVariance: 0.55, sizeVariance: 0.75,
                    color: '#FFD9A0', hueVariance: 0.08,
@@ -2219,8 +2219,8 @@ export const ANIM = {
   //              [0,0,1] = world-Z spin (in-screen pinwheel).
   // -----------------------------------------------------------------------
   dominoFlip: {
-    stagger:  0.025,        // ~100 bricks flipping at once with duration 2.5
-    duration: 2.5,
+    stagger:  0.01,         // ~350 bricks flipping at once with duration 3.5
+    duration: 3.5,
     angle:    Math.PI * 2,
     axis:     [1, 0, 0],
   },

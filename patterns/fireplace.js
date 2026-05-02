@@ -402,14 +402,17 @@ function placeInnerHexBand({ arcPoints, logoCx, logoCy, hexRadius, hexDepth,
       const py = s.y + s.ty * (rowAlongShift + alongOffset);
 
       const mesh = new THREE.Mesh(hexGeo, material);
+      // Opt this hex into the domino flip wave — see src/dominoes.js.
+      mesh.userData.dominoFlippable = true;
       mesh.position.set(px, py, zCenter);
       mesh.quaternion.copy(basisQuat(localX, localY, localZ));
       group.add(mesh);
       if (edgesGeo) {
+        // Parent the edge outline to the hex so it inherits the flip
+        // rotation. Sibling edges in `group` would stay put while the
+        // hex flips, leaving an orphaned outline behind.
         const edge = new THREE.LineSegments(edgesGeo, outlineMat);
-        edge.position.copy(mesh.position);
-        edge.quaternion.copy(mesh.quaternion);
-        group.add(edge);
+        mesh.add(edge);
       }
     }
   }

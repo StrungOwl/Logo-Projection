@@ -1054,6 +1054,8 @@ function placeUnderBrickHexLayers({ outerSilhouette, topCfg, floorCfg, backZ,
       localY.set(nx, ny, 0);
 
       const mesh = new THREE.Mesh(geo, mat);
+      // Opt this hex into the domino flip wave — see src/dominoes.js.
+      mesh.userData.dominoFlippable = true;
       mesh.position.set(sample.x, sample.y, frontZ);
       mesh.quaternion.copy(basisQuat(localX, localY, localZ));
       group.add(mesh);
@@ -1198,18 +1200,20 @@ function placeCornerHexes({ outerSilhouette, frontZ, gradientBright,
       const hy = corner.y + dy * t;
       const geo  = buildHexShapeGeometry(r, depth);
       const mesh = new THREE.Mesh(geo, matFor(k));
+      // Opt this hex into the domino flip wave — see src/dominoes.js.
+      mesh.userData.dominoFlippable = true;
       // ExtrudeGeometry extrudes along +Z from the shape plane, so anchor
       // the back face at frontZ + zLift; front face lands at frontZ +
       // zLift + depth (closer to the camera than the topLayer steps).
       mesh.position.set(hx, hy, frontZ + zLift);
       group.add(mesh);
       if (outlineMat) {
+        // Parent the edge outline to the hex so it inherits the flip.
         const edge = new THREE.LineSegments(
           new THREE.EdgesGeometry(geo, 1),
           outlineMat,
         );
-        edge.position.copy(mesh.position);
-        group.add(edge);
+        mesh.add(edge);
       }
     }
   }
