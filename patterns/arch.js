@@ -903,7 +903,15 @@ function placeTopLayer({ outerSilhouette, brickCfgBase, floorCfg, backZ,
         // stepHeight = brick front face → groove visible.
         mesh.position.set(x, y, backZ);
       } else {
-        const cfg = { ...brickCfgBase, height: stepHeight };
+        // Tier 0 (outermost) gets a slightly enlarged mortar gap so the
+        // bricks shrink a touch within their cells — opens a visible
+        // joint between adjacent bricks without changing the cell grid.
+        // Inner tiers use the base gap unchanged.
+        const tierMortarBoost = topCfg.tier0MortarBoost ?? 0.15;
+        const tierMortarGap   = (stepIdx === 0)
+          ? (brickCfgBase.mortarGap ?? 0) + tierMortarBoost
+          : (brickCfgBase.mortarGap ?? 0);
+        const cfg = { ...brickCfgBase, height: stepHeight, mortarGap: tierMortarGap };
         geo = makeBrickGeometry(seedOffset + seedCounter++, cfg);
         mesh = new THREE.Mesh(geo, tierMat);
         mesh.position.set(x, y, backZ + stepHeight * 0.5);
@@ -1997,7 +2005,13 @@ export function createArch({ silhouette, maxZ, frameDepth = 0.5,
         stencilZFail: THREE.KeepStencilOp,
         stencilZPass: THREE.KeepStencilOp,
       });
-      if (cfg.shimmer && cfg.shimmer.enabled !== false) {
+      // Tier 0 (outermost staircase tier) skips the shimmer patch on
+      // purpose: the per-fragment top-bright/bottom-dark gradient — paired
+      // with running-bond row offsets — visually reads as adjacent tier-0
+      // bricks "stacking on top of" each other. Inner tiers keep the
+      // shimmer + gradient since the effect reads cleanly when the bricks
+      // aren't exposed at the silhouette outline.
+      if (cfg.shimmer && cfg.shimmer.enabled !== false && s !== 0) {
         applyGoldShimmer(stepMat);
       }
       stepMats.push(stepMat);
