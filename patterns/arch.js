@@ -896,6 +896,8 @@ function placeTopLayer({ outerSilhouette, brickCfgBase, floorCfg, backZ,
         const hexShrink = (brickCfgBase.mortarGap ?? 0) * 2;
         geo = makeStepHexGeometry(Math.max(brickCfgBase.width - hexShrink, 0.1), hexZ);
         mesh = new THREE.Mesh(geo, tierHexMat);
+        // Opt this hex into the domino flip wave — see src/dominoes.js.
+        mesh.userData.dominoFlippable = true;
         // ExtrudeGeometry sweeps along +Z from its shape plane (XY); the
         // tile back face is at the shape's z=0, so positioning at
         // (x, y, backZ) puts the hex back face on the same plane the

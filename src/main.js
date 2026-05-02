@@ -386,7 +386,7 @@ export function tick(t, dt) {
     sys.update(dt);
   }
 
-  updateLights(ctx.lights, t);
+  updateLights(ctx.lights, t, scene);
 }
 
 // Live animate loop — real-time clock. `ctx.paused` lets the export

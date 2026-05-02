@@ -1683,6 +1683,20 @@ export const ANIM = {
     // keep base lights at full strength alongside the flame.
     baseLightDim: 0.35,
 
+    // Slow breathing of the ENVIRONMENT only — the directional "room
+    // wash" (ambient + key + rim + fill) AND the scene-wide PMREM env
+    // cubemap reflection (scene.environmentIntensity) that every
+    // MeshStandardMaterial picks up. Both scale together by the same
+    // factor, oscillating between envDimMin and 1.0 over envDimPeriod
+    // seconds, so the brick room cycles dark→bright as one unit.
+    // Point lights (innerGlow, front/rear pattern) and the flame's own
+    // light stack are intentionally excluded — they stay at the
+    // constant baseLightDim level so the flame's halo on the logo is
+    // the consistently-lit anchor while the surrounding room breathes
+    // around it. Set envDimMin === 1.0 to lock (no breathing).
+    envDimMin:    0.0,
+    envDimPeriod: 9.0,
+
     // Multiplier on logo material's `envMapIntensity` in flame mode.
     // Default 1.0 lets the metallic logo reflect the neutral-grey env
     // even in flame mode, washing the body warm-grey. Drop to a small
