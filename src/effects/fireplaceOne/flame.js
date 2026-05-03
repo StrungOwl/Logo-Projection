@@ -21,8 +21,8 @@
 // loop is converted to flame-local (panel-local) by subtracting (cx, cy).
 
 import * as THREE from 'three';
-import { ANIM } from '../src/config.js';
-import { hexToRgb } from '../src/util/color.js';
+import { ANIM } from '../../config.js';
+import { hexToRgb } from '../../util/color.js';
 
 // Merge a secondary-flame override block onto the main-flame cfg. Top-
 // level fields override directly. Nested blocks (shimmer, flares) are

@@ -14,44 +14,8 @@
 // brick + petal meshes into its own group.
 
 import * as THREE from 'three';
-import { ANIM } from '../src/config.js';
-
-// =======================================================================
-// Local helpers — duplicated intentionally so this module shares no
-// state or knob semantics with patterns/arch.js. Identical implementations
-// today, free to drift later.
-// =======================================================================
-
-function hash01(x, y, z, salt) {
-  const s = Math.sin(x * 12.9898 + y * 78.233 + z * 37.719 + salt * 91.345) * 43758.5453;
-  return s - Math.floor(s);
-}
-
-function makeBrickGeometry(seed, dims) {
-  const { width, height, depth, mortarGap, faultAmount } = dims;
-  const geo = new THREE.BoxGeometry(width, height, depth, 1, 1, 1);
-  const pos = geo.attributes.position;
-  const sx = Math.max(0, 1 - (mortarGap * 2) / width);
-  const sy = Math.max(0, 1 - (mortarGap * 2) / height);
-  const sz = Math.max(0, 1 - (mortarGap * 2) / depth);
-  const maxJ = Math.min(faultAmount * depth, mortarGap);
-  for (let i = 0; i < pos.count; i++) {
-    const ox = pos.getX(i), oy = pos.getY(i), oz = pos.getZ(i);
-    const dx = (hash01(ox, oy, oz, seed +  3.1) - 0.5) * 2 * maxJ;
-    const dy = (hash01(ox, oy, oz, seed + 17.7) - 0.5) * 2 * maxJ;
-    const dz = (hash01(ox, oy, oz, seed + 41.3) - 0.5) * 2 * maxJ;
-    pos.setXYZ(i, ox * sx + dx, oy * sy + dy, oz * sz + dz);
-  }
-  pos.needsUpdate = true;
-  geo.computeVertexNormals();
-  return geo;
-}
-
-const _basisMat = new THREE.Matrix4();
-function basisQuat(localX, localY, localZ) {
-  _basisMat.makeBasis(localX, localY, localZ);
-  return new THREE.Quaternion().setFromRotationMatrix(_basisMat);
-}
+import { ANIM } from '../../config.js';
+import { hash01, makeBrickGeometry, basisQuat } from '../../util/geometry.js';
 
 // Pointed-arch petal — extruded 2D shape used as the muqarnas cell.
 // local-X = radial axis (tip at +X), local-Y = tangential width.

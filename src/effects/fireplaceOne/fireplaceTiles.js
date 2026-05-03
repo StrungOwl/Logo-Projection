@@ -20,61 +20,10 @@
 // never interpenetrate regardless of fault amount.
 
 import * as THREE from 'three';
-import { ANIM } from '../src/config.js';
-import { insetPolygon, samplePolyline, clipArcAboveY, samplePerimeter } from './gate-frame.js';
-import { pointInPolygon } from './lattice-underlay.js';
-import { applyGoldShimmer } from '../src/shaders/gold-shimmer.js';
-
-// -----------------------------------------------------------------------
-// Brick geometry — BoxGeometry shrunk by mortarGap, then jittered per
-// vertex by a position-keyed hash. Same hash → same delta on every vertex
-// at that original position, so shared corners stay welded (no cracks).
-// -----------------------------------------------------------------------
-function hash01(x, y, z, salt) {
-  const s = Math.sin(x * 12.9898 + y * 78.233 + z * 37.719 + salt * 91.345) * 43758.5453;
-  return s - Math.floor(s);
-}
-
-function makeBrickGeometry(seed, brickCfg) {
-  const { width, height, depth, mortarGap, faultAmount } = brickCfg;
-  const geo = new THREE.BoxGeometry(width, height, depth, 1, 1, 1);
-  const pos = geo.attributes.position;
-  // Shrink uniformly so the brick sits inside its slot with `mortarGap`
-  // breathing room on every face. Faults will move vertices within that
-  // gap, never poking past the original cuboid.
-  const sx = Math.max(0, 1 - (mortarGap * 2) / width);
-  const sy = Math.max(0, 1 - (mortarGap * 2) / height);
-  const sz = Math.max(0, 1 - (mortarGap * 2) / depth);
-  // Max per-axis displacement: bounded by both faultAmount*depth and the
-  // mortar gap, so a brick is guaranteed to fit inside its slot.
-  const maxJ = Math.min(faultAmount * depth, mortarGap);
-
-  for (let i = 0; i < pos.count; i++) {
-    let x = pos.getX(i) * sx;
-    let y = pos.getY(i) * sy;
-    let z = pos.getZ(i) * sz;
-    // Original (pre-shrink) position drives the hash so symmetric vertices
-    // get matching deltas across faces.
-    const ox = pos.getX(i), oy = pos.getY(i), oz = pos.getZ(i);
-    const dx = (hash01(ox, oy, oz, seed +  3.1) - 0.5) * 2 * maxJ;
-    const dy = (hash01(ox, oy, oz, seed + 17.7) - 0.5) * 2 * maxJ;
-    const dz = (hash01(ox, oy, oz, seed + 41.3) - 0.5) * 2 * maxJ;
-    pos.setXYZ(i, x + dx, y + dy, z + dz);
-  }
-  pos.needsUpdate = true;
-  geo.computeVertexNormals();
-  return geo;
-}
-
-// Quaternion that maps brick-local axes onto chosen world directions.
-// Each parameter is a unit world-space vector for the corresponding local
-// axis. Three.js' Matrix4.makeBasis takes the columns of the rotation
-// matrix in this exact order.
-const _basisMat = new THREE.Matrix4();
-function basisQuat(localX, localY, localZ) {
-  _basisMat.makeBasis(localX, localY, localZ);
-  return new THREE.Quaternion().setFromRotationMatrix(_basisMat);
-}
+import { ANIM } from '../../config.js';
+import { insetPolygon, samplePolyline, clipArcAboveY, samplePerimeter, pointInPolygon } from '../../util/polygon.js';
+import { hash01, makeBrickGeometry, basisQuat } from '../../util/geometry.js';
+import { applyGoldShimmer } from '../../shaders/gold-shimmer.js';
 
 // One pass of tangent averaging: smooths out jitter from the RDP-
 // simplified silhouette so neighbouring brick rotations don't visibly

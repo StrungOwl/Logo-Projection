@@ -37,15 +37,17 @@ export const ANIM = {
   patterns: { enabled: true },
 
   // Active view mode — driven by the digit keys 0–4 (handled in main.js).
-  // 'all' plays today's synchronized sequence (cascade + flowers + sparks
-  // sync'd via ANIM.timings.playAll). Single-effect modes solo one layer
-  // on its own clock; the base scene (logo, gate frame, particles, lights)
-  // stays on underneath.
-  //   0 → 'all'  | 1 → 'pattern'  | 2 → 'hex'
-  //   3 → 'flowers'  | 4 → 'fireplace'
-  // 'fireplace' = procedural-brick arch wrapping a volumetric flame in
-  // the central cutout, against the starry-sky galaxy backdrop.
-  viewMode: 'fireplace',
+  // 'visualSequence' plays the synchronized sequence (cascade + flowers +
+  // sparks sync'd via ANIM.timings.playAll). Single-effect modes solo one
+  // layer on its own clock; the base scene (logo, gate frame, particles,
+  // lights) stays on underneath.
+  //   0 → 'visualSequence'  (Visual Sequence)
+  //   1 → 'fractalPattern'  (Fractal Pattern)
+  //   2 → 'hexagons'        (Hexagons)
+  //   3 → 'flowers'         (Flowers)
+  //   4 → 'fireplaceOne'    (Fireplace One — cascading bricks + flame)
+  //   5 → 'fireplaceTwo'    (Fireplace Two — horseshoe arch + petals + flame)
+  viewMode: 'fireplaceOne',
 
   keyLight:          { intensityMin: 0.0,  intensityMax: 4.6,
                        colorAtMin: '#FF1400', colorAtMax: '#FFCC2E' },

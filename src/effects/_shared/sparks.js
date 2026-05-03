@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { QUALITY } from '../../quality.js';
 
 // Collect every stroke-vertex position in the group's LOCAL frame and index
 // them in a coarse spatial hash for fast nearest-vertex lookup. No adjacency
@@ -375,7 +376,13 @@ export function createSparkSystem({
     // original, now-stale vertex positions).
     const snapBlend = 1 - Math.exp(-snapStrength * api.snapScale * dt);
 
-    for (let i = 0; i < count; i++) {
+    // QUALITY scaling — only iterate the first `activeCount` sparks per
+    // frame. The trailing sparks keep their last-written attribute values
+    // (zeros from respawn at LOW startup, or last-frame values when stepping
+    // down quality), so they're effectively dormant. HIGH = full count.
+    const activeCount = Math.max(1, Math.floor(count * QUALITY.preset.sparks));
+
+    for (let i = 0; i < activeCount; i++) {
       // Per-spark wake gate. respawn() left this spark at its seed with
       // alpha=size=0 in every trail slot, so skipping the body keeps it
       // invisible until its turn.
@@ -486,6 +493,11 @@ export function createSparkSystem({
         sizes[slot]  = pointSize * sizeScale[i] * (0.55 + 0.45 * trail);
       }
     }
+
+    // QUALITY: cap draw range to the active spark count × trail slots, so
+    // GPU only renders points for the sparks we actually iterated. Trailing
+    // sparks (skipped per quality preset) are not rendered.
+    geometry.setDrawRange(0, activeCount * trailSize);
 
     geometry.attributes.position.needsUpdate = true;
     geometry.attributes.aAlpha.needsUpdate = true;

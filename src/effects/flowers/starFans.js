@@ -10,8 +10,8 @@
 // range.
 
 import * as THREE from 'three';
-import { ANIM, COLORS } from './config.js';
-import { insetPolygon } from '../patterns/gate-frame.js';
+import { ANIM, COLORS } from '../../config.js';
+import { insetPolygon } from '../../util/polygon.js';
 
 // Rosette parts — the same hub + inner/outer petal ratios as
 // patterns/islamic-tile.js, but returned as independent pieces so each
@@ -1063,27 +1063,27 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
     // Solo 'flowers' mode skips the brick hold so the rose petals loop
     // back-to-back: fade in → hold (with domino) → fade out → repeat. No
     // long invisible gap waiting for hidden bricks to "hold".
-    const tBrickHold   = (ANIM.viewMode === 'flowers') ? 0
-                       : (ANIM.viewMode === 'hex')     ? (tov.hexHold ?? 25)
+    const tBrickHold   = (ANIM.viewMode === 'flowers')  ? 0
+                       : (ANIM.viewMode === 'hexagons') ? (tov.hexHold ?? 25)
                        : (tov.brickHold ?? 15);
     const tBrickToRose = tov.brickToRose ?? 5;
-    // Solo 'hex' mode skips the rose hold so the brick wall is the focus.
+    // Solo 'hexagons' mode skips the rose hold so the brick wall is the focus.
     // The cycle becomes brick hold → fade out → fade in → loop, with only
     // a single-frame invisibility at the morph midpoint.
-    const tRoseHold    = (ANIM.viewMode === 'hex') ? 0 : (tov.roseHold ?? 15);
+    const tRoseHold    = (ANIM.viewMode === 'hexagons') ? 0 : (tov.roseHold ?? 15);
     const tRoseToBrick = tov.roseToBrick ?? 5;
     const morphTotal   = tBrickHold + tBrickToRose + tRoseHold + tRoseToBrick;
 
-    // playAll syncs only in 'all' viewMode — solo modes free-run with
-    // synthesized timings instead of reading cascadeState.playAllT (which
-    // is pinned at -1 in solo modes by patterns-layer.js).
+    // playAll syncs only in 'visualSequence' viewMode — solo modes free-run
+    // with synthesized timings instead of reading cascadeState.playAllT
+    // (which is pinned at -1 in solo modes by effects.js).
     const playAllOn = !!(ANIM.timings && ANIM.timings.playAll)
-                    && (!ANIM.viewMode || ANIM.viewMode === 'all');
-    // Solo modes 'hex' and 'flowers' synthesize a playAll-style cycle so
+                    && (!ANIM.viewMode || ANIM.viewMode === 'visualSequence');
+    // Solo modes 'hexagons' and 'flowers' synthesize a playAll-style cycle so
     // the brick-wall entry/exit waves animate the same way they do in
-    // 'all' — the user sees the in/out transitions, just without the
+    // visualSequence — the user sees the in/out transitions, just without the
     // cascade syncing them to the pattern's all-at-center window.
-    const soloMode = ANIM.viewMode === 'hex' || ANIM.viewMode === 'flowers';
+    const soloMode = ANIM.viewMode === 'hexagons' || ANIM.viewMode === 'flowers';
     const wavesOn  = playAllOn || soloMode;
     let cyc;
     if (playAllOn) {
@@ -1110,17 +1110,15 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
       morphAlpha = smoothstep01(cyc, t1, t2)
                  - smoothstep01(cyc, t3, t3 + tRoseToBrick);
     }
-    // Mode 'hex' is brick-only: clamp morphAlpha so the bricks never fade
+    // Mode 'hexagons' is brick-only: clamp morphAlpha so the bricks never fade
     // into the rose state. brickW stays 1, inMorph stays true, and the
     // per-hex position/rotation update keeps running every frame so the
     // entry/exit waves cycle cleanly.
-    if (ANIM.viewMode === 'hex') morphAlpha = 0;
+    if (ANIM.viewMode === 'hexagons') morphAlpha = 0;
     let inMorph = !!morphGroup && morphAlpha < 0.999;
-    // Mode 'hex' override: force inMorph true whenever the hex wall exists
-    // so the per-hex position update keeps writing every frame. Without
-    // this, a brief inMorph=false at the morph boundary would freeze the
-    // hexes at whatever drift position they were last in.
-    if (ANIM.viewMode === 'hex' && brickHexWall) inMorph = true;
+    // Mode 'hexagons' override: force inMorph true whenever the hex wall
+    // exists so the per-hex position update keeps writing every frame.
+    if (ANIM.viewMode === 'hexagons' && brickHexWall) inMorph = true;
 
     // Per-hex stagger params — entry wave at window open, exit wave at
     // window close. Each hex's start time is keyed off `flipStep` so the
@@ -1255,7 +1253,7 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
       // Outside 'hex' mode the alt-back overlay + low opacity is also
       // suppressed so the wall reads identically to its pre-effect-2
       // look in 'all' / fireplace.
-      const isHexMode = ANIM.viewMode === 'hex';
+      const isHexMode = ANIM.viewMode === 'hexagons';
       const cd = brickCfg.colorDrift;
       const baseStr = brickCfg.color ?? '#D14A22';
       if (baseStr !== _hexDriftBaseStr) { _hexBaseColor.set(baseStr); _hexDriftBaseStr = baseStr; }

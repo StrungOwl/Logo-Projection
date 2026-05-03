@@ -5,8 +5,8 @@
 // visibly travels across the metal.
 
 import * as THREE from 'three';
-import { ANIM, COLORS } from './config.js';
-import { hexToRgb } from './util/color.js';
+import { ANIM, COLORS } from '../config.js';
+import { hexToRgb } from '../util/color.js';
 
 export function createLights(scene) {
   const ambientLight = new THREE.AmbientLight(COLORS.ambient, ANIM.ambientIntensity);
@@ -74,7 +74,7 @@ export function updateLights(lights, t, scene) {
   const pulse01 = 0.5 + 0.5 * pulse;
   const warm    = 1.0 - pulse01;
 
-  const fireplaceMode = ANIM.viewMode === 'fireplace' || ANIM.viewMode === 'carved';
+  const fireplaceMode = ANIM.viewMode === 'fireplaceOne' || ANIM.viewMode === 'fireplaceTwo';
   const pointDim = fireplaceMode
     ? ((ANIM.flame && ANIM.flame.baseLightDim) ?? 0.06)
     : 1.0;

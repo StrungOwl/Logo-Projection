@@ -62,7 +62,7 @@
 // Duration is derived from ANIM.timings at export time so it always tracks
 // the current animation sequence. See `computeCycleSeconds` below.
 
-import { ANIM } from './config.js';
+import { ANIM } from '../config.js';
 
 const FPS            = 60;
 const PREROLL_SEC    = 10.0;         // warm up stateful spark systems
@@ -172,14 +172,14 @@ export async function startExport(bridge, opts = {}) {
   const overlay = buildOverlay();
   document.body.appendChild(overlay);
 
-  // 2. Pause live loop + freeze camera. Also pin viewMode to 'all' for the
-  // duration of the export so the captured video always shows the full
-  // synchronized sequence — independent of whichever solo mode (1–5) the
-  // user might have toggled in the live view.
+  // 2. Pause live loop + freeze camera. Also pin viewMode to 'visualSequence'
+  // for the duration of the export so the captured video always shows the
+  // full synchronized sequence — independent of whichever solo mode (1–5)
+  // the user might have toggled in the live view.
   ctx.paused = true;
   controls.enabled = false;
   const prevViewMode = ANIM.viewMode;
-  ANIM.viewMode = 'all';
+  ANIM.viewMode = 'visualSequence';
 
   // 3. Resize the live WebGL canvas to export resolution and render into
   //    it directly. Rendering through a WebGLRenderTarget was losing the

@@ -11,17 +11,17 @@
 // edge reads flush with the gate's inner lip.
 
 import * as THREE from 'three';
-import { ANIM, COLORS } from './config.js';
-import { hexToRgb } from './util/color.js';
-import { createIslamicPanel }   from '../patterns/islamic-tile.js';
-import { createLatticeUnderlay } from '../patterns/lattice-underlay.js';
-import { createGateFrame }       from '../patterns/gate-frame.js';
-import { createSparkSystem }     from '../patterns/stroke-sparks.js';
-import { createArch }            from '../patterns/arch.js';
-import { createFlame }           from '../patterns/flame.js';
-import { createFireplace }       from '../patterns/fireplace.js';
+import { ANIM, COLORS } from '../config.js';
+import { hexToRgb } from '../util/color.js';
+import { createIslamicPanel }    from './fractalPattern/fractalPattern.js';
+import { createLatticeUnderlay } from './hexagons/hexagons.js';
+import { createGateFrame }       from './_shared/logoFrame.js';
+import { createSparkSystem }     from './_shared/sparks.js';
+import { createArch }            from './fireplaceOne/fireplaceTiles.js';
+import { createFlame }           from './fireplaceOne/flame.js';
+import { createFireplace }       from './fireplaceTwo/outerArch.js';
 
-export function addPatternLayers(logoMesh, meta, renderer) {
+export function addEffects(logoMesh, meta, renderer) {
   const { hull, silhouette, cx, cy, maxR, maxZ, patternFadeCenter } = meta;
   const strokeTimeUniforms = [];
   const sparkSystems = [];
@@ -498,7 +498,7 @@ export function addPatternLayers(logoMesh, meta, renderer) {
     // modes (pattern/hex/flowers/arch/flame) disable the sync window so each
     // layer free-runs on its own clock.
     const playAllOn = !!(ANIM.timings && ANIM.timings.playAll)
-                   && (!ANIM.viewMode || ANIM.viewMode === 'all');
+                   && (!ANIM.viewMode || ANIM.viewMode === 'visualSequence');
     let gapDur, playAllWinStart = -1, playAllDur = 0;
     if (playAllOn) {
       const ovr = (ANIM.timings && ANIM.timings.overlay) || {};
@@ -1376,7 +1376,7 @@ export function addPatternLayers(logoMesh, meta, renderer) {
     // Bail in any non-pattern mode. Snap state back to clean rest, clear
     // any accumulated opacity on both originals and clones, and re-arm
     // the initial-settle wait for the next time pattern mode is entered.
-    if (!cfg || cfg.enabled === false || ANIM.viewMode !== 'pattern') {
+    if (!cfg || cfg.enabled === false || ANIM.viewMode !== 'fractalPattern') {
       if (fractalRoot.visible) {
         fractalRoot.visible = false;
         parkAllLensTiles();

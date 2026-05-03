@@ -10,10 +10,10 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OBJLoader }  from 'three/addons/loaders/OBJLoader.js';
-import { MODEL, COLORS } from './config.js';
-import { hexToRgb } from './util/color.js';
-import { applyGradientTint } from './shaders/gradient-tint.js';
-import { createGalaxyMaterial } from './shaders/galaxy.js';
+import { MODEL, COLORS } from '../config.js';
+import { hexToRgb } from '../util/color.js';
+import { applyGradientTint } from '../shaders/gradient-tint.js';
+import { createGalaxyMaterial } from '../shaders/galaxy-backdrop.js';
 
 // Extension-aware loader — picks GLTFLoader for .glb/.gltf, OBJLoader for
 // .obj. Hands back a single Object3D root so callers don't care about the

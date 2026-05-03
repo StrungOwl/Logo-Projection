@@ -12,8 +12,9 @@
 // traced outline).
 
 import * as THREE from 'three';
-import { ANIM } from './config.js';
-import { hexToRgb } from './util/color.js';
+import { ANIM } from '../../config.js';
+import { hexToRgb } from '../../util/color.js';
+import { QUALITY } from '../../quality.js';
 
 // -----------------------------------------------------------------------
 // Inner-star outline extraction. Elliptical filter: vertical axis grows
@@ -300,13 +301,17 @@ export function addParticles(logoMesh, renderer) {
 
 // Per-frame update — hot-swaps color/cycle/brightness so devtools edits
 // to ANIM.emberParticles / ANIM.whiteParticles take effect immediately.
-export function updateParticles({ emberMat, whiteMat }, t) {
+// Also applies QUALITY.preset.particles by capping the geometry's draw
+// range so MED/LOW render fewer points without rebuilding the buffers.
+export function updateParticles({ emberMat, whiteMat, emberPoints, whitePoints }, t) {
+  const drawCount = Math.max(1, Math.floor(PARTICLE_COUNT * QUALITY.preset.particles));
   if (emberMat) {
     emberMat.uniforms.uTime.value          = t;
     emberMat.uniforms.uCycleDuration.value = ANIM.emberParticles.cycleDuration;
     emberMat.uniforms.uBodyColor.value.fromArray(hexToRgb(ANIM.emberParticles.bodyColor));
     emberMat.uniforms.uCoreColor.value.fromArray(hexToRgb(ANIM.emberParticles.coreColor));
     emberMat.uniforms.uBrightness.value    = ANIM.emberParticles.brightness;
+    if (emberPoints) emberPoints.geometry.setDrawRange(0, drawCount);
   }
   if (whiteMat) {
     whiteMat.uniforms.uTime.value          = t;
@@ -314,5 +319,6 @@ export function updateParticles({ emberMat, whiteMat }, t) {
     whiteMat.uniforms.uBodyColor.value.fromArray(hexToRgb(ANIM.whiteParticles.bodyColor));
     whiteMat.uniforms.uCoreColor.value.fromArray(hexToRgb(ANIM.whiteParticles.coreColor));
     whiteMat.uniforms.uBrightness.value    = ANIM.whiteParticles.brightness;
+    if (whitePoints) whitePoints.geometry.setDrawRange(0, drawCount);
   }
 }

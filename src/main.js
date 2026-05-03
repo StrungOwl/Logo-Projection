@@ -5,14 +5,15 @@
 
 import * as THREE from 'three';
 import { ANIM, COLORS } from './config.js';
-import { createScene, frameLogo } from './scene.js';
-import { createLights, updateLights } from './lights.js';
-import { loadLogo } from './logo.js';
-import { addPatternLayers } from './patterns-layer.js';
-import { addOverlay } from './3DOverlay.js';
-import { addParticles, updateParticles } from './particles.js';
-import { toggleDominoes, updateDominoes } from './dominoes.js';
+import { createScene, frameLogo } from './core/scene.js';
+import { createLights, updateLights } from './core/lights.js';
+import { loadLogo } from './core/logo.js';
+import { addEffects } from './effects/effects.js';
+import { addOverlay } from './effects/flowers/starFans.js';
+import { addParticles, updateParticles } from './effects/_shared/streams.js';
+import { toggleDominoes, updateDominoes } from './effects/fireplaceTwo/dominoAnim.js';
 import { tickShimmer } from './shaders/gold-shimmer.js';
+import { cycleQuality } from './quality.js';
 
 const { scene, camera, renderer, controls } = createScene();
 const lights = createLights(scene);
@@ -68,16 +69,24 @@ const ctx = {
 };
 
 // Low-passed flame brightness 0..1 — driven by the live PointLight stack
-// in patterns/flame.js. Read by the galaxy uBrightness pulse so the
-// starry backdrop breathes with the flame's broader envelope without
-// strobing on every per-frame flicker spike.
+// in src/effects/fireplaceOne/flame.js. Read by the galaxy uBrightness
+// pulse so the starry backdrop breathes with the flame's broader envelope
+// without strobing on every per-frame flicker spike.
 let smoothedFlameEnv = 1.0;
+
+// Cached state so per-frame work skips when nothing relevant changed.
+// Without these, main.js used to write the same scene.environment swap,
+// the same logoMaterials.color value, and the same stroke time uniform
+// every frame. Lossless cleanup.
+let lastViewMode    = null;
+let lastBrightness  = NaN;
+let lastEnvIntensity = NaN;
 
 loadLogo().then((logo) => {
   ctx.galaxyMat     = logo.galaxyMat;
   ctx.logoMaterials = logo.logoMaterials;
 
-  const patternResult = addPatternLayers(logo.logoMesh, logo.meta, renderer);
+  const patternResult = addEffects(logo.logoMesh, logo.meta, renderer);
   ctx.strokeTimeUniforms.push(...patternResult.strokeTimeUniforms);
   ctx.sparkSystems.push(...patternResult.sparkSystems);
   ctx.updateRowCascade   = patternResult.updateRowCascade;
@@ -146,31 +155,39 @@ export function tick(t, dt) {
     ctx.galaxyMat.uniforms.uBrightness.value = targetBright * pulseMul;
   }
 
-  if (ctx.particleMats) updateParticles(ctx.particleMats, t);
+  // Skip stream physics in fireplace modes — the streams emit from the
+  // inner-star outline and would compete with the flame body in the same
+  // negative-space region, so they're hidden anyway. Skipping the update
+  // saves the per-particle Bezier evaluation while invisible.
+  if (ctx.particleMats &&
+      ANIM.viewMode !== 'fireplaceOne' &&
+      ANIM.viewMode !== 'fireplaceTwo') {
+    updateParticles(ctx.particleMats, t);
+  }
 
   // View-mode + master-toggle gating. The base scene (logo galaxy, gate
   // frame, particles, lights) stays on across every mode. Each effect
-  // family is shown only in 'all' or its own solo mode.
-  //   0 → 'all'        panel + lattice + flower-overlay
-  //   1 → 'pattern'    panel + lattice underlay (front-pattern combo)
-  //   2 → 'hex'        overlay BIG hex bricks only (entry/rotation/exit)
-  //   3 → 'flowers'    full flower overlay (hex bricks → roses → bricks)
-  //   4 → 'fireplace'  procedural-brick arch wrapping a volumetric flame
-  //                    in the central cutout, against a starry-sky sky.
+  // family is shown only in Visual Sequence or its own solo mode.
+  //   0 → 'visualSequence'  rosette + hex lattice + flower overlay
+  //   1 → 'fractalPattern'  rosette + hex lattice (with fractal lens)
+  //   2 → 'hexagons'        overlay BIG hex bricks only
+  //   3 → 'flowers'         full flower overlay (hex → roses → hex)
+  //   4 → 'fireplaceOne'    cascading brick arch + flame + starry sky
+  //   5 → 'fireplaceTwo'    horseshoe arch + petals + flame + starry sky
   // `ANIM.patterns.enabled === false` is the legacy kill switch — when
   // off, panel + lattice stay hidden regardless of view mode.
-  const mode = ANIM.viewMode || 'all';
+  const mode = ANIM.viewMode || 'visualSequence';
   const legacyPatterns = !(ANIM.patterns && ANIM.patterns.enabled === false);
-  const showPanel     = legacyPatterns && (mode === 'all' || mode === 'pattern');
-  const showLattice   = legacyPatterns && (mode === 'all' || mode === 'pattern');
-  const showHexBrick  = (mode === 'all' || mode === 'hex');
-  const showFlowers   = (mode === 'all' || mode === 'flowers');
-  const showFireplace = (mode === 'fireplace');
-  const showCarved    = (mode === 'carved');
-  // Both fireplace + carved share the central flame, fireplace voussoir
+  const showPanel     = legacyPatterns && (mode === 'visualSequence' || mode === 'fractalPattern');
+  const showLattice   = legacyPatterns && (mode === 'visualSequence' || mode === 'fractalPattern');
+  const showHexBrick  = (mode === 'visualSequence' || mode === 'hexagons');
+  const showFlowers   = (mode === 'visualSequence' || mode === 'flowers');
+  const showFireplace = (mode === 'fireplaceOne');
+  const showCarved    = (mode === 'fireplaceTwo');
+  // Both fireplace modes share the central flame, fireplace voussoir
   // ring, and the fade-to-black galaxy backdrop. They differ only in
-  // which arch brick layer is shown — archGroup (fireplace) vs
-  // archCarvedGroup (deeper-wall experimental version).
+  // which arch brick layer is shown — archGroup (fireplaceOne) vs
+  // archCarvedGroup (fireplaceTwo).
   const showFireOrCarved = showFireplace || showCarved;
   if (ctx.panelGroup)   ctx.panelGroup.visible   = showPanel;
   if (ctx.latticeGroup) ctx.latticeGroup.visible = showLattice;
@@ -202,14 +219,20 @@ export function tick(t, dt) {
     if (ctx.particleMats.emberPoints) ctx.particleMats.emberPoints.visible = showParticles;
     if (ctx.particleMats.whitePoints) ctx.particleMats.whitePoints.visible = showParticles;
   }
-  // Strip the scene-wide PMREM env cubemap in fireplace/carved mode so
+  // Strip the scene-wide PMREM env cubemap in fireplace modes so
   // the grey ambient wash baked into every MeshStandardMaterial goes
   // away — without this, those materials read at ~constant brightness
   // regardless of light state, defeating the "only the flame
   // illuminates" goal.
-  const stripEnv = showFireOrCarved
-                && (ANIM.flame && ANIM.flame.stripEnvironment !== false);
-  scene.environment = stripEnv ? null : baseEnvironment;
+  // Only reassign scene.environment when the mode actually changes —
+  // writing it every frame triggers a PBR recompute even though the
+  // value is identical.
+  if (mode !== lastViewMode) {
+    const stripEnv = showFireOrCarved
+                  && (ANIM.flame && ANIM.flame.stripEnvironment !== false);
+    scene.environment = stripEnv ? null : baseEnvironment;
+    lastViewMode = mode;
+  }
   for (let i = 0; i < ctx.overlayFlowerRoots.length; i++) {
     ctx.overlayFlowerRoots[i].visible = showFlowers;
   }
@@ -236,22 +259,26 @@ export function tick(t, dt) {
   const tBright = ctx.brightnessTime;
 
   // Logo base brightness — sine-wave breath between min and max over `period` seconds.
+  // Skip the per-material write loop when neither the breath factor nor the
+  // envMapIntensity changed since last frame (steady-state fast path).
   if (ctx.logoMaterials) {
     const lb = ANIM.logoBase;
     const phase = (tBright / Math.max(lb.period, 1e-3)) * Math.PI * 2;
     const k01 = 0.5 + 0.5 * Math.sin(phase);
     const factor = lb.brightnessMin + (lb.brightnessMax - lb.brightnessMin) * k01;
-    ctx.baseColorScratch.set(COLORS.logo.base).multiplyScalar(factor);
-    // In fireplace mode, drop envMapIntensity heavily so the metallic
-    // env reflection doesn't wash the body warm-grey on its own — the
-    // flame's own point light should be the dominant illumination on
-    // the logo body, with the body going dark between flicker peaks.
-    const envI = (ANIM.viewMode === 'fireplace' || ANIM.viewMode === 'carved')
+    // In fireplace modes, drop envMapIntensity heavily so the metallic
+    // env reflection doesn't wash the body warm-grey on its own.
+    const envI = showFireOrCarved
       ? ((ANIM.flame && ANIM.flame.envMapIntensity) ?? 0.08)
       : 1.0;
-    for (let i = 0; i < ctx.logoMaterials.length; i++) {
-      ctx.logoMaterials[i].color.copy(ctx.baseColorScratch);
-      ctx.logoMaterials[i].envMapIntensity = envI;
+    if (Math.abs(factor - lastBrightness) > 1e-4 || envI !== lastEnvIntensity) {
+      ctx.baseColorScratch.set(COLORS.logo.base).multiplyScalar(factor);
+      for (let i = 0; i < ctx.logoMaterials.length; i++) {
+        ctx.logoMaterials[i].color.copy(ctx.baseColorScratch);
+        ctx.logoMaterials[i].envMapIntensity = envI;
+      }
+      lastBrightness = factor;
+      lastEnvIntensity = envI;
     }
   }
 
@@ -267,7 +294,7 @@ export function tick(t, dt) {
   // can run at a time. The fractal updater self-cleans when viewMode
   // isn't 'pattern' (parks tiles back at rest, fades back layers out).
   if (ctx.updateRotations)  ctx.updateRotations(t);
-  const fractalActive = mode === 'pattern'
+  const fractalActive = mode === 'fractalPattern'
                      && ctx.updateFractalZoom
                      && !(ANIM.fractalZoom && ANIM.fractalZoom.enabled === false);
   if (ctx.updateFractalZoom) ctx.updateFractalZoom(t, dt);
@@ -319,7 +346,7 @@ export function tick(t, dt) {
   // (warm nebula). Eased exponentially using the configured fadeSpeed
   // (1/sec).
   if (ctx.galaxyMat && ctx.galaxyMat.uniforms.uStarryMode) {
-    const targetStarry = (mode === 'fireplace' || mode === 'carved') ? 1.0 : 0.0;
+    const targetStarry = showFireOrCarved ? 1.0 : 0.0;
     const fadeSpeed = (ANIM.flame && ANIM.flame.galaxyStarry && ANIM.flame.galaxyStarry.fadeSpeed) || 1.5;
     const blend = 1 - Math.exp(-fadeSpeed * dt);
     const u = ctx.galaxyMat.uniforms.uStarryMode;
@@ -363,18 +390,19 @@ export function tick(t, dt) {
   for (let i = 0; i < ctx.sparkSystems.length; i++) {
     const sys = ctx.sparkSystems[i];
     // Per-system host gating: a spark system rides only when the layer it
-    // attaches to is visible. panel/lattice hosts ride in 'all' or 'pattern';
-    // 'arch' rides only in fireplace mode. In 'all' mode they additionally
-    // fade out while the playAll overlay window is open.
+    // attaches to is visible. panel/lattice hosts ride in Visual Sequence
+    // or Fractal Pattern; 'arch' rides only in fireplace modes. In Visual
+    // Sequence they additionally fade out while the playAll overlay
+    // window is open.
     const host = sys.host;
     let hostVisible = false;
     if (host === 'panel' || host === 'lattice') {
-      hostVisible = (mode === 'all' || mode === 'pattern');
+      hostVisible = (mode === 'visualSequence' || mode === 'fractalPattern');
     } else if (host === 'arch') {
-      hostVisible = (mode === 'fireplace' || mode === 'carved');
+      hostVisible = showFireOrCarved;
     }
     let target = hostVisible ? 1 : 0;
-    if (mode === 'all' && inOverlayWindow) target = 0;
+    if (mode === 'visualSequence' && inOverlayWindow) target = 0;
     if ((host === 'panel' || host === 'lattice') && fractalAnim) target = 0;
     const u = sys.uOpacity;
     if (u) u.value += (target - u.value) * sparkBlend;
@@ -416,7 +444,7 @@ animate();
 export const __exportCtx = { ctx, scene, camera, renderer, controls, tick };
 
 async function runExport(opts) {
-  const { startExport } = await import('./export.js');
+  const { startExport } = await import('./core/export.js');
   return startExport(__exportCtx, opts);
 }
 
@@ -435,7 +463,7 @@ if (typeof window !== 'undefined') {
       // resets the loop to start a fresh zoom-in immediately. In every
       // other mode, fall through to the radial cascade trigger.
       const fractalEnabled = !(ANIM.fractalZoom && ANIM.fractalZoom.enabled === false);
-      if (ANIM.viewMode === 'pattern' && fractalEnabled
+      if (ANIM.viewMode === 'fractalPattern' && fractalEnabled
           && ctx.fractalState && ctx.fractalState.triggerZoom) {
         ctx.fractalState.triggerZoom(clock.elapsedTime);
         handled = true;
@@ -443,7 +471,7 @@ if (typeof window !== 'undefined') {
         ctx.cascadeState.triggerNow(clock.elapsedTime);
         handled = true;
       }
-      if ((ANIM.viewMode === 'fireplace' || ANIM.viewMode === 'all') && ctx.triggerArchCascade) {
+      if ((ANIM.viewMode === 'fireplaceOne' || ANIM.viewMode === 'visualSequence') && ctx.triggerArchCascade) {
         ctx.triggerArchCascade(clock.elapsedTime);
         handled = true;
       }
@@ -459,17 +487,25 @@ if (typeof window !== 'undefined') {
       console.log(`[dominoes] ${on ? 'on' : 'off'}`);
       return;
     }
-    // Digit keys 0–4 (no modifiers) switch ANIM.viewMode.
+    // 'q' (no modifiers) — cycle quality preset HIGH → MED → LOW → HIGH.
+    // Default is HIGH (identical to original visuals on every device).
+    // Lowering opts the user into a smaller particle / spark / pixel-ratio
+    // budget so the scene runs smoother on weaker hardware.
+    if (e.code === 'KeyQ' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      cycleQuality(renderer);
+      return;
+    }
+    // Digit keys 0–5 (no modifiers) switch ANIM.viewMode.
     if (!e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
       const modeByKey = {
-        Digit0: 'all', Digit1: 'pattern', Digit2: 'hex',
-        Digit3: 'flowers', Digit4: 'fireplace', Digit5: 'carved',
+        Digit0: 'visualSequence', Digit1: 'fractalPattern', Digit2: 'hexagons',
+        Digit3: 'flowers',         Digit4: 'fireplaceOne',   Digit5: 'fireplaceTwo',
       };
       const next = modeByKey[e.code];
       if (next) {
         e.preventDefault();
         ANIM.viewMode = next;
-        console.log(`[viewMode] ${next}`);
         return;
       }
     }

@@ -4,7 +4,8 @@
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { COLORS } from './config.js';
+import { COLORS } from '../config.js';
+import { QUALITY } from '../quality.js';
 
 export function createScene() {
   const scene = new THREE.Scene();
@@ -15,7 +16,10 @@ export function createScene() {
 
   const renderer = new THREE.WebGLRenderer({ antialias: true, stencil: true });
   renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.setPixelRatio(window.devicePixelRatio);
+  // Cap pixel ratio so high-DPI screens (3×+) don't render 9× more pixels
+  // per frame for no visible benefit. QUALITY.preset.pixelRatioMax can be
+  // lowered live by the 'Q' quality cycle to recover headroom on weak GPUs.
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, QUALITY.preset.pixelRatioMax));
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 0.95;
   document.body.appendChild(renderer.domElement);

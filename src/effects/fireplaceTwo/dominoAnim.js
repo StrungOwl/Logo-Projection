@@ -16,7 +16,7 @@
 // Config: ANIM.dominoFlip — see src/config.js for knob docs.
 
 import * as THREE from 'three';
-import { ANIM } from './config.js';
+import { ANIM } from '../../config.js';
 
 const _v3       = new THREE.Vector3();
 const _flipAxis = new THREE.Vector3(1, 0, 0);

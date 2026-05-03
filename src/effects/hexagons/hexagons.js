@@ -1,4 +1,9 @@
 import * as THREE from 'three';
+import { pointInPolygon } from '../../util/polygon.js';
+
+// Re-exported for callers that pulled this helper from the lattice module.
+// Authoritative source is util/polygon.js.
+export { pointInPolygon };
 
 // Solid pointy-top hexagon, flat extrusion with hard edges — the look
 // of a laser-cut plate stamped into the panel.
@@ -15,17 +20,6 @@ function buildSolidHexGeometry(radius, depth) {
     bevelEnabled: false,
     curveSegments: 1,
   });
-}
-
-export function pointInPolygon(x, y, poly) {
-  let inside = false;
-  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-    const xi = poly[i].x, yi = poly[i].y;
-    const xj = poly[j].x, yj = poly[j].y;
-    const hit = ((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
-    if (hit) inside = !inside;
-  }
-  return inside;
 }
 
 function distToSegment(px, py, ax, ay, bx, by) {
