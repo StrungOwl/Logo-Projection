@@ -374,7 +374,12 @@ export function createSparkSystem({
     // temporarily release sparks from stroke-snapping (used during the row
     // cascade so sparks drift freely instead of snapping to a moving row's
     // original, now-stale vertex positions).
-    const snapBlend = 1 - Math.exp(-snapStrength * api.snapScale * dt);
+    const effectiveSnap = snapStrength * api.snapScale;
+    const snapBlend = effectiveSnap > 0 ? 1 - Math.exp(-effectiveSnap * dt) : 0;
+    // Below this threshold the per-frame position blend is sub-pixel — skip
+    // the two nearest-vertex grid searches entirely. Saves the dominant
+    // per-spark cost during the fractal dive (snapScale → 0).
+    const snapActive = effectiveSnap > 0.1;
 
     // QUALITY scaling — only iterate the first `activeCount` sparks per
     // frame. The trailing sparks keep their last-written attribute values
@@ -433,13 +438,16 @@ export function createSparkSystem({
       // Fall back to absolute-nearest only when no inward candidate exists
       // within the search radius (i.e. the spark is deep enough that it
       // should just settle and retire).
-      // Stroke snap + junction redirect — skipped entirely when snapStrength
-      // is 0 so the system runs as a pure gravity field (used by the central
-      // companion layer, which streams straight to centre with no awareness
-      // of the pattern strokes).
-      if (snapStrength > 0) {
-        let nearestId = findNearestVertex(cloud, nx, ny, 3, distCentre);
-        if (nearestId < 0) nearestId = findNearestVertex(cloud, nx, ny, 3);
+      // Stroke snap + junction redirect — skipped entirely when snap is off
+      // (snapStrength=0 for the central companion layer that runs as a pure
+      // gravity field) OR when api.snapScale has been pulled near zero by
+      // callers (during the fractal dive) so the per-frame blend would be a
+      // no-op anyway. maxCells=2 → 25 cells per query (was 3 → 49); grid cell
+      // is ~5% of pattern radius and stroke vertex density is high, so the
+      // smaller radius still finds the nearest vertex reliably.
+      if (snapActive) {
+        let nearestId = findNearestVertex(cloud, nx, ny, 2, distCentre);
+        if (nearestId < 0) nearestId = findNearestVertex(cloud, nx, ny, 2);
         if (nearestId >= 0) {
           const tx = cloud.xs[nearestId], ty = cloud.ys[nearestId];
           nx = nx + (tx - nx) * snapBlend;
