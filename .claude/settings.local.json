@@ -18,5 +18,9 @@
       "mcp__claude_ai_Google_Drive__*",
       "mcp__plugin_figma_figma__*"
     ]
-  }
+  },
+  "enabledMcpjsonServers": [
+    "playwright"
+  ],
+  "enableAllProjectMcpServers": true
 }

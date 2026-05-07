@@ -293,10 +293,16 @@ export function tick(t, dt) {
   // updaters drive the same per-tile mesh.position/scale, so only one
   // can run at a time. The fractal updater self-cleans when viewMode
   // isn't 'pattern' (parks tiles back at rest, fades back layers out).
-  if (ctx.updateRotations)  ctx.updateRotations(t);
   const fractalActive = mode === 'fractalPattern'
                      && ctx.updateFractalZoom
                      && !(ANIM.fractalZoom && ANIM.fractalZoom.enabled === false);
+  // Skip updateRotations during the fractal dive — originals are at
+  // opacity 0 there, so writing rotation.z on hundreds of hidden meshes
+  // each frame just dirties their world matrices for nothing. intro /
+  // landing / rest keep originals visible, so rotations still run.
+  const fractalDiving = fractalActive && ctx.fractalState
+                     && ctx.fractalState.phase === 'dive';
+  if (ctx.updateRotations && !fractalDiving) ctx.updateRotations(t);
   if (ctx.updateFractalZoom) ctx.updateFractalZoom(t, dt);
   if (ctx.updateRowCascade && !fractalActive) ctx.updateRowCascade(t, dt);
   // While the fractal lens drives pattern mode, project its λ-derived

@@ -456,7 +456,7 @@ export const ANIM = {
     // opacity ≈ 0) back to r = -N/2 (tiny, opacity ≈ 0) the seam is
     // hidden by the envelope being zero at both ends — true infinite-
     // zoom feel without ever repeating the snap.
-    cloneCount:        7,     // total clones. 7 keeps 3-4 simultaneously
+    cloneCount:        5,     // total clones. 5 keeps 3-4 simultaneously
                               // visible (one at peak, one or two emerging
                               // from centre, one or two growing past peak
                               // and dissolving) — reads as "many concentric
