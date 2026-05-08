@@ -82,6 +82,45 @@ let lastViewMode    = null;
 let lastBrightness  = NaN;
 let lastEnvIntensity = NaN;
 
+// Gate-frame "fiery silhouette" override (mode 6 flameOnly). Captures
+// the frame's base gradient + color on first invocation so we can
+// restore them on exit. Per-frame emissive pulse driven by
+// smoothedFlameEnv lives in tick() (see flame envelope block below).
+let gateFrameBase = null;
+const FIRE_GRAD_DARK   = [0.55, 0.04, 0.00];   // deep ember red
+const FIRE_GRAD_BRIGHT = [1.00, 0.55, 0.12];   // hot yellow-orange tip
+const FIRE_BASE_HEX    = 0x331100;             // dark molten diffuse
+const FIRE_EMISSIVE    = 0xFF5510;             // glowing fire emissive
+function applyGateFrameTint(flameOn) {
+  const g = ctx.gateFrameGroup;
+  if (!g || !g.userData) return;
+  const mat  = g.userData.frameMaterial;
+  const grad = g.userData.gradUniforms;
+  if (!mat || !grad) return;
+  if (!gateFrameBase) {
+    gateFrameBase = {
+      darkV:             grad.uGradDark.value.clone(),
+      brightV:           grad.uGradBright.value.clone(),
+      baseHex:           mat.color.getHex(),
+      emissiveHex:       mat.emissive.getHex(),
+      emissiveIntensity: mat.emissiveIntensity || 0,
+    };
+  }
+  if (flameOn) {
+    grad.uGradDark.value.set(...FIRE_GRAD_DARK);
+    grad.uGradBright.value.set(...FIRE_GRAD_BRIGHT);
+    mat.color.setHex(FIRE_BASE_HEX);
+    mat.emissive.setHex(FIRE_EMISSIVE);
+    mat.emissiveIntensity = 0.7;
+  } else {
+    grad.uGradDark.value.copy(gateFrameBase.darkV);
+    grad.uGradBright.value.copy(gateFrameBase.brightV);
+    mat.color.setHex(gateFrameBase.baseHex);
+    mat.emissive.setHex(gateFrameBase.emissiveHex);
+    mat.emissiveIntensity = gateFrameBase.emissiveIntensity;
+  }
+}
+
 loadLogo().then((logo) => {
   ctx.galaxyMat     = logo.galaxyMat;
   ctx.logoMaterials = logo.logoMaterials;
@@ -184,16 +223,19 @@ export function tick(t, dt) {
   const showFlowers   = (mode === 'visualSequence' || mode === 'flowers');
   const showFireplace = (mode === 'fireplaceOne');
   const showCarved    = (mode === 'fireplaceTwo');
-  // Both fireplace modes share the central flame, fireplace voussoir
-  // ring, and the fade-to-black galaxy backdrop. They differ only in
-  // which arch brick layer is shown — archGroup (fireplaceOne) vs
-  // archCarvedGroup (fireplaceTwo).
+  const showFlameOnly = (mode === 'flameOnly');
+  // Fireplace modes share the central flame, voussoir ring, and starry
+  // backdrop. flameOnly (key 6) shares only the flame + dark backdrop —
+  // no bricks, no voussoir; the gate-frame stays on and is recolored
+  // fiery so the silhouette reads as molten metal around the flame.
   const showFireOrCarved = showFireplace || showCarved;
+  const showFlame        = showFireOrCarved || showFlameOnly;
+  const fireLikeMode     = showFireOrCarved || showFlameOnly;
   if (ctx.panelGroup)   ctx.panelGroup.visible   = showPanel;
   if (ctx.latticeGroup) ctx.latticeGroup.visible = showLattice;
   if (ctx.archGroup)    ctx.archGroup.visible    = showFireplace;
   if (ctx.archCarvedGroup) ctx.archCarvedGroup.visible = showCarved;
-  if (ctx.flameGroup)   ctx.flameGroup.visible   = showFireOrCarved;
+  if (ctx.flameGroup)   ctx.flameGroup.visible   = showFlame;
   if (ctx.fireplaceGroup) ctx.fireplaceGroup.visible = showFireOrCarved;
   // Hide the smooth extruded gate-frame ring when fireplace/carved mode
   // wants to own the perimeter look — set ANIM.arch.hideGateFrame in
@@ -208,14 +250,14 @@ export function tick(t, dt) {
   // mode is active.
   if (ctx.flameLights) {
     for (let i = 0; i < ctx.flameLights.length; i++) {
-      ctx.flameLights[i].visible = showFireOrCarved;
+      ctx.flameLights[i].visible = showFlame;
     }
   }
-  // Hide the ember + white particle streams in fireplace/carved mode.
-  // They emit from the inner-star outline and would visually clutter /
-  // compete with the flame body in the same negative-space region.
+  // Hide the ember + white particle streams in fire-like modes (fireplace
+  // and flameOnly). They emit from the inner-star outline and would clutter
+  // the flame body in the same negative-space region.
   if (ctx.particleMats) {
-    const showParticles = !showFireOrCarved;
+    const showParticles = !fireLikeMode;
     if (ctx.particleMats.emberPoints) ctx.particleMats.emberPoints.visible = showParticles;
     if (ctx.particleMats.whitePoints) ctx.particleMats.whitePoints.visible = showParticles;
   }
@@ -228,9 +270,10 @@ export function tick(t, dt) {
   // writing it every frame triggers a PBR recompute even though the
   // value is identical.
   if (mode !== lastViewMode) {
-    const stripEnv = showFireOrCarved
+    const stripEnv = fireLikeMode
                   && (ANIM.flame && ANIM.flame.stripEnvironment !== false);
     scene.environment = stripEnv ? null : baseEnvironment;
+    applyGateFrameTint(showFlameOnly);
     lastViewMode = mode;
   }
   for (let i = 0; i < ctx.overlayFlowerRoots.length; i++) {
@@ -268,16 +311,22 @@ export function tick(t, dt) {
     const factor = lb.brightnessMin + (lb.brightnessMax - lb.brightnessMin) * k01;
     // In fireplace modes, drop envMapIntensity heavily so the metallic
     // env reflection doesn't wash the body warm-grey on its own.
-    const envI = showFireOrCarved
+    const envI = fireLikeMode
       ? ((ANIM.flame && ANIM.flame.envMapIntensity) ?? 0.08)
       : 1.0;
-    if (Math.abs(factor - lastBrightness) > 1e-4 || envI !== lastEnvIntensity) {
-      ctx.baseColorScratch.set(COLORS.logo.base).multiplyScalar(factor);
+    // flameOnly (key 6) forces the logo body to pure black so the
+    // silhouette reads as a void framing the central flame. envI is
+    // already at the fireplace-low value so any residual env reflection
+    // is killed too.
+    const effectiveFactor = showFlameOnly ? 0 : factor;
+    if (Math.abs(effectiveFactor - lastBrightness) > 1e-4 || envI !== lastEnvIntensity) {
+      if (showFlameOnly) ctx.baseColorScratch.setRGB(0, 0, 0);
+      else               ctx.baseColorScratch.set(COLORS.logo.base).multiplyScalar(factor);
       for (let i = 0; i < ctx.logoMaterials.length; i++) {
         ctx.logoMaterials[i].color.copy(ctx.baseColorScratch);
         ctx.logoMaterials[i].envMapIntensity = envI;
       }
-      lastBrightness = factor;
+      lastBrightness = effectiveFactor;
       lastEnvIntensity = envI;
     }
   }
@@ -347,12 +396,21 @@ export function tick(t, dt) {
     smoothedFlameEnv += (instant - smoothedFlameEnv) * k;
   }
 
+  // In flameOnly mode (key 6), pulse the gate-frame's emissive intensity
+  // with the smoothed flame envelope so the fiery silhouette breathes
+  // with the fire flicker. The base color + gradient swap was applied
+  // once on mode entry by applyGateFrameTint.
+  if (showFlameOnly && ctx.gateFrameGroup && ctx.gateFrameGroup.userData) {
+    const mat = ctx.gateFrameGroup.userData.frameMaterial;
+    if (mat) mat.emissiveIntensity = 0.45 + 0.6 * smoothedFlameEnv;
+  }
+
   // Galaxy starry-night blend — lerps toward 1 in fireplace mode (black
   // sky + denser flickering stars behind the flame), toward 0 otherwise
   // (warm nebula). Eased exponentially using the configured fadeSpeed
   // (1/sec).
   if (ctx.galaxyMat && ctx.galaxyMat.uniforms.uStarryMode) {
-    const targetStarry = showFireOrCarved ? 1.0 : 0.0;
+    const targetStarry = fireLikeMode ? 1.0 : 0.0;
     const fadeSpeed = (ANIM.flame && ANIM.flame.galaxyStarry && ANIM.flame.galaxyStarry.fadeSpeed) || 1.5;
     const blend = 1 - Math.exp(-fadeSpeed * dt);
     const u = ctx.galaxyMat.uniforms.uStarryMode;
@@ -507,6 +565,7 @@ if (typeof window !== 'undefined') {
       const modeByKey = {
         Digit0: 'visualSequence', Digit1: 'fractalPattern', Digit2: 'hexagons',
         Digit3: 'flowers',         Digit4: 'fireplaceOne',   Digit5: 'fireplaceTwo',
+        Digit6: 'flameOnly',
       };
       const next = modeByKey[e.code];
       if (next) {

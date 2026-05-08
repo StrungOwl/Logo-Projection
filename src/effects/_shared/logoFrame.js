@@ -206,5 +206,10 @@ export function createGateFrame({
     }
   }
 
+  // Expose the shared material + gradient uniforms so callers (main.js)
+  // can recolor the frame for special modes (e.g. fiery silhouette in
+  // flame-only mode 6) without re-traversing the group.
+  group.userData.frameMaterial = mat;
+  group.userData.gradUniforms  = gradUniforms;
   return group;
 }
