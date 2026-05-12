@@ -781,6 +781,12 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
         mesh.position.set(slot.x, slot.y, wallZ);
         wall_.add(mesh);
         meshes_.push(mesh);
+        // Per-tile evolution seeds (effect-2 long-form variation):
+        // random phase + ±40% speed scatter, used in the brick-wall
+        // per-frame LFO to wiggle each tile's brightness with its own
+        // phase. Picked at build so neighbours never sync up.
+        mesh.userData.evoSeed   = Math.random() * Math.PI * 2;
+        mesh.userData.evoFactor = 1 + (Math.random() - 0.5) * 0.8;
 
         // Every tile gets an unlit back disc matching the front color
         // (drift-tracked per-frame). MeshBasicMaterial with
@@ -1038,6 +1044,18 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
   let _hexNextSwitchT = -1;     // absolute t when the next swap fires
   let _hexTransStart  = -1;     // -1 = stable; else t at which fade began
 
+  // --- Brick-wall evolution state (effect-2 long-form variation) -------
+  // Pre-allocated flash pool so the per-frame scheduler has zero
+  // allocations. A "flash" is a transient bell-curve brightness boost
+  // on a randomly-chosen visible-wall hex. Slots are reused once their
+  // envelope completes (hex set back to null).
+  const _evoMaxFlashes = 5;
+  const _evoFlashes = new Array(_evoMaxFlashes);
+  for (let i = 0; i < _evoMaxFlashes; i++) {
+    _evoFlashes[i] = { hex: null, start: 0, dur: 1, intensity: 0 };
+  }
+  let _evoLastT = -1;
+
   function updateOverlay(t) {
     const cfg = ANIM.overlay;
     if (!cfg || cfg.enabled === false) {
@@ -1268,6 +1286,64 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
         _hexDriftColor.copy(_hexBaseColor);
       }
 
+      // --- Brick-wall evolution: amplitude-only layers -------------------
+      // Layered on top of the existing colorDrift + domino so the wall
+      // evolves while keeping its look + feel. Touches NO timing/phase
+      // state (domino clock, switch dwell timer, brickW cycle) — only
+      // material.color magnitude — so transitions never stutter.
+      //
+      //   * Macro LFO multiplies _hexDriftColor by 1 ± macroAmp on a slow
+      //     period. Affects both front + back disc.
+      //   * Per-hex slow sine (random seed + ±40% rate) wiggles each
+      //     tile's brightness independently — applied below in the
+      //     per-tile loop. Read here so the constants are hoisted out.
+      //   * Rare ember flashes: Poisson-style scheduler picks a random
+      //     visible-wall hex every few seconds; each scheduled flash is
+      //     a bell-curve brightness boost over ~1s. Pool is pre-allocated
+      //     so the scheduler does zero per-frame allocations.
+      const evoCfg = brickCfg.evolution || {};
+      const evoOn  = isHexMode && evoCfg.enabled !== false;
+      if (evoOn) {
+        const mAmp = evoCfg.macroAmp ?? 0.10;
+        const mP   = Math.max(evoCfg.macroPeriod ?? 70, 0.001);
+        _hexDriftColor.multiplyScalar(1 + mAmp * Math.sin(t * Math.PI * 2 / mP));
+
+        const dtRoll = (_evoLastT < 0) ? 0 : Math.max(0, t - _evoLastT);
+        _evoLastT = t;
+        const flashRate = evoCfg.flashRate ?? 0.45;
+        if (Math.random() < flashRate * dtRoll) {
+          let free = -1;
+          for (let i = 0; i < _evoMaxFlashes; i++) {
+            if (_evoFlashes[i].hex === null) { free = i; break; }
+          }
+          if (free >= 0) {
+            const fmeshes = (_hexSizeMode === 'small')
+              ? brickHexMeshesSmall : brickHexMeshes;
+            if (fmeshes.length) {
+              const slot = _evoFlashes[free];
+              slot.hex   = fmeshes[Math.floor(Math.random() * fmeshes.length)];
+              slot.start = t;
+              const dMin = evoCfg.flashDurMin ?? 0.7;
+              const dMax = evoCfg.flashDurMax ?? 1.9;
+              slot.dur   = dMin + Math.random() * (dMax - dMin);
+              const iMin = evoCfg.flashIntensityMin ?? 0.5;
+              const iMax = evoCfg.flashIntensityMax ?? 1.2;
+              slot.intensity = iMin + Math.random() * (iMax - iMin);
+            }
+          }
+        }
+        // Free completed slots (set hex = null so they can be reused).
+        for (let i = 0; i < _evoMaxFlashes; i++) {
+          const f = _evoFlashes[i];
+          if (f.hex !== null && (t - f.start) / f.dur >= 1) f.hex = null;
+        }
+      } else {
+        _evoLastT = -1;
+        for (let i = 0; i < _evoMaxFlashes; i++) _evoFlashes[i].hex = null;
+      }
+      const evoWiggleAmp   = evoOn ? (evoCfg.wiggleAmp   ?? 0.18) : 0;
+      const evoWiggleSpeed = evoCfg.wiggleSpeed ?? 0.60;
+
       const baseOpacity = isHexMode ? (brickCfg.baseOpacity ?? 1) : 1;
 
       const backCfgFrame = brickCfg.backFace || {};
@@ -1413,6 +1489,24 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
 
         for (const hex of meshes) {
           hex.material.color.copy(_hexDriftColor);
+          if (evoOn) {
+            // Per-tile slow sine on RGB with per-hex seed + speed factor.
+            // Amplitude-only so the domino phase + size-switch timing
+            // can't be disturbed.
+            const wig = 1 + evoWiggleAmp * Math.sin(
+              t * evoWiggleSpeed * hex.userData.evoFactor + hex.userData.evoSeed);
+            hex.material.color.multiplyScalar(wig);
+            // Layered transient flashes (bell-curve envelope). Touches
+            // only colour magnitude on the targeted hex this frame.
+            for (let fi = 0; fi < _evoMaxFlashes; fi++) {
+              const f = _evoFlashes[fi];
+              if (f.hex !== hex) continue;
+              const u = (t - f.start) / f.dur;
+              if (u >= 0 && u < 1) {
+                hex.material.color.multiplyScalar(1 + Math.sin(u * Math.PI) * f.intensity);
+              }
+            }
+          }
           hex.scale.setScalar(wallScale);
           const step = hex.userData.flipStep;
           const ph   = (hexElapsed - step * hexTrigger) / hexFall;

@@ -13,6 +13,7 @@ import { addOverlay } from './effects/flowers/starFans.js';
 import { addParticles, updateParticles } from './effects/_shared/streams.js';
 import { toggleDominoes, updateDominoes } from './effects/fireplaceTwo/dominoAnim.js';
 import { tickShimmer } from './shaders/gold-shimmer.js';
+import { applyLogoStarry, tickLogoStarry } from './shaders/logo-starry.js';
 import { cycleQuality } from './quality.js';
 
 const { scene, camera, renderer, controls } = createScene();
@@ -36,6 +37,7 @@ const ctx = {
   updateFractalZoom:  null,
   fractalState:       null,
   updateRotations:    null,
+  updateLatticeEvolution: null,
   updateOverlay:      null,
   // Per-effect group handles. Keyed visibility (0–5 view modes) reads
   // these in tick() so the user can solo a single layer for tuning.
@@ -75,6 +77,12 @@ const ctx = {
 // pulse so the starry backdrop breathes with the flame's broader envelope
 // without strobing on every per-frame flicker spike.
 let smoothedFlameEnv = 1.0;
+
+// Logo starry blend 0..1 — driven by viewMode. Lerps toward 1 in
+// flameOnly (key 6) so the starry shader fades onto the logo body,
+// and toward 0 elsewhere. Same value also dims the galaxy backdrop
+// plate so the two layers cross-fade.
+let logoStarryBlend = 0;
 
 // Cached state so per-frame work skips when nothing relevant changed.
 // Without these, main.js used to write the same scene.environment swap,
@@ -127,6 +135,12 @@ loadLogo().then((logo) => {
   ctx.galaxyMat     = logo.galaxyMat;
   ctx.logoMaterials = logo.logoMaterials;
 
+  // Inject the starry-night shader patch onto every logo material so
+  // they can emit a twinkling starfield (gated by uStarryBlend, lerped
+  // in tick()). All materials share the same uniforms — one tick driver
+  // updates the field for all of them.
+  for (const m of ctx.logoMaterials) applyLogoStarry(m);
+
   const patternResult = addEffects(logo.logoMesh, logo.meta, renderer);
   ctx.strokeTimeUniforms.push(...patternResult.strokeTimeUniforms);
   ctx.sparkSystems.push(...patternResult.sparkSystems);
@@ -135,6 +149,7 @@ loadLogo().then((logo) => {
   ctx.updateFractalZoom  = patternResult.updateFractalZoom;
   ctx.fractalState       = patternResult.fractalState;
   ctx.updateRotations    = patternResult.updateRotations;
+  ctx.updateLatticeEvolution = patternResult.updateLatticeEvolution;
   ctx.panelGroup         = patternResult.panelGroup;
   ctx.latticeGroup       = patternResult.latticeGroup;
   ctx.gateFrameGroup     = patternResult.gateFrameGroup;
@@ -195,7 +210,14 @@ export function tick(t, dt) {
     const pulseAmount = (ANIM.flame && ANIM.flame.galaxyStarry
                          && ANIM.flame.galaxyStarry.pulseAmount) ?? 0;
     const pulseMul = 1 - galStarry * pulseAmount * (1 - smoothedFlameEnv);
-    ctx.galaxyMat.uniforms.uBrightness.value = targetBright * pulseMul;
+    // Staggered cross-fade: galaxy plate fades out over the FIRST half
+    // of logoStarryBlend (0 → 0.5), then logo stars fade in over the
+    // SECOND half (0.5 → 1.0). The shader-side blend driver below uses
+    // the back-loaded half. Without this stagger both layers were dim
+    // at the same moment, leaving a visible flicker-of-nothing.
+    const galaxyFadeOut = Math.min(logoStarryBlend / 0.5, 1.0);
+    const galaxyMul = 1 - galaxyFadeOut;
+    ctx.galaxyMat.uniforms.uBrightness.value = targetBright * pulseMul * galaxyMul;
   }
 
   // Skip stream physics in fireplace modes — the streams emit from the
@@ -228,6 +250,21 @@ export function tick(t, dt) {
   const showFireplace = (mode === 'fireplaceOne');
   const showCarved    = (mode === 'fireplaceTwo');
   const showFlameOnly = (mode === 'flameOnly');
+  // Lerp logoStarryBlend toward 1 in flameOnly mode, 0 elsewhere. Slow
+  // fadeSpeed gives a few-second cross-fade between the galaxy plate and
+  // the logo-body starry shader. The blend is split into two halves
+  // (galaxy fades first, then logo stars come up) — see the galaxy
+  // uBrightness block above for the front-half curve.
+  {
+    const target = showFlameOnly ? 1 : 0;
+    const fadeSpeed = 0.15;
+    const k = 1 - Math.exp(-fadeSpeed * dt);
+    logoStarryBlend += (target - logoStarryBlend) * k;
+    // Logo stars fade in only over the SECOND half of the blend so the
+    // galaxy can fully disappear before the body's stars become visible.
+    const logoStarsBlend = Math.max(0, (logoStarryBlend - 0.5) / 0.5);
+    tickLogoStarry(t, logoStarsBlend);
+  }
   // Fireplace modes share the central flame, voussoir ring, and starry
   // backdrop. flameOnly (key 6) shares only the flame + dark backdrop —
   // no bricks, no voussoir; the gate-frame stays on and is recolored
@@ -357,6 +394,10 @@ export function tick(t, dt) {
   const fractalDiving = fractalActive && ctx.fractalState
                      && ctx.fractalState.phase === 'dive';
   if (ctx.updateRotations && !fractalDiving) ctx.updateRotations(t);
+  // Lattice evolution (noise hot patches + macro LFOs + coherence
+  // crossfade) is amplitude-only; it can run unconditionally regardless
+  // of view mode or cascade state without disturbing the pulse phase.
+  if (ctx.updateLatticeEvolution) ctx.updateLatticeEvolution(t);
   if (ctx.updateFractalZoom) ctx.updateFractalZoom(t, dt);
   if (ctx.updateRowCascade && !fractalActive) ctx.updateRowCascade(t, dt);
   // While the fractal lens drives pattern mode, project its λ-derived

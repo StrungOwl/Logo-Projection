@@ -74,7 +74,41 @@ export const ANIM = {
   latticeHex: { brightnessMin: 0.25, brightnessMax: 1.6,
                 emissiveMin:   0.0,  emissiveMax: 2.8,
                 pulseSpeed:    0.55, speedVariance: 0.6,
-                colorAtMin: '#1A0800', colorAtMax: '#FFB040' },
+                colorAtMin: '#1A0800', colorAtMax: '#FFB040',
+                // Long-form evolution on top of the per-hex pulse so the
+                // wall changes across long viewings while keeping its
+                // look + feel. All three layers are stutter-free by
+                // construction (see hexagons.js for the proof):
+                //   * Spatial value-noise field on (x, y, t) drifts
+                //     "hot patches" of brighter/dimmer hexes across the
+                //     wall. Driven by a continuous clock independent of
+                //     uPulseTime, so it keeps moving during cascade.
+                //   * Macro LFOs gently modulate emissive peak, bright
+                //     peak, and the warm-color RGB balance. All applied
+                //     post-sine — never touches phase.
+                //   * Coherence crossfade: the shader computes both a
+                //     scattered and a coherent pulse from the SAME
+                //     phase base and mixes them. uCoherence wanders
+                //     between 0.2 (mostly synced) and 1.0 (fully
+                //     scattered) on a slow cycle.
+                // Periods are deliberately coprime (45 / 55 / 65 / 80 s)
+                // so no two LFOs ever lock up. Set `enabled: false` to
+                // freeze the wall at its baseline behavior.
+                evolution: {
+                  enabled:          true,
+                  noiseAmp:         0.30,
+                  noiseScale:       0.10,
+                  noiseSpeed:       0.04,
+                  coherenceMin:     0.20,
+                  coherenceMax:     1.00,
+                  coherencePeriod: 65.0,
+                  emissivePulse:    0.25,
+                  emissivePeriod:  45.0,
+                  brightPulse:      0.15,
+                  brightPeriod:    55.0,
+                  colorPulse:       0.10,
+                  colorPeriod:     80.0,
+                } },
 
   emberParticles: { cycleDuration: 7.0,
                     bodyColor: '#FF851A', coreColor: '#FFE08C',
@@ -364,6 +398,36 @@ export const ANIM = {
         enabled:       true,
         cycleDuration: 18.0,    // seconds for one full base→deep→base loop
         deepColor:     '#5C0A04', // deep oxblood-red at the cycle's far end
+      },
+      // Long-form evolution on top of the existing color drift, domino,
+      // and size-switch — gives the wall surprising-but-coherent variation
+      // across long viewings. Three amplitude-only layers; the domino
+      // phase clock + size-switch timer + brickW cycle are NEVER touched,
+      // so transitions stay stutter-free:
+      //   * macroAmp / macroPeriod — slow ±fraction LFO on the wall's
+      //     overall brightness (multiplies `_hexDriftColor` once per
+      //     frame, so front + back disc track together).
+      //   * wiggleAmp / wiggleSpeed — per-tile slow sine with random
+      //     phase + ±40 % rate scatter; gives a gentle, non-uniform
+      //     "twinkle" feel across the wall without disturbing the
+      //     coherent base palette.
+      //   * flashRate / flashDur* / flashIntensity* — rare ember
+      //     flashes (Poisson scheduler, up to 5 concurrent). Each
+      //     flash is a 0.7-1.9 s bell-curve brightness boost on a
+      //     randomly-chosen tile of the currently-active wall.
+      // Set `enabled: false` to lock the wall at its pre-evolution
+      // appearance (matches the legacy look exactly).
+      evolution: {
+        enabled:            true,
+        macroAmp:           0.10,
+        macroPeriod:       70.0,
+        wiggleAmp:          0.18,
+        wiggleSpeed:        0.60,
+        flashRate:          0.45,   // events per second
+        flashDurMin:        0.7,
+        flashDurMax:        1.9,
+        flashIntensityMin:  0.5,
+        flashIntensityMax:  1.2,
       },
     },
   },

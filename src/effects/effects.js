@@ -136,7 +136,9 @@ export function addEffects(logoMesh, meta, renderer) {
     pulseEmissiveMax:   ANIM.latticeHex.emissiveMax,
     pulseColorA:        hexToRgb(ANIM.latticeHex.colorAtMin),
     pulseColorB:        hexToRgb(ANIM.latticeHex.colorAtMax),
+    evolution:          ANIM.latticeHex.evolution,
   });
+  const updateLatticeEvolution = underlay.userData.updateEvolution;
   underlay.name = 'lattice-underlay';
   underlay.position.set(cx, cy, maxZ + 0.005);
   logoMesh.add(underlay);
@@ -717,6 +719,7 @@ export function addEffects(logoMesh, meta, renderer) {
 
   return { strokeTimeUniforms, sparkSystems, patternsToRefresh,
            updateRowCascade, cascadeState, updateRotations,
+           updateLatticeEvolution,
            updateFractalZoom, fractalState,
            panelGroup: panel,
            latticeGroup: underlay,

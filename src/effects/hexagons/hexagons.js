@@ -147,6 +147,15 @@ export function createLatticeUnderlay({
   // Per-hex pulse uniforms. uPulseSeed + uPulseSpeedFactor are swapped
   // per draw by each mesh's onBeforeRender so every hex cycles at a
   // different phase AND period while sharing one material.
+  //
+  // Evolution uniforms layered on top:
+  //   uEvoTime    — continuous global clock for the noise field (does NOT
+  //                 freeze during cascade motion, unlike uPulseTime).
+  //   uCoherence  — 0 (fully synced wall) → 1 (fully scattered). Mixes the
+  //                 scattered and coherent sine results AFTER computing both
+  //                 from the same uPulseTime, so changing it cannot jump
+  //                 the phase of either component.
+  //   uNoise*     — spatial value-noise modulator on bright/emissive.
   const pulseUniforms = {
     uPulseTime:        { value: 0 },
     uPulseSpeed:       { value: pulseSpeed },
@@ -158,6 +167,11 @@ export function createLatticeUnderlay({
     uPulseEmissiveMax: { value: pulseEmissiveMax },
     uPulseColorA:      { value: new THREE.Vector3(...pulseColorA) },
     uPulseColorB:      { value: new THREE.Vector3(...pulseColorB) },
+    uEvoTime:          { value: 0 },
+    uCoherence:        { value: 1 },
+    uNoiseAmp:         { value: evolution.enabled ? evolution.noiseAmp   : 0 },
+    uNoiseScale:       { value: evolution.noiseScale },
+    uNoiseSpeed:       { value: evolution.noiseSpeed },
   };
 
   if (fadeOuterR > 0 || maxOpacity < 1) {
@@ -249,21 +263,55 @@ export function createLatticeUnderlay({
          uniform float uPulseEmissiveMax;
          uniform vec3  uPulseColorA;
          uniform vec3  uPulseColorB;
+         uniform float uEvoTime;
+         uniform float uCoherence;
+         uniform float uNoiseAmp;
+         uniform float uNoiseScale;
+         uniform float uNoiseSpeed;
          varying vec3  vGradWP;
          varying vec2  vPanelXY;
+         // Cheap hash → 2D value noise. Used for slow-drifting "hot
+         // patches" on the wall (uNoiseScale = patch frequency,
+         // uNoiseSpeed = patch drift). Output ∈ [0, 1].
+         float _hash21(vec2 p) {
+           p = fract(p * vec2(123.34, 456.21));
+           p += dot(p, p + 45.32);
+           return fract(p.x * p.y);
+         }
+         float _vnoise2(vec2 p) {
+           vec2 i = floor(p), f = fract(p);
+           vec2 u = f * f * (3.0 - 2.0 * f);
+           float a = _hash21(i);
+           float b = _hash21(i + vec2(1.0, 0.0));
+           float c = _hash21(i + vec2(0.0, 1.0));
+           float d = _hash21(i + vec2(1.0, 1.0));
+           return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+         }
          ${hullClipCommon}`)
       .replace('#include <color_fragment>',
         `#include <color_fragment>
          ${hullClipCall}
          float _gt = clamp((vGradWP.y - uGradMinY) / max(uGradMaxY - uGradMinY, 1e-4), 0.0, 1.0);
-         float _raw = 0.5 + 0.5 * sin(uPulseTime * uPulseSpeed * uPulseSpeedFactor + uPulseSeed);
+         // Coherent + scattered pulses share the same uPulseTime * uPulseSpeed
+         // phase base, so crossfading via uCoherence cannot jump the
+         // sine argument — the wall can drift between unison and scatter
+         // without any phase stutter.
+         float _scat = 0.5 + 0.5 * sin(uPulseTime * uPulseSpeed * uPulseSpeedFactor + uPulseSeed);
+         float _coh  = 0.5 + 0.5 * sin(uPulseTime * uPulseSpeed);
+         float _raw  = mix(_coh, _scat, clamp(uCoherence, 0.0, 1.0));
          // smoothstep applied twice = quintic-ish ease-in-out: each hex
          // sits longer at its dim and bright extremes with a snappier glide
          // through the middle, so the pulse reads as a slow held breath
          // rather than constant sweeping motion.
          float _pk = smoothstep(0.0, 1.0, smoothstep(0.0, 1.0, _raw));
-         float _pBright = mix(uPulseBrightMin, uPulseBrightMax, _pk);
-         float _pEmiss  = mix(uPulseEmissiveMin, uPulseEmissiveMax, _pk);
+         // Spatial noise modulator. Drives off uEvoTime (continuous) so it
+         // keeps drifting through cascade motion; multiplied POST-sine so
+         // changing amplitude/scale/speed cannot disturb phase.
+         vec2  _np    = vPanelXY * uNoiseScale + vec2(uEvoTime * uNoiseSpeed,
+                                                       uEvoTime * uNoiseSpeed * 0.73);
+         float _nm    = 1.0 + uNoiseAmp * (_vnoise2(_np) - 0.5) * 2.0;
+         float _pBright = mix(uPulseBrightMin, uPulseBrightMax, _pk) * _nm;
+         float _pEmiss  = mix(uPulseEmissiveMin, uPulseEmissiveMax, _pk) * _nm;
          vec3  _pColor  = mix(uPulseColorA, uPulseColorB, _pk);
          diffuseColor.rgb = _pColor * mix(uGradDark, uGradBright, _gt) * _pBright;`)
       .replace('#include <emissivemap_fragment>',
@@ -393,5 +441,54 @@ export function createLatticeUnderlay({
   }
 
   group.userData.rowCount = rows;
+
+  // --- Long-form evolution updater ---------------------------------------
+  // Captured base values so LFOs oscillate around the configured settings
+  // without drift. Three layers, all stutter-free:
+  //   1. Sets uEvoTime → drives the spatial noise field in the fragment
+  //      shader. Advances every frame (no cascade freeze).
+  //   2. LFOs uPulseEmissiveMax / uPulseBrightMax / uPulseColorB. These
+  //      are all multiplied POST-sine in the shader, so changing them at
+  //      any rate cannot shift the pulse phase.
+  //   3. LFOs uCoherence. The shader mixes a scattered and coherent pulse
+  //      that share the same uPulseTime base, so this crossfade also
+  //      cannot disturb phase.
+  // The pulse phase argument (uPulseTime, uPulseSpeed, uPulseSpeedFactor,
+  // uPulseSeed) is NEVER touched here — that is the stutter guarantee.
+  const baseEmissiveMax = pulseEmissiveMax;
+  const baseBrightMax   = pulseBrightMax;
+  const baseColorBR     = pulseColorB[0];
+  const baseColorBG     = pulseColorB[1];
+  const baseColorBB     = pulseColorB[2];
+  const evoEnabled        = !!evolution.enabled;
+  const evoEmissivePulse  = evolution.emissivePulse;
+  const evoEmissivePeriod = Math.max(evolution.emissivePeriod, 1e-3);
+  const evoBrightPulse    = evolution.brightPulse;
+  const evoBrightPeriod   = Math.max(evolution.brightPeriod,   1e-3);
+  const evoColorPulse     = evolution.colorPulse;
+  const evoColorPeriod    = Math.max(evolution.colorPeriod,    1e-3);
+  const evoCohMin         = evolution.coherenceMin;
+  const evoCohMax         = evolution.coherenceMax;
+  const evoCohPeriod      = Math.max(evolution.coherencePeriod, 1e-3);
+  const TAU = Math.PI * 2;
+  group.userData.updateEvolution = (t) => {
+    pulseUniforms.uEvoTime.value = t;
+    if (!evoEnabled) return;
+    const cohN = 0.5 + 0.5 * Math.sin(t * TAU / evoCohPeriod);
+    pulseUniforms.uCoherence.value = evoCohMin + (evoCohMax - evoCohMin) * cohN;
+    pulseUniforms.uPulseEmissiveMax.value =
+      baseEmissiveMax * (1 + evoEmissivePulse * Math.sin(t * TAU / evoEmissivePeriod));
+    pulseUniforms.uPulseBrightMax.value =
+      baseBrightMax * (1 + evoBrightPulse * Math.sin(t * TAU / evoBrightPeriod));
+    // Hue tilt within the warm family: opposite-sign drift on R and B
+    // around the configured base. G stays fixed so the colour never
+    // crosses into cool tones — only the gold↔amber balance shifts.
+    const cPhase = Math.sin(t * TAU / evoColorPeriod);
+    const cv = pulseUniforms.uPulseColorB.value;
+    cv.x = baseColorBR * (1 + evoColorPulse * cPhase);
+    cv.y = baseColorBG;
+    cv.z = baseColorBB * (1 - evoColorPulse * cPhase);
+  };
+
   return group;
 }
