@@ -823,7 +823,7 @@ function buildFlameShadow({ cutoutLoop, vpX, vpY, minY, maxY, halfWidth, zBack, 
 // fragment shader normalises arc-length to [0,1] and computes
 // circle-aware Gaussian distances to the pulse and ignite centres.
 // -----------------------------------------------------------------------
-function buildFlameRim({ cutoutLoop, zCenter, vpX, minY, cfg }) {
+export function buildFlameRim({ cutoutLoop, zCenter, vpX, minY, cfg }) {
   const N = cutoutLoop.length;
   if (N < 3) return null;
   const rcfg = cfg.rim || {};

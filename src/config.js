@@ -47,7 +47,7 @@ export const ANIM = {
   //   3 → 'flowers'         (Flowers)
   //   4 → 'fireplaceOne'    (Fireplace One — cascading bricks + flame)
   //   5 → 'fireplaceTwo'    (Fireplace Two — horseshoe arch + petals + flame)
-  viewMode: 'fireplaceOne',
+  viewMode: 'flameOnly',
 
   keyLight:          { intensityMin: 0.0,  intensityMax: 4.6,
                        colorAtMin: '#FF1400', colorAtMax: '#FFCC2E' },
@@ -1560,7 +1560,7 @@ export const ANIM = {
     //   columnEdgeSoft  — soft-edge fraction at the column boundary
     //                     (separate from `edgeSoftness` which still
     //                     fades against the cutout polygon edges)
-    bodyHalfWidthBase: 0.20,
+    bodyHalfWidthBase: 0.14,
     bodyHalfWidthTop:  0.005,
     columnWobble:      0.04,
     widthNoiseAmt:     0.26,
@@ -1778,6 +1778,40 @@ export const ANIM = {
         maxSpread: 0.55,
         color:     '#FF8830',    // saturated orange — pops vs. amber body
         intensity: 2.6,          // hard peak (was 1.3)
+      },
+    },
+
+    // Gate-frame rim — same buildFlameRim system as `rim` above, but the
+    // ribbon traces the entire gate-frame's inner aperture (the inset
+    // silhouette wrapping the whole logo) instead of just the inner-star
+    // cutout. Only rendered in flameOnly mode (key 6); supplies the
+    // glowing chase + ignite events along the full perimeter while the
+    // flame body itself is hidden.
+    //
+    //   thickness — load-only ribbon width.
+    //   inset     — extra inward push from the gate-frame's inner edge
+    //               (mesh units). Use a small positive value so the
+    //               ribbon sits a touch INSIDE the metal lip rather than
+    //               flush against it, keeping the bright pulse readable.
+    gateRim: {
+      enabled:   true,
+      thickness: 2.4,
+      inset:     0.1,
+      pulse: {
+        enabled:   true,
+        rate:      0.22,
+        duration:  7.5,
+        width:     0.08,
+        color:     '#FFE8B0',
+        intensity: 3.2,
+      },
+      ignite: {
+        enabled:   true,
+        rate:      0.10,
+        duration:  5.5,
+        maxSpread: 0.55,
+        color:     '#FF8830',
+        intensity: 2.4,
       },
     },
 

@@ -42,6 +42,8 @@ const ctx = {
   panelGroup:         null,
   latticeGroup:       null,
   gateFrameGroup:     null,
+  gateRimGroup:       null,
+  updateGateRim:      null,
   overlayFlowerRoots: [],
   overlayHexRoots:    [],
   overlayMaskMesh:    null,
@@ -136,6 +138,8 @@ loadLogo().then((logo) => {
   ctx.panelGroup         = patternResult.panelGroup;
   ctx.latticeGroup       = patternResult.latticeGroup;
   ctx.gateFrameGroup     = patternResult.gateFrameGroup;
+  ctx.gateRimGroup       = patternResult.gateRimGroup;
+  ctx.updateGateRim      = patternResult.updateGateRim;
   ctx.archGroup          = patternResult.archGroup;
   ctx.archCarvedGroup    = patternResult.archCarvedGroup;
   ctx.updateArchCarved   = patternResult.updateArchCarved;
@@ -229,13 +233,14 @@ export function tick(t, dt) {
   // no bricks, no voussoir; the gate-frame stays on and is recolored
   // fiery so the silhouette reads as molten metal around the flame.
   const showFireOrCarved = showFireplace || showCarved;
-  const showFlame        = showFireOrCarved || showFlameOnly;
+  const showFlame        = showFireOrCarved;
   const fireLikeMode     = showFireOrCarved || showFlameOnly;
   if (ctx.panelGroup)   ctx.panelGroup.visible   = showPanel;
   if (ctx.latticeGroup) ctx.latticeGroup.visible = showLattice;
   if (ctx.archGroup)    ctx.archGroup.visible    = showFireplace;
   if (ctx.archCarvedGroup) ctx.archCarvedGroup.visible = showCarved;
   if (ctx.flameGroup)   ctx.flameGroup.visible   = showFlame;
+  if (ctx.gateRimGroup) ctx.gateRimGroup.visible = showFlameOnly;
   if (ctx.fireplaceGroup) ctx.fireplaceGroup.visible = showFireOrCarved;
   // Hide the smooth extruded gate-frame ring when fireplace/carved mode
   // wants to own the perimeter look — set ANIM.arch.hideGateFrame in
@@ -377,6 +382,7 @@ export function tick(t, dt) {
   // frame regardless of mode so the flame keeps "warming up" off-screen
   // (no first-frame popping in when switching to mode 5).
   if (ctx.updateFlame)      ctx.updateFlame(t, dt);
+  if (ctx.updateGateRim)    ctx.updateGateRim(t, dt);
 
   // Read the live flame PointLight stack and low-pass it to drive the
   // galaxy backdrop pulse. The lights are flickered by patterns/flame.js
@@ -415,6 +421,12 @@ export function tick(t, dt) {
     const blend = 1 - Math.exp(-fadeSpeed * dt);
     const u = ctx.galaxyMat.uniforms.uStarryMode;
     u.value += (targetStarry - u.value) * blend;
+    // Star size — slightly larger only in flameOnly mode.
+    if (ctx.galaxyMat.uniforms.uStarSizeScale) {
+      const targetScale = showFlameOnly ? 1.5 : 1.0;
+      const us = ctx.galaxyMat.uniforms.uStarSizeScale;
+      us.value += (targetScale - us.value) * blend;
+    }
   }
   // updateOverlay re-asserts brickHexWall.visible based on its morph phase
   // each frame, which in mode 'flowers' would re-enable the bricks during

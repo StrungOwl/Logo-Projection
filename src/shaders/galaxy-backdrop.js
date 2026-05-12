@@ -26,6 +26,10 @@ export function createGalaxyMaterial() {
       // brings up an extra dense, flicker-heavy star layer over a black
       // background so the flame reads against a clear night sky.
       uStarryMode: { value: 0.0 },
+      // Multiplies the visual size of every star by dividing each
+      // starLayer's sharpness. main.js lerps this toward >1 in flameOnly
+      // mode so the empty backdrop reads richer when the flame is off.
+      uStarSizeScale: { value: 1.0 },
     },
     vertexShader: `
       varying vec3 vLocalPos;
@@ -44,6 +48,7 @@ export function createGalaxyMaterial() {
       uniform float uFadeHeight;
       uniform float uBrightness;
       uniform float uStarryMode;
+      uniform float uStarSizeScale;
       varying vec3 vLocalPos;
       varying vec3 vNormal;
 
@@ -78,7 +83,8 @@ export function createGalaxyMaterial() {
         float d = length(f - jitter * 0.6);
         float intensity = (n - threshold) / (1.0 - threshold);
         float twinkle = 0.55 + 0.45 * sin(uTime * (1.5 + n * 7.0) + n * 100.0);
-        return smoothstep(0.5, 0.0, d * sharpness) * intensity * twinkle;
+        float s = sharpness / max(uStarSizeScale, 0.001);
+        return smoothstep(0.5, 0.0, d * s) * intensity * twinkle;
       }
 
       void main() {

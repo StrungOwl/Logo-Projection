@@ -82,6 +82,38 @@ export function createLatticeUnderlay({
   pulseEmissiveMax = 0.0,
   pulseColorA = [1.0, 1.0, 1.0],
   pulseColorB = [1.0, 1.0, 1.0],
+  // Long-form evolution layered on the per-hex pulse. All three layers
+  // are stutter-free by construction:
+  //   * `noise*`     — a 2D value-noise field on panel coords drifts with
+  //                    uEvoTime, modulating brightness/emissive AFTER the
+  //                    sine ease. Adds slow-drifting "hot patches" that
+  //                    migrate across the wall. Driven by uEvoTime
+  //                    (continuous), not uPulseTime — so it keeps moving
+  //                    during cascade exit/entry.
+  //   * `coherence*` — crossfade between a scattered pulse (per-hex seed +
+  //                    speed factor) and a coherent pulse (no seed, no
+  //                    factor). Both share uPulseTime so the phase base is
+  //                    identical → no jump as coherence varies.
+  //   * `emissive*` / `bright*` / `color*` — slow LFOs on the existing
+  //                    amplitude/colour uniforms. These are multiplied
+  //                    POST-sine so changing them never shifts the phase.
+  //                    Periods are intentionally non-harmonic so the three
+  //                    LFOs don't lock up.
+  evolution = {
+    enabled:          true,
+    noiseAmp:         0.30,   // ±fraction modulation on bright/emissive
+    noiseScale:       0.10,   // patch frequency (panel units⁻¹); 0.10 ≈ ~10-unit patches
+    noiseSpeed:       0.04,   // patch drift speed (panel units / sec)
+    coherenceMin:     0.20,
+    coherenceMax:     1.00,
+    coherencePeriod: 65.0,
+    emissivePulse:    0.25,   // ±fraction LFO on pulseEmissiveMax
+    emissivePeriod:  45.0,
+    brightPulse:      0.15,   // ±fraction LFO on pulseBrightMax
+    brightPeriod:    55.0,
+    colorPulse:       0.10,   // ±fraction RGB scale on pulseColorB
+    colorPeriod:     80.0,
+  },
 } = {}) {
   const group = new THREE.Group();
 
