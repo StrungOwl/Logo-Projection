@@ -59,6 +59,10 @@ const ctx = {
   flameLights:        [],
   fireplaceGroup:     null,
   updateFireplace:    null,
+  constellationGroup:      null,
+  updateConstellation:     null,
+  setConstellationOpacity: null,
+  triggerStellarPulse:     null,
   lights,
   scene,
   camera,
@@ -83,6 +87,24 @@ let smoothedFlameEnv = 1.0;
 // and toward 0 elsewhere. Same value also dims the galaxy backdrop
 // plate so the two layers cross-fade.
 let logoStarryBlend = 0;
+
+// Hex-mode background cycle clock. While viewMode === 'hexagons' the
+// galaxy backdrop auto-alternates between the warm nebula it shows in
+// the other non-fireplace modes and a denser/larger "starry sky" that
+// boosts the effect-4 starry look. Reset to -1 whenever we leave hex
+// mode so the next hex-mode entry starts fresh from state A (nebula).
+let hexBgCycleEnterT = -1;
+
+// Constellation overlay state — the group's opacity is essentially
+// pass-through to the constellation module, which manages its own
+// long initial idle phase (20 s) + cycle through 5 figures internally.
+// Tiny CONSTELLATION_DELAY/FADE_DUR here just make the group available
+// shortly after entering flameOnly mode; the actual visual delay before
+// any figure appears comes from constellation.js's `initialDelay`.
+const CONSTELLATION_DELAY    = 0.0;
+const CONSTELLATION_FADE_DUR = 0.5;
+let flameOnlyElapsed   = 0;
+let constellationOpacity = 0;
 
 // Cached state so per-frame work skips when nothing relevant changed.
 // Without these, main.js used to write the same scene.environment swap,
@@ -165,6 +187,10 @@ loadLogo().then((logo) => {
   ctx.flameLights        = patternResult.flameLights || [];
   ctx.fireplaceGroup     = patternResult.fireplaceGroup;
   ctx.updateFireplace    = patternResult.updateFireplace;
+  ctx.constellationGroup      = patternResult.constellationGroup;
+  ctx.updateConstellation     = patternResult.updateConstellation;
+  ctx.setConstellationOpacity = patternResult.setConstellationOpacity;
+  ctx.triggerStellarPulse     = patternResult.triggerStellarPulse;
   ctx.silhouettePolygons = patternResult.silhouettePolygons;
 
   // cascadeState is passed in so the overlay can sync its brick↔petals
@@ -452,21 +478,97 @@ export function tick(t, dt) {
     if (mat) mat.emissiveIntensity = 0.45 + 0.6 * smoothedFlameEnv;
   }
 
+  // Constellation overlay (key 6 only) — fade in after CONSTELLATION_DELAY
+  // so the starry sky + frame can establish first. Constellation runs its
+  // own internal clock for draw-in scheduling and stellar pulses; we just
+  // drive opacity in/out and call its update.
+  if (showFlameOnly) flameOnlyElapsed += dt;
+  else               flameOnlyElapsed  = 0;
+  const cTarget = showFlameOnly
+    ? Math.max(0, Math.min(1, (flameOnlyElapsed - CONSTELLATION_DELAY) / CONSTELLATION_FADE_DUR))
+    : 0;
+  const cBlend = 1 - Math.exp(-dt / 0.4);
+  constellationOpacity += (cTarget - constellationOpacity) * cBlend;
+  if (ctx.constellationGroup) {
+    const visible = constellationOpacity > 0.002;
+    ctx.constellationGroup.visible = visible;
+    if (ctx.setConstellationOpacity) ctx.setConstellationOpacity(constellationOpacity);
+    if (visible && ctx.updateConstellation) ctx.updateConstellation(t, dt);
+  }
+
   // Galaxy starry-night blend — lerps toward 1 in fireplace mode (black
   // sky + denser flickering stars behind the flame), toward 0 otherwise
   // (warm nebula). Eased exponentially using the configured fadeSpeed
   // (1/sec).
+  //
+  // Hex mode (effect 2) overrides the targets to auto-cycle between
+  // the warm nebula and a denser/larger boosted-starry look:
+  //   [0, dwell)              → state A: nebula      (phase 0)
+  //   [dwell, dwell+fade)     → A → B transition     (phase 0..1)
+  //   [dwell+fade, 2d+f)      → state B: boosted sky (phase 1)
+  //   [2d+f, 2(d+f))          → B → A transition     (phase 1..0)
+  // phase drives uStarryMode + uStarryBoost in lockstep, and lerps
+  // uStarSizeScale from 1.0 → boostSizeScale during the starry half.
+  if (mode === 'hexagons') {
+    if (hexBgCycleEnterT < 0) hexBgCycleEnterT = t;
+  } else {
+    hexBgCycleEnterT = -1;
+  }
   if (ctx.galaxyMat && ctx.galaxyMat.uniforms.uStarryMode) {
-    const targetStarry = fireLikeMode ? 1.0 : 0.0;
+    let targetStarry = fireLikeMode ? 1.0 : 0.0;
+    let targetScale  = showFlameOnly ? 1.5 : 1.0;
+    let targetBoost  = 0.0;
+
+    const cycleCfg = ANIM.galaxy && ANIM.galaxy.bgCycle;
+    if (mode === 'hexagons' && cycleCfg && cycleCfg.enabled !== false
+        && hexBgCycleEnterT >= 0) {
+      const dwell = Math.max(0.1, cycleCfg.dwellSeconds ?? 30);
+      const fade  = Math.max(0.1, cycleCfg.fadeSeconds  ?? 3);
+      const boostScale = cycleCfg.boostSizeScale ?? 2.5;
+      const cycleLen = 2 * (dwell + fade);
+      const cyc = ((t - hexBgCycleEnterT) % cycleLen + cycleLen) % cycleLen;
+      let phase;
+      if      (cyc < dwell)              phase = 0;
+      else if (cyc < dwell + fade)       phase = (cyc - dwell) / fade;
+      else if (cyc < 2 * dwell + fade)   phase = 1;
+      else                               phase = 1 - (cyc - (2 * dwell + fade)) / fade;
+      // Smoothstep for an ease-in/out feel on the transition halves.
+      phase = phase * phase * (3 - 2 * phase);
+      targetStarry = phase;
+      targetScale  = 1.0 + phase * (boostScale - 1.0);
+      targetBoost  = phase;
+    }
+
     const fadeSpeed = (ANIM.flame && ANIM.flame.galaxyStarry && ANIM.flame.galaxyStarry.fadeSpeed) || 1.5;
     const blend = 1 - Math.exp(-fadeSpeed * dt);
     const u = ctx.galaxyMat.uniforms.uStarryMode;
     u.value += (targetStarry - u.value) * blend;
-    // Star size — slightly larger only in flameOnly mode.
     if (ctx.galaxyMat.uniforms.uStarSizeScale) {
-      const targetScale = showFlameOnly ? 1.5 : 1.0;
       const us = ctx.galaxyMat.uniforms.uStarSizeScale;
       us.value += (targetScale - us.value) * blend;
+    }
+    if (ctx.galaxyMat.uniforms.uStarryBoost) {
+      const ub = ctx.galaxyMat.uniforms.uStarryBoost;
+      ub.value += (targetBoost - ub.value) * blend;
+    }
+
+    // Particle fade — the white + ember streams crowd the boosted-starry
+    // sky, so we fade them out in lockstep with uStarryBoost: fully
+    // visible at nebula (boost=0), invisible at boosted starry (boost=1).
+    // updateParticles writes uBrightness from config each frame above;
+    // scaling it here keeps the fade tied to the shader's live phase
+    // without touching the config values. Non-hex modes hold boost=0 so
+    // this multiplier is 1 there (no-op).
+    if (ctx.particleMats) {
+      const boost = ctx.galaxyMat.uniforms.uStarryBoost
+        ? ctx.galaxyMat.uniforms.uStarryBoost.value : 0;
+      const visMul = Math.max(0, 1 - boost);
+      if (ctx.particleMats.emberMat) {
+        ctx.particleMats.emberMat.uniforms.uBrightness.value *= visMul;
+      }
+      if (ctx.particleMats.whiteMat) {
+        ctx.particleMats.whiteMat.uniforms.uBrightness.value *= visMul;
+      }
     }
   }
   // updateOverlay re-asserts brickHexWall.visible based on its morph phase
@@ -602,6 +704,14 @@ if (typeof window !== 'undefined') {
       e.preventDefault();
       const on = toggleDominoes(scene, clock.elapsedTime);
       console.log(`[dominoes] ${on ? 'on' : 'off'}`);
+      return;
+    }
+    // 'p' (no modifiers) — manually fire the constellation's stellar pulse
+    // (inward shockwave + anchor convergence). Useful for tuning the
+    // event without waiting for the random scheduler.
+    if (e.code === 'KeyP' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      if (ctx.triggerStellarPulse) ctx.triggerStellarPulse();
       return;
     }
     // 'q' (no modifiers) — cycle quality preset HIGH → MED → LOW → HIGH.

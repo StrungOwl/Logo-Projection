@@ -22,6 +22,7 @@ import { createFlame, buildFlameRim } from './fireplaceOne/flame.js';
 import { insetPolygon }          from '../util/polygon.js';
 import { createFireplace }       from './fireplaceTwo/outerArch.js';
 import { createFractalZoom }     from './fractalPattern/fractalZoom.js';
+import { createConstellation }   from './constellation/constellation.js';
 
 export function addEffects(logoMesh, meta, renderer) {
   const { hull, silhouette, cx, cy, maxR, maxZ, patternFadeCenter } = meta;
@@ -436,6 +437,23 @@ export function addEffects(logoMesh, meta, renderer) {
   logoMesh.add(fireplace.group);
 
   // ---------------------------------------------------------------------
+  // Constellation — visible only in flameOnly mode (key 6). Anchor stars
+  // sampled inside the silhouette, slowly connect into a constellation
+  // map; an occasional inward shockwave + anchor-streak event fires on
+  // a random cadence. Positions are in panel-local (mesh-local minus
+  // hull centroid) — same space as silhouettePolygons — so the group
+  // sits at (cx, cy) like the pattern panel.
+  const constellation = createConstellation({
+    silhouettePolygons,
+    fadeCenter: patternFadeCenter,
+    hullMaxR:   maxR,
+    renderer,
+  });
+  constellation.group.position.set(cx, cy, maxZ + 0.5);
+  constellation.group.visible = false;
+  logoMesh.add(constellation.group);
+
+  // ---------------------------------------------------------------------
   // Slow rotation for a random subset of rosettes and lattice hexes. Each
   // picked mesh gets a random phase offset and a signed angular speed so
   // neighbours drift in different directions at different rates. Runs
@@ -736,6 +754,10 @@ export function addEffects(logoMesh, meta, renderer) {
            flameLights:  flame.lights,
            fireplaceGroup:  fireplace.group,
            updateFireplace: fireplace.update,
+           constellationGroup:    constellation.group,
+           updateConstellation:   constellation.update,
+           setConstellationOpacity: constellation.setOpacity,
+           triggerStellarPulse:   constellation.triggerPulse,
            // Mesh-local silhouette polygons (logoMesh sits at world origin
            // so these double as world-XY for downstream consumers like
            // src/dominoes.js).

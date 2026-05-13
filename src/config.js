@@ -61,7 +61,25 @@ export const ANIM = {
   rearPatternIntensity: 1.2,
   rearPatternColor:     '#7A96C8',
 
-  galaxy: { timeScale: 1.0, brightness: 1.0 },
+  galaxy: {
+    timeScale:  1.0,
+    brightness: 1.0,
+    // Effect-2 only: auto-alternates the backdrop between the warm
+    // nebula and a denser/larger "boosted starry sky" while in hex
+    // mode. dwellSeconds is how long each variant holds; fadeSeconds
+    // is the smoothstepped transition between them. boostSizeScale
+    // sets the uStarSizeScale during the starry half (1.5 ≈ effect-4
+    // flameOnly look; 2.5 = noticeably larger stars).
+    bgCycle: {
+      enabled:        true,
+      dwellSeconds:   30.0,
+      fadeSeconds:    3.0,
+      // Multiplier on every star layer's visual size during the
+      // boosted-starry half of the cycle. 1.0 = no inflation; 1.3 =
+      // modest, noticeable boost; 2.5+ = very large blobby stars.
+      boostSizeScale: 1.3,
+    },
+  },
 
   // Logo base material breathes between near-black and full brightness.
   logoBase: { brightnessMin: 0.2, brightnessMax: 1.0, period: 20.0 },
@@ -371,12 +389,70 @@ export const ANIM = {
       smallRadiusFactor:  0.0833,    // 0.25 / 3
       largeDominoTrigger: 0.18,
       smallDominoTrigger: 0.04,
+      // Per-hex organic scatter (same wave shape, but each tile flips on
+      // its own clock and breaks ranks from the strict spatial sort so
+      // the wave reads as ragged bursts instead of a clean left-to-right
+      // band). Tile SIZE is deliberately uniform per wall so the
+      // honeycomb tessellates cleanly; the `breathing` block below
+      // animates the whole wall's scale in lockstep instead.
+      //   flipSpeedJitter — ±fraction on each tile's flip duration.
+      //                     0.55 = tiles span ~0.45×–1.55× of hexDominoFall.
+      //                     The wave's pause auto-extends to fit the
+      //                     slowest tile, so no flips get clipped.
+      //   flipStepJitter  — ± steps a tile can drift from its spatial
+      //                     position in the firing order. 18 = a tile
+      //                     can fire up to 18 trigger-windows ahead of
+      //                     or behind its neighbours; multiple tiles
+      //                     end up firing at any given instant.
+      flipSpeedJitter:   0.55,
+      flipStepJitter:    18,
+      // Number of revolutions the domino wave makes as it spirals from
+      // the outer ring of tiles toward the central fade focus. Higher
+      // = tighter spiral with more visible arms; lower = looser, more
+      // like radial rings. 0 collapses the spiral into pure outer→inner
+      // (no angular winding).
+      spiralTurns:       2.0,
+      // Wall-wide size lerp — the entire wall slowly breathes between
+      // (1 - amount) and (1 + amount) on a sine cycle. Every hex shares
+      // the same scale each frame so the tessellation stays intact;
+      // the wall just inhales/exhales as a single body. Hex mode only.
+      //   amount — half-amplitude as a fraction (0.18 = ±18 %).
+      //   period — seconds for one full breath in-out cycle.
+      breathing: {
+        enabled: true,
+        amount:  0.18,
+        period:  14.0,
+      },
       sizeSwitch: {
         enabled:            true,
-        startSize:          'small',  // initial size when entering hex mode
+        startSize:          'small',  // legacy hint; actual start pool idx
+                                      // is now random across the pool below
         minDwell:           13.0,     // min sec at one size before switching
         maxDwell:           30.0,     // max sec; actual is uniform random
-        transitionDuration: 3.5,      // sec for the cross-fade + scale morph
+        // Cross-fade duration. Hard-clamped at runtime to fit inside the
+        // inter-wave pause (hexDominoPause below) with 0.5s of headroom,
+        // so the swap can never overlap a tile flip.
+        transitionDuration: 2.0,
+      },
+      // Time between successive flip-waves on a wall. The size-switch
+      // cross-fade is anchored inside this pause window so no tile is
+      // mid-flip during a swap — bump this up if you want the wave to
+      // breathe longer between sweeps, but never below transitionDuration
+      // + 0.5s (the state machine clamps automatically).
+      hexDominoPause: 4.0,
+      // Hex-wall size pool — `wallCount` walls are pre-built at random
+      // radii spanning [minRadiusFactor, maxRadiusFactor]·starSize. Each
+      // transition picks a random pool index different from the current
+      // one, so every swap reveals a NEW size rather than alternating
+      // between two fixed values. `triggerMin / triggerMax` interpolate
+      // the per-wall domino trigger linearly with radius (denser walls
+      // get tighter triggers so the wave reads consistently).
+      sizePool: {
+        minRadiusFactor: 0.06,   // slightly below legacy smallRadiusFactor (0.0833)
+        maxRadiusFactor: 0.30,   // slightly above legacy largeRadiusFactor (0.25)
+        count:           8,      // how many walls to pre-build
+        triggerMin:      0.04,   // domino trigger at minRadiusFactor
+        triggerMax:      0.20,   // domino trigger at maxRadiusFactor
       },
       // Random subset of hexes get a CONTRASTING colour on their back
       // face. As each tile flips, those random tiles flash the alt

@@ -30,6 +30,11 @@ export function createGalaxyMaterial() {
       // starLayer's sharpness. main.js lerps this toward >1 in flameOnly
       // mode so the empty backdrop reads richer when the flame is off.
       uStarSizeScale: { value: 1.0 },
+      // 0..1 — when active, layers in EXTRA dense + larger star layers
+      // on top of the standard starry-mode set. main.js lerps this up
+      // during the hex-mode auto-cycle (effect 2 only). Effect 4/5
+      // leave it at 0 so their starry look is unchanged.
+      uStarryBoost: { value: 0.0 },
     },
     vertexShader: `
       varying vec3 vLocalPos;
@@ -49,6 +54,7 @@ export function createGalaxyMaterial() {
       uniform float uBrightness;
       uniform float uStarryMode;
       uniform float uStarSizeScale;
+      uniform float uStarryBoost;
       varying vec3 vLocalPos;
       varying vec3 vNormal;
 
@@ -161,6 +167,22 @@ export function createGalaxyMaterial() {
           // disappear after the final color * uBrightness multiply.
           starrySky += vec3(1.0, 0.95, 0.85) * stars * 4.0;
           starrySky += vec3(0.92, 0.97, 1.00) * extraStars * 3.0;
+          // Boosted layers — lower thresholds (more cells seed a star)
+          // and lower sharpness (each star has a bigger soft glow).
+          // Combined with main.js raising uStarSizeScale, this gives
+          // the effect-2 cycle's "starry sky" a denser, bolder look
+          // than the effect-4 starry sky.
+          if (uStarryBoost > 0.001) {
+            // Higher sharpness here = tighter, smaller star points. The
+            // density (lower thresholds vs base layers) still gives the
+            // boosted sky its denser feel without inflating each glow.
+            float boostStars = 0.0;
+            boostStars += starLayer(vLocalPos.xy, 0.40, 0.62, 11.0) * 1.6;
+            boostStars += starLayer(vLocalPos.xy, 0.90, 0.74, 14.0) * 1.25;
+            boostStars += starLayer(vLocalPos.xy, 1.80, 0.82, 17.0) * 0.95;
+            boostStars += starLayer(vLocalPos.xy, 3.60, 0.88, 21.0) * 0.7;
+            starrySky += vec3(1.0, 0.97, 0.92) * boostStars * 3.0 * uStarryBoost;
+          }
           color = mix(color, starrySky, uStarryMode);
         }
 

@@ -651,11 +651,10 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
   const brickCfg      = cfg0.brickWall || {};
   const brickEnabled  = brickCfg.enabled !== false;
   let morphGroup     = null;
-  let brickHexWall   = null;
-  let brickHexMeshes = [];          // LARGE wall meshes (canonical layout)
-  let brickHexMeshesSmall = [];     // SMALL wall meshes (denser, fast wave)
-  let brickHexWallLarge   = null;
-  let brickHexWallSmall   = null;
+  let brickHexWall      = null;        // outer parent group toggled by main.js
+  let brickHexMeshes    = [];          // canonical wall meshes (ghost pairing)
+  let brickHexCanonical = null;        // { wall, meshes, slots } for canonical
+  let brickHexPool      = [];          // [{ wall, meshes, radius, trigger }, ...]
   const ghosts = [];
 
   if (brickEnabled && silhouette && silhouette[0] && silhouette[0].length >= 3) {
@@ -700,16 +699,32 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
     const wallInset = brickCfg.inset ?? cfg0.maskInset ?? 1.6;
     const inner     = insetPolygon(silhouette[0], wallInset);
     const hexDepth  = brickCfg.hexDepth  ?? starSize * 0.12;
-    const sizeVar   = brickCfg.sizeJitter ?? 0.20;
+    // Per-hex randomization knobs. Speed + step are scattered so the
+    // wave reads as ragged bursts (mixed flip durations, jittered fire
+    // order). Size is intentionally NOT scattered — uniform per-wall
+    // size is what lets the honeycomb tessellate cleanly. The "breathing"
+    // block below animates the whole wall's size in lockstep instead.
+    const speedJitter   = brickCfg.flipSpeedJitter ?? 0.55;   // ±fraction
+    const stepJitterRaw = brickCfg.flipStepJitter  ?? 18;     // ± steps
 
-    // Two-size hex wall — a LARGE wall (sparse, slow domino wave) and a
-    // SMALL wall (dense, fast wave) both built at load. Only one is
-    // visible at a time during effect 2; the size-switch state machine
-    // in updateOverlay alternates between them at random moments.
+    // Hex-wall pool — one canonical wall at `largeRadiusFactor` (used
+    // by the brick↔rose ghost morph in 'all' mode) plus N additional
+    // walls at random radii spanning [minRadiusFactor, maxRadiusFactor].
+    // In hex mode the size-switch state machine picks a random pool
+    // wall as the target on every transition, so each swap reveals a
+    // new size rather than alternating between two fixed sizes.
     const largeFactor = brickCfg.largeRadiusFactor ?? 0.25;
     const smallFactor = brickCfg.smallRadiusFactor ?? (0.25 / 3);
     const largeHexR = brickCfg.hexRadius ?? starSize * largeFactor;
     const smallHexR = starSize * smallFactor;
+    // Random-size pool config — defaults bracket the legacy [small, large]
+    // range with a little headroom on both ends.
+    const sizePoolCfg = brickCfg.sizePool || {};
+    const minFactor   = sizePoolCfg.minRadiusFactor ?? 0.06;
+    const maxFactor   = sizePoolCfg.maxRadiusFactor ?? 0.30;
+    const poolCount   = Math.max(2, Math.floor(sizePoolCfg.count ?? 8));
+    const triggerMin  = sizePoolCfg.triggerMin ?? 0.04;
+    const triggerMax  = sizePoolCfg.triggerMax ?? 0.20;
 
     morphGroup = new THREE.Group();
     morphGroup.name = 'overlay-morph';
@@ -787,6 +802,11 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
         // phase. Picked at build so neighbours never sync up.
         mesh.userData.evoSeed   = Math.random() * Math.PI * 2;
         mesh.userData.evoFactor = 1 + (Math.random() - 0.5) * 0.8;
+        // Per-tile flip-speed scatter — each hex flips on its own clock
+        // so the wave reads as mixed speeds. Size stays uniform per wall
+        // so the honeycomb tessellates cleanly; wall-wide breathing lerp
+        // (updateOverlay) drives any size variation.
+        mesh.userData.flipSpeed = 1 + (Math.random() - 0.5) * 2 * speedJitter;
 
         // Every tile gets an unlit back disc matching the front color
         // (drift-tracked per-frame). MeshBasicMaterial with
@@ -818,12 +838,47 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
         }
       }
 
-      // Per-tile flipStep — sorted by spatial order so the wave reads
-      // as a clean left-to-right sweep across this wall.
+      // Per-tile flipStep — sorted along an Archimedean spiral so the
+      // domino wave starts at the outer ring of tiles, winds around the
+      // logo, and converges inward toward the fade center. For each
+      // tile we compute an "alpha along the spiral arm" by finding the
+      // arm's expected angle at the tile's radius (alphaTarget) and
+      // wrapping the tile's actual atan2 angle to the nearest revolution
+      // of that target. Sorting by that scalar gives a clean spiral.
+      // Per-hex jitter is still applied afterward so the wave-front
+      // reads ragged rather than mathematically perfect.
+      const spiralTurns = Math.max(0.1, brickCfg.spiralTurns ?? 2);
+      const _twoPi = Math.PI * 2;
+      const spiralRange = spiralTurns * _twoPi;
+      let _wallMaxR = 0;
+      for (const hex of meshes_) {
+        const dx = hex.position.x - fadeCX;
+        const dy = hex.position.y - fadeCY;
+        const r = Math.hypot(dx, dy);
+        if (r > _wallMaxR) _wallMaxR = r;
+      }
+      if (_wallMaxR < 1e-6) _wallMaxR = 1;
+      for (const hex of meshes_) {
+        const dx = hex.position.x - fadeCX;
+        const dy = hex.position.y - fadeCY;
+        const r = Math.hypot(dx, dy);
+        const uR = r / _wallMaxR;            // 0 at center, 1 at outer
+        // Outermost tile → alphaTarget = 0 (fires first); center → spiralRange.
+        const alphaTarget = spiralRange * (1 - uR);
+        let alpha = Math.atan2(dy, dx);
+        // Bring alpha into [alphaTarget - π, alphaTarget + π] so tiles
+        // at the same angle on different rings get sequential alphas
+        // along the spiral arm rather than colliding modulo 2π.
+        alpha += _twoPi * Math.round((alphaTarget - alpha) / _twoPi);
+        hex.userData.spiralPhase = alpha;
+      }
       const sortedHexes = [...meshes_].sort((a, b) =>
-        (a.position.x - b.position.x) || (a.position.y - b.position.y));
+        a.userData.spiralPhase - b.userData.spiralPhase);
+      const stepJitter = Math.max(0, stepJitterRaw);
+      const maxStepIdx = Math.max(0, sortedHexes.length - 1);
       for (let i = 0; i < sortedHexes.length; i++) {
-        sortedHexes[i].userData.flipStep = i;
+        const jittered = i + (Math.random() - 0.5) * 2 * stepJitter;
+        sortedHexes[i].userData.flipStep = Math.max(0, Math.min(maxStepIdx, jittered));
       }
 
       // Per-tile drift vector for the brick→rose transit. Drift base
@@ -848,17 +903,51 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
       return { wall: wall_, meshes: meshes_, slots: slots_ };
     }
 
-    const largeRes = buildOneHexWall(largeHexR);
-    const smallRes = buildOneHexWall(smallHexR);
-    largeRes.wall.name = 'brick-hex-wall-large';
-    smallRes.wall.name = 'brick-hex-wall-small';
+    // Canonical wall (used by the brick↔rose ghost pairing in 'all'
+    // mode). Built first at the legacy `largeRadiusFactor` so the
+    // existing ghost slot positions are unchanged.
+    const canonicalRes = buildOneHexWall(largeHexR);
+    canonicalRes.wall.name = 'brick-hex-wall-canonical';
 
-    // Ghost-petal pairing uses the LARGE wall's slots — the brick→rose
-    // morph snaps petals to their nearest hex slot, and the large wall
-    // is the canonical layout (the small wall is denser and not used as
-    // a morph reference).
-    const slots = largeRes.slots;
-    const hexMeshes = largeRes.meshes;
+    // Random-size pool — N additional walls at varied radii. Each pool
+    // wall gets its own trigger interpolated from `triggerMin..triggerMax`
+    // based on where its radius falls in [minRadiusFactor..maxRadiusFactor].
+    // Radii are evenly spaced across the range then jittered so they
+    // never land at the exact same value across builds.
+    const poolWalls = [];
+    const radRange  = Math.max(0, maxFactor - minFactor);
+    const triggerForR = (R) => {
+      const u = radRange > 1e-6
+        ? Math.max(0, Math.min(1, (R / starSize - minFactor) / radRange))
+        : 0;
+      return triggerMin + (triggerMax - triggerMin) * u;
+    };
+    for (let i = 0; i < poolCount; i++) {
+      // Even spacing + per-slot jitter inside its own bucket so adjacent
+      // walls don't all sit exactly at the bucket boundaries.
+      const bucket = radRange / poolCount;
+      const u0 = minFactor + bucket * i;
+      const u1 = minFactor + bucket * (i + 1);
+      const f  = u0 + Math.random() * (u1 - u0);
+      const r  = starSize * f;
+      const res = buildOneHexWall(r);
+      res.wall.name = `brick-hex-pool-${i}`;
+      // Per-pool-wall Z offset so two pool walls visible during a
+      // cross-fade can never z-fight at the front face. The step is
+      // small enough to be invisible (well under hexDepth) but enough
+      // to give each wall a distinct depth slice in the z-buffer.
+      res.wall.position.z = i * 0.003;
+      poolWalls.push({
+        wall:     res.wall,
+        meshes:   res.meshes,
+        radius:   r,
+        trigger:  triggerForR(r),
+      });
+    }
+
+    // Legacy ghost pairing slots come from the canonical wall.
+    const slots = canonicalRes.slots;
+    const hexMeshes = canonicalRes.meshes;
 
     // Pair each rosette petal with its nearest unused hex slot — the
     // slot becomes that petal's emergence point during transit. Unused
@@ -919,15 +1008,18 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
       });
     }
 
-    // Stash both wall sets on the closure so updateOverlay can drive
-    // them. `brickHexMeshes` (the LARGE-wall array) is the canonical
-    // layout for the brick↔rose ghost morph; `brickHexMeshesSmall` is
-    // the denser variant the size-switch state machine alternates with.
+    // Stash on the closure so updateOverlay can drive everything.
+    //   brickHexWall      — outer parent group toggled by main.js
+    //   brickHexCanonical — the LARGE canonical wall (ghost pairing
+    //                       in 'all' mode; hidden in hex mode).
+    //   brickHexPool      — array of {wall, meshes, radius, trigger}
+    //                       the hex-mode state machine cycles through.
+    //   brickHexMeshes    — alias for canonical meshes (back-compat with
+    //                       brick↔rose morph code further down).
     brickHexWall        = hexWall;
-    brickHexWallLarge   = largeRes.wall;
-    brickHexWallSmall   = smallRes.wall;
-    brickHexMeshes      = hexMeshes;            // LARGE
-    brickHexMeshesSmall = smallRes.meshes;
+    brickHexCanonical   = canonicalRes;
+    brickHexPool        = poolWalls;
+    brickHexMeshes      = hexMeshes;            // canonical
   }
 
   // Large 3D hexagon — a neutral canvas for future "looks". Held in its
@@ -1038,11 +1130,19 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
   let _hexDriftBaseStr = null;
   let _hexDriftDeepStr = null;
 
-  // Size-switch state machine — only ticks in 'hex' viewMode. `null`
-  // until first init (the first hex-mode frame seeds it).
-  let _hexSizeMode    = null;   // 'large' | 'small'
+  // Size-switch state machine — only ticks in 'hex' viewMode. Picks a
+  // random pool-wall index as the next target on every transition, so
+  // each swap reveals a new size rather than alternating between two
+  // fixed sizes.
+  let _hexActiveIdx   = -1;     // active pool index (-1 = uninitialised)
+  let _hexTargetIdx   = -1;     // destination pool index during transition
   let _hexNextSwitchT = -1;     // absolute t when the next swap fires
   let _hexTransStart  = -1;     // -1 = stable; else t at which fade began
+  // Per-pool-wall wave-clock offsets. When a transition starts, the
+  // active and target walls' clocks are anchored to their own
+  // inter-wave pause so neither flips a tile during the cross-fade.
+  // (Sized at first use — pool count is set inside the build closure.)
+  let _hexWaveOffsets = null;
 
   // --- Brick-wall evolution state (effect-2 long-form variation) -------
   // Pre-allocated flash pool so the per-frame scheduler has zero
@@ -1264,14 +1364,39 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
       // moments while in 'hex' mode.
       const hexFall    = brickCfg.hexDominoFall    ?? 2.2;
       const hexPause   = brickCfg.hexDominoPause   ?? 2.5;
+      // Per-hex flip speed jitter — drives the slowest-tile fall length so
+      // cycle bookkeeping (cycleLen, the inter-wave pause window) holds
+      // even when an individual tile is dragging far behind the baseline.
+      const flipSpeedJitter = brickCfg.flipSpeedJitter ?? 0.55;
+      const slowestFall = hexFall / Math.max(1 - flipSpeedJitter, 0.1);
       const exitTailEnd = morphTotal - hexExitGlide;
+
+      // Hex-mode gate — drives breathing, colour drift, alt-back overlay,
+      // and opacity ramps. Hoisted above the breathing block because the
+      // breathing block reads it (otherwise TDZ throws).
+      const isHexMode = ANIM.viewMode === 'hexagons';
+
+      // Wall-wide breathing lerp: every tile gets the same scale this
+      // frame, so the honeycomb tessellates perfectly while the whole
+      // wall slowly grows + shrinks on a sine cycle. Hex mode only —
+      // 'all' / fireplace keep the wall at native scale so the brick↔rose
+      // morph lines up. Sine maps [-1,1] → [0,1] and lerps between
+      // (1 - amount) and (1 + amount), giving a symmetric breath.
+      const brCfg     = brickCfg.breathing || {};
+      const brEnabled = isHexMode && brCfg.enabled !== false;
+      const brAmount  = brCfg.amount  ?? 0.18;
+      const brPeriod  = Math.max(brCfg.period ?? 14, 0.001);
+      let breathScale = 1;
+      if (brEnabled) {
+        const k = 0.5 + 0.5 * Math.sin(t * Math.PI * 2 / brPeriod);
+        breathScale = (1 - brAmount) + (2 * brAmount) * k;
+      }
 
       // Compute the target hex colour for this frame: drifted while in
       // solo 'hex' mode (effect 2), otherwise the static base hue.
       // Outside 'hex' mode the alt-back overlay + low opacity is also
       // suppressed so the wall reads identically to its pre-effect-2
       // look in 'all' / fireplace.
-      const isHexMode = ANIM.viewMode === 'hexagons';
       const cd = brickCfg.colorDrift;
       const baseStr = brickCfg.color ?? '#D14A22';
       if (baseStr !== _hexDriftBaseStr) { _hexBaseColor.set(baseStr); _hexDriftBaseStr = baseStr; }
@@ -1302,7 +1427,13 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
       //     a bell-curve brightness boost over ~1s. Pool is pre-allocated
       //     so the scheduler does zero per-frame allocations.
       const evoCfg = brickCfg.evolution || {};
-      const evoOn  = isHexMode && evoCfg.enabled !== false;
+      // Evolution randomness is fully suppressed while a size-switch
+      // cross-fade is in flight. No flashes, no wiggle, no macro LFO
+      // touching the wall during the transition window — every visual
+      // change in that period must come from the deterministic alpha
+      // tween and the wave-clock-pinned per-tile state.
+      const evoOn  = isHexMode && evoCfg.enabled !== false
+                              && _hexTransStart < 0;
       if (evoOn) {
         const mAmp = evoCfg.macroAmp ?? 0.10;
         const mP   = Math.max(evoCfg.macroPeriod ?? 70, 0.001);
@@ -1317,8 +1448,9 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
             if (_evoFlashes[i].hex === null) { free = i; break; }
           }
           if (free >= 0) {
-            const fmeshes = (_hexSizeMode === 'small')
-              ? brickHexMeshesSmall : brickHexMeshes;
+            const activeWall = (_hexActiveIdx >= 0 && _hexActiveIdx < brickHexPool.length)
+              ? brickHexPool[_hexActiveIdx] : null;
+            const fmeshes = activeWall ? activeWall.meshes : brickHexMeshes;
             if (fmeshes.length) {
               const slot = _evoFlashes[free];
               slot.hex   = fmeshes[Math.floor(Math.random() * fmeshes.length)];
@@ -1351,126 +1483,178 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
         ? (backCfgFrame.altOpacity ?? 1)
         : 0;
 
-      // Size-switch state machine. Outside 'hex' mode the LARGE wall is
-      // always shown at full alpha and the SMALL wall is fully hidden,
-      // so the brick→rose morph in 'all' mode keeps reading the same as
-      // before. Inside 'hex' mode the machine cross-fades + scale-morphs
-      // between the two walls at random moments — but only fires when
-      // the active wall is in its inter-wave pause so the current sweep
-      // finishes cleanly before the morph begins.
+      // Size-switch state machine. Outside hex mode the CANONICAL wall
+      // is the only visible brick layer (used by the brick↔rose ghost
+      // morph). Inside hex mode the canonical is hidden and the state
+      // machine cycles through `brickHexPool` — each transition picks
+      // a random NEW target index, so the user sees a different hex
+      // size on every swap rather than just alternating between two.
+      //
+      // The cross-fade itself is purely deterministic: alpha lerp +
+      // wave clocks anchored to each wall's inter-wave pause. All random
+      // rolls (target pick, dwell sample) happen exactly once per
+      // transition, at the moment `_hexTransStart` is set — never during
+      // the cross-fade itself. Evolution flashes / wiggle are also
+      // gated off while `_hexTransStart >= 0` (see the evoOn check above).
       const ssCfg     = brickCfg.sizeSwitch || {};
-      const ssEnabled = isHexMode && ssCfg.enabled !== false;
+      const ssEnabled = isHexMode && ssCfg.enabled !== false
+                                  && brickHexPool.length >= 2;
       const ssMinDwell = ssCfg.minDwell ?? 8;
       const ssMaxDwell = Math.max(ssMinDwell, ssCfg.maxDwell ?? 25);
-      const ssTransDur = Math.max(ssCfg.transitionDuration ?? 1.6, 0.001);
+      const ssTransRaw = Math.max(ssCfg.transitionDuration ?? 1.6, 0.001);
+      // Hard clamp: the cross-fade MUST fit entirely inside both walls'
+      // inter-wave pause window (hexPause), otherwise a tile from the
+      // source or target wall would start flipping mid-swap and look
+      // like a glitch. Leave 0.5s of headroom on the pause side.
+      const ssTransDur = Math.min(ssTransRaw, Math.max(hexPause - 0.5, 0.1));
       const sampleDwell = () =>
         ssMinDwell + Math.random() * (ssMaxDwell - ssMinDwell);
 
-      // Per-wall flip-trigger config — defined early so the state
-      // machine can probe the active wall's wave clock to find the
-      // post-sweep pause window.
-      const largeTrigger = brickCfg.largeDominoTrigger
-                       ?? brickCfg.hexDominoTrigger ?? 0.18;
-      const smallTrigger = brickCfg.smallDominoTrigger ?? 0.04;
+      // Lazy-allocate the per-pool wave-offset table. Reset whenever
+      // the pool size changes (shouldn't, but defensive).
+      if (!_hexWaveOffsets || _hexWaveOffsets.length !== brickHexPool.length) {
+        _hexWaveOffsets = new Array(brickHexPool.length).fill(0);
+      }
 
-      const computeWavePhase = (meshes, trigger) => {
+      const computeWavePhase = (meshes, trigger, waveOffset = 0) => {
         const n = meshes.length;
         const maxStep = Math.max(0, n - 1);
-        const cycleLen = maxStep * trigger + hexFall;
+        const cycleLen = maxStep * trigger + slowestFall;
         const fullCyc = cycleLen + hexPause;
         if (fullCyc <= 0) return { elapsed: 0, cycleLen, fullCyc };
-        const elapsed = ((t % fullCyc) + fullCyc) % fullCyc;
+        const tt = t - waveOffset;
+        const elapsed = ((tt % fullCyc) + fullCyc) % fullCyc;
         return { elapsed, cycleLen, fullCyc };
       };
 
-      // Native radius factor per wall — used to derive scale during the
-      // morph so tile sizes meet at a continuous interpolated value.
-      const ssLargeFactor = brickCfg.largeRadiusFactor ?? 0.25;
-      const ssSmallFactor = brickCfg.smallRadiusFactor ?? (0.25 / 3);
-      const ssScaleRatio  = ssLargeFactor / Math.max(ssSmallFactor, 1e-6);
-
       if (ssEnabled) {
-        if (_hexSizeMode === null) {
-          _hexSizeMode = (ssCfg.startSize === 'small') ? 'small' : 'large';
+        // Seed the active index on first hex-mode frame. Pick a random
+        // starting pool wall so each session opens at a different size.
+        if (_hexActiveIdx < 0) {
+          _hexActiveIdx = Math.floor(Math.random() * brickHexPool.length);
+          _hexTargetIdx = -1;
           _hexNextSwitchT = t + sampleDwell();
         }
         if (_hexTransStart < 0 && t >= _hexNextSwitchT) {
           // Wait for the active wall's current wave to finish — only
-          // start the morph during the inter-wave pause.
-          const activeMeshes = (_hexSizeMode === 'small')
-            ? brickHexMeshesSmall : brickHexMeshes;
-          const activeTrig   = (_hexSizeMode === 'small')
-            ? smallTrigger      : largeTrigger;
-          const wave = computeWavePhase(activeMeshes, activeTrig);
+          // start the cross-fade during the inter-wave pause.
+          const active = brickHexPool[_hexActiveIdx];
+          const activeOffset = _hexWaveOffsets[_hexActiveIdx] || 0;
+          const wave = computeWavePhase(active.meshes, active.trigger, activeOffset);
           if (wave.elapsed >= wave.cycleLen) {
+            // Pick a random NEW target index different from active.
+            // This is the ONE random roll per transition; everything
+            // else during the cross-fade is deterministic.
+            let target = _hexActiveIdx;
+            if (brickHexPool.length > 1) {
+              target = Math.floor(Math.random() * (brickHexPool.length - 1));
+              if (target >= _hexActiveIdx) target++;
+            }
+            _hexTargetIdx  = target;
             _hexTransStart = t;
+            // Anchor both walls' clocks to their inter-wave pause so
+            // no tile flips during the cross-fade.
+            const srcMaxStep = Math.max(0, active.meshes.length - 1);
+            _hexWaveOffsets[_hexActiveIdx] =
+              t - (srcMaxStep * active.trigger + slowestFall);
+            const dest = brickHexPool[target];
+            const destMaxStep = Math.max(0, dest.meshes.length - 1);
+            _hexWaveOffsets[target] =
+              t - (destMaxStep * dest.trigger + slowestFall);
           }
         }
       } else {
         // Reset state when leaving hex mode so the next entry starts
-        // cleanly from the configured `startSize`. Also reset any
-        // lingering per-tile scale from an in-flight morph.
-        if (_hexTransStart >= 0 || _hexSizeMode !== null) {
-          for (const m of brickHexMeshes)      m.scale.setScalar(1);
-          for (const m of brickHexMeshesSmall) m.scale.setScalar(1);
-        }
-        _hexSizeMode    = null;
-        _hexNextSwitchT = -1;
-        _hexTransStart  = -1;
-      }
-
-      let largeAlpha, smallAlpha;
-      let largeWallScale = 1;
-      let smallWallScale = 1;
-      if (!ssEnabled) {
-        // Outside hex mode: LARGE is the canonical wall, SMALL hidden.
-        largeAlpha = 1;
-        smallAlpha = 0;
-      } else if (_hexTransStart < 0) {
-        // Stable: one size at full, the other hidden.
-        largeAlpha = (_hexSizeMode === 'large') ? 1 : 0;
-        smallAlpha = (_hexSizeMode === 'small') ? 1 : 0;
-      } else {
-        const tp = (t - _hexTransStart) / ssTransDur;
-        if (tp >= 1) {
-          // Transition complete — flip the active size, reset scales,
-          // and re-arm the next switch.
-          _hexSizeMode = (_hexSizeMode === 'large') ? 'small' : 'large';
-          _hexTransStart = -1;
-          _hexNextSwitchT = t + sampleDwell();
-          largeAlpha = (_hexSizeMode === 'large') ? 1 : 0;
-          smallAlpha = (_hexSizeMode === 'small') ? 1 : 0;
-          for (const m of brickHexMeshes)      m.scale.setScalar(1);
-          for (const m of brickHexMeshesSmall) m.scale.setScalar(1);
-        } else {
-          // Linear cross-fade with paired scale-tween: both walls hold
-          // matching visual tile sizes throughout, so the morph reads
-          // as a continuous size change rather than a fade-swap.
-          if (_hexSizeMode === 'small') {
-            // small → large: small grows, large unfolds from miniature.
-            smallAlpha     = 1 - tp;
-            largeAlpha     = tp;
-            smallWallScale = 1 + (ssScaleRatio - 1) * tp;
-            largeWallScale = (1 / ssScaleRatio) + (1 - 1 / ssScaleRatio) * tp;
-          } else {
-            // large → small: large shrinks, small comes in pre-grown.
-            largeAlpha     = 1 - tp;
-            smallAlpha     = tp;
-            largeWallScale = 1 - (1 - 1 / ssScaleRatio) * tp;
-            smallWallScale = ssScaleRatio - (ssScaleRatio - 1) * tp;
+        // cleanly. Also reset any lingering per-tile scale from an
+        // in-flight cross-fade.
+        if (_hexActiveIdx >= 0 || _hexTransStart >= 0) {
+          for (const pw of brickHexPool) {
+            for (const m of pw.meshes) m.scale.setScalar(1);
           }
         }
+        _hexActiveIdx   = -1;
+        _hexTargetIdx   = -1;
+        _hexNextSwitchT = -1;
+        _hexTransStart  = -1;
+        if (_hexWaveOffsets) _hexWaveOffsets.fill(0);
       }
 
-      if (brickHexWallLarge) brickHexWallLarge.visible = largeAlpha > 0.001;
-      if (brickHexWallSmall) brickHexWallSmall.visible = smallAlpha > 0.001;
+      // Compute per-pool-wall alpha. Outside hex mode every pool wall
+      // is hidden (alpha 0); the canonical wall draws instead.
+      //
+      // Cross-fade is SEQUENTIAL, not simultaneous: source dissolves out
+      // over [0, sFrac], target appears over [1-tFrac, 1]. With sFrac =
+      // tFrac = 0.6 there's a brief low-alpha overlap window in the
+      // middle (~0.4..0.6 of the transition) so the swap never shows
+      // two ghost walls at full opacity at once — that was the main
+      // source of "glitching" the user was seeing.
+      const xFadeSFrac = 0.6;
+      const xFadeTFrac = 0.6;
+      const poolAlphas = new Array(brickHexPool.length).fill(0);
+      let canonicalAlpha;
+      if (!ssEnabled) {
+        canonicalAlpha = 1;
+      } else if (_hexTransStart < 0) {
+        // Stable — only active wall visible.
+        canonicalAlpha = 0;
+        if (_hexActiveIdx >= 0) poolAlphas[_hexActiveIdx] = 1;
+      } else {
+        canonicalAlpha = 0;
+        const tp = (t - _hexTransStart) / ssTransDur;
+        if (tp >= 1) {
+          // Cross-fade complete — promote target to active.
+          _hexActiveIdx   = _hexTargetIdx;
+          _hexTargetIdx   = -1;
+          _hexTransStart  = -1;
+          _hexNextSwitchT = t + sampleDwell();
+          if (_hexActiveIdx >= 0) poolAlphas[_hexActiveIdx] = 1;
+        } else {
+          // Source fades out over the first sFrac of the transition;
+          // target fades in over the last tFrac. Smoothstep both ends
+          // so the curve eases in/out rather than linear.
+          const srcU = Math.min(1, tp / xFadeSFrac);
+          const dstU = Math.max(0, (tp - (1 - xFadeTFrac)) / xFadeTFrac);
+          const srcA = 1 - (srcU * srcU * (3 - 2 * srcU));
+          const dstA =      (dstU * dstU * (3 - 2 * dstU));
+          if (_hexActiveIdx >= 0) poolAlphas[_hexActiveIdx] = srcA;
+          if (_hexTargetIdx >= 0) poolAlphas[_hexTargetIdx] = dstA;
+        }
+      }
 
-      const wallSpecs = [
-        { meshes: brickHexMeshes,      trigger: largeTrigger,
-          sizeAlpha: largeAlpha,       wallScale: largeWallScale },
-        { meshes: brickHexMeshesSmall, trigger: smallTrigger,
-          sizeAlpha: smallAlpha,       wallScale: smallWallScale },
-      ];
+      // Group visibility — canonical only draws in non-hex mode; pool
+      // walls only when their alpha is nonzero.
+      if (brickHexCanonical) {
+        brickHexCanonical.wall.visible = canonicalAlpha > 0.001;
+      }
+      for (let i = 0; i < brickHexPool.length; i++) {
+        brickHexPool[i].wall.visible = poolAlphas[i] > 0.001;
+      }
+
+      // Build wallSpecs from whichever walls are actually drawing this
+      // frame. In hex mode that's the active wall (+ target during a
+      // cross-fade); in 'all' mode that's just the canonical wall.
+      const wallSpecs = [];
+      if (canonicalAlpha > 0.001 && brickHexCanonical) {
+        wallSpecs.push({
+          meshes:     brickHexCanonical.meshes,
+          trigger:    brickCfg.largeDominoTrigger
+                   ?? brickCfg.hexDominoTrigger ?? 0.18,
+          sizeAlpha:  canonicalAlpha,
+          wallScale:  1,
+          waveOffset: 0,
+        });
+      }
+      for (let i = 0; i < brickHexPool.length; i++) {
+        if (poolAlphas[i] <= 0.001) continue;
+        const pw = brickHexPool[i];
+        wallSpecs.push({
+          meshes:     pw.meshes,
+          trigger:    pw.trigger,
+          sizeAlpha:  poolAlphas[i],
+          wallScale:  1,
+          waveOffset: _hexWaveOffsets ? (_hexWaveOffsets[i] || 0) : 0,
+        });
+      }
 
       for (const ws of wallSpecs) {
         if (ws.sizeAlpha <= 0.001 || !ws.meshes.length) continue;
@@ -1478,12 +1662,13 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
         const hexTrigger = ws.trigger;
         const sizeAlpha  = ws.sizeAlpha;
         const wallScale  = ws.wallScale;
+        const waveOffset = ws.waveOffset || 0;
         const hexCount   = meshes.length;
         const hexMaxStep = Math.max(0, hexCount - 1);
-        const hexCycleLen = hexMaxStep * hexTrigger + hexFall;
+        const hexCycleLen = hexMaxStep * hexTrigger + slowestFall;
         const hexFullCyc  = hexCycleLen + hexPause;
         const hexElapsed  = hexFullCyc > 0
-          ? ((t % hexFullCyc) + hexFullCyc) % hexFullCyc
+          ? (((t - waveOffset) % hexFullCyc) + hexFullCyc) % hexFullCyc
           : 0;
         const stepDenom   = Math.max(1, hexCount - 1);
 
@@ -1507,9 +1692,13 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
               }
             }
           }
-          hex.scale.setScalar(wallScale);
-          const step = hex.userData.flipStep;
-          const ph   = (hexElapsed - step * hexTrigger) / hexFall;
+          hex.scale.setScalar(wallScale * breathScale);
+          const step      = hex.userData.flipStep;
+          const flipSpeed = hex.userData.flipSpeed ?? 1;
+          // Per-tile fall duration: faster hexes finish their flip sooner,
+          // slower hexes drag — wave reads as mixed speeds across the wall.
+          const thisFall  = hexFall / Math.max(flipSpeed, 0.05);
+          const ph   = (hexElapsed - step * hexTrigger) / thisFall;
           let angle = 0;
           if (ph > 0 && ph < 1) {
             const eased = 0.5 - 0.5 * Math.cos(ph * Math.PI);
