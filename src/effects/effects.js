@@ -19,8 +19,9 @@ import { createGateFrame }       from './_shared/logoFrame.js';
 import { createSparkSystem }     from './_shared/sparks.js';
 import { createArch }            from './fireplaceOne/fireplaceTiles.js';
 import { createFlame, buildFlameRim } from './fireplaceOne/flame.js';
-import { insetPolygon }          from '../util/polygon.js';
+import { insetPolygon, clipPolygonBelowY, clipPolygonLeftOfX, clipPolygonRightOfX } from '../util/polygon.js';
 import { createFireplace }       from './fireplaceTwo/outerArch.js';
+import { createRecede }          from './fireplaceTwo/recede.js';
 import { createFractalZoom }     from './fractalPattern/fractalZoom.js';
 import { createConstellation }   from './constellation/constellation.js';
 
@@ -357,30 +358,6 @@ export function addEffects(logoMesh, meta, renderer) {
   arch.group.position.set(cx, cy, 0);
   logoMesh.add(arch.group);
 
-  // Carved-mode arch — second parallel arch group built with a deeper
-  // brick wall + alternating tiers config. Toggled visible by viewMode
-  // 'carved' (key 5) so the user can hop between the regular fireplace
-  // and the experimental carved version without a page reload.
-  // Shallow-merge ANIM.archCarved over ANIM.arch so the carved block
-  // only needs to specify keys it overrides; everything else inherits.
-  const carvedCfg = ANIM.archCarved
-    ? { ...ANIM.arch, ...ANIM.archCarved }
-    : null;
-  let archCarved = null;
-  if (carvedCfg) {
-    archCarved = createArch({
-      silhouette:     silhouettePolygons,
-      maxZ,
-      frameDepth:     1.5,
-      gateFrameWidth,
-      configOverride: carvedCfg,
-      groupName:      'archCarved',
-    });
-    archCarved.group.position.set(cx, cy, 0);
-    archCarved.group.visible = false;          // shown via main.js mode gate
-    logoMesh.add(archCarved.group);
-  }
-
   // Sparks that hop along the arch's brick edges — same effect as the panel
   // sparks but the snap cloud is built from an invisible LineSegments layer
   // inside arch.group (see patterns/arch.js).
@@ -422,6 +399,93 @@ export function addEffects(logoMesh, meta, renderer) {
   logoMesh.add(flame.group);
 
   // ---------------------------------------------------------------------
+  // Hearth flame — single wide flame using the LOGO SILHOUETTE itself as
+  // the cutout polygon. The polygon extrusion naturally masks the flame
+  // to the gate-frame interior (anything past the silhouette has no
+  // geometry to render onto). The silhouette is inset slightly so the
+  // flame body sits inside the frame's inner edge rather than flush with
+  // the frame's outer outline.
+  //
+  // The column shader centres brightness at vpX and tapers outward by
+  // colHalfWidth = uHalfWidth * cfg.bodyHalfWidthBase. With the silhouette
+  // as the cutout, uHalfWidth is the silhouette's half-width — the inner-
+  // star default (0.14) would shrink the bright column to a thin band in
+  // the centre, most of which lands in the negative space between the
+  // logo's feet. We override the column to 0.95/0.35 so the bright zone
+  // spans almost the full silhouette width and the visible flame fills
+  // the gate-frame interior.
+  //
+  // vpY anchors PARTWAY up the silhouette (not above it) so the flame's
+  // tip vanishes inside the gate-frame — the dark space above the tip
+  // shows the starry sky and the flame reads as a hearth fire sitting
+  // inside the frame, rather than filling the whole interior.
+  //
+  // Secondary blue core + tertiary outline are layers designed for the
+  // narrow inner-star flame; on a wide hearth column they read as a thick
+  // saturated band and a hard ring, so we disable both. Branching, wobble,
+  // and waist pinches are also off — the hearth wants one steady wide
+  // flame, not a column that meanders.
+  //
+  // Disabling depth test on the flame body lets it render on top of the
+  // opaque-black logo body in mode 6 (which would otherwise occlude the
+  // flame except where the inner-star cutout opens into the silhouette).
+  //
+  // Rim ribbon is suppressed via disableRim — no chase-pulse tracer.
+  // ---------------------------------------------------------------------
+  const hearthMaskInset = 1.6;
+  const hearthCutout = insetPolygon(meta.silhouette[0], hearthMaskInset);
+  // Silhouette vertical extents in flame-local coords (mesh-local minus cy).
+  let hearthSilTop = -Infinity, hearthSilBot = Infinity;
+  for (const p of hearthCutout) {
+    const y = p.y - cy;
+    if (y > hearthSilTop) hearthSilTop = y;
+    if (y < hearthSilBot) hearthSilBot = y;
+  }
+  // Vanishing point sits ~55% of the way up — flame tip is visible
+  // inside the silhouette with empty starry sky above it.
+  const hearthVpYFrac = 0.55;
+  const hearthVpY = hearthSilBot + (hearthSilTop - hearthSilBot) * hearthVpYFrac;
+  const hearthFlame = createFlame({
+    logoMesh, meta, renderer,
+    cutoutOverride: hearthCutout,
+    vpXOverride:    0,                          // panel-local centre
+    vpYOverride:    hearthVpY,
+    groupName:      'hearth-flame',
+    skipStretch:    true,
+    disableRim:     true,
+    cfgOverride: {
+      // Wide column — colHalfWidth scales with the silhouette's half-width,
+      // so 0.95 base means the bright zone reaches nearly to the silhouette
+      // edges; 0.35 top still tapers toward the vanishing point.
+      bodyHalfWidthBase: 0.95,
+      bodyHalfWidthTop:  0.35,
+      // Hold the column steady — no lateral wander, no width modulation,
+      // no mid-column pinches, no split into branches.
+      columnWobble:      0,
+      widthNoiseAmt:     0.12,
+      waistAmt:          0,
+      waist2Amt:         0,
+      branching:         { enabled: false, separation: 0 },
+      // One flame, one layer — the inner blue core and red→blue outline
+      // ring belong to the inner-star variant.
+      secondary:         { enabled: false },
+      tertiary:          { enabled: false },
+    },
+  });
+  logoMesh.add(hearthFlame.group);
+
+  // Disable depth test on every flame material so the body renders on
+  // top of the opaque logo body in mode 6 (key 6 sets the body color
+  // to pure black; depthTest=true would have the body's depth occlude
+  // the flame everywhere except the inner-star cutout).
+  hearthFlame.group.traverse(o => {
+    if (o.isMesh && o.material) {
+      o.material.depthTest   = false;
+      o.material.needsUpdate = true;
+    }
+  });
+
+  // ---------------------------------------------------------------------
   // Fireplace frame — standalone Roman-horseshoe brick + petal frame
   // wrapping the OUTSIDE of the logo's bounding box. Fully isolated from
   // the existing arch (no shared knobs, no shared silhouette curve).
@@ -435,6 +499,24 @@ export function addEffects(logoMesh, meta, renderer) {
   });
   fireplace.group.position.set(cx, cy, 0);
   logoMesh.add(fireplace.group);
+
+  // ---------------------------------------------------------------------
+  // Recede — Effect 5 (key 5, viewMode 'fireplaceTwo'). Nested static
+  // copies of the logo silhouette stacked back in z, each smaller and
+  // dimmer than the one in front. Carries the same starry-shimmer shader
+  // patch the logo body uses so the whole stack twinkles. Visibility
+  // gated to fireplaceTwo mode in src/main.js.
+  // ---------------------------------------------------------------------
+  const recede = createRecede({
+    silhouettePolygons,
+    hullMaxR: maxR,
+  });
+  // Sits just behind the logo's front face so the frontmost copy is
+  // tucked into the cutout-stack rather than floating in front of the
+  // gate frame.
+  recede.group.position.set(cx, cy, maxZ - 1.5);
+  recede.group.visible = false;
+  logoMesh.add(recede.group);
 
   // ---------------------------------------------------------------------
   // Constellation — visible only in flameOnly mode (key 6). Anchor stars
@@ -745,19 +827,23 @@ export function addEffects(logoMesh, meta, renderer) {
            gateRimGroup,
            updateGateRim,
            archGroup: arch.group,
-           archCarvedGroup: archCarved ? archCarved.group : null,
-           updateArchCarved: archCarved ? archCarved.update : null,
            updateArch: arch.update,
            triggerArchCascade: arch.triggerCascade,
+           recedeGroup:  recede.group,
+           updateRecede: recede.update,
            flameGroup:   flame.group,
            updateFlame:  flame.update,
            flameLights:  flame.lights,
            fireplaceGroup:  fireplace.group,
            updateFireplace: fireplace.update,
+           hearthFlameGroup:  hearthFlame.group,
+           updateHearthFlame: hearthFlame.update,
+           hearthFlameLights: hearthFlame.lights || [],
            constellationGroup:    constellation.group,
            updateConstellation:   constellation.update,
            setConstellationOpacity: constellation.setOpacity,
            triggerStellarPulse:   constellation.triggerPulse,
+           getHearthFlameOpacity: constellation.getFlameOpacity,
            // Mesh-local silhouette polygons (logoMesh sits at world origin
            // so these double as world-XY for downstream consumers like
            // src/dominoes.js).

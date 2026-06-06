@@ -138,6 +138,86 @@ export function clipArcAboveY(poly, yCut) {
   return arc;
 }
 
+// Sutherland-Hodgman clip of a closed polygon against the half-plane
+// y <= yCut. Returns a new polygon containing only the portion below
+// yCut, with the open top closed by the intersection points on the
+// cut line. Handles non-convex inputs correctly (the algorithm is
+// stable against arbitrary closed polygons clipping to a half-plane).
+export function clipPolygonBelowY(poly, yCut) {
+  const n = poly.length;
+  if (n === 0) return [];
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const cur  = poly[i];
+    const next = poly[(i + 1) % n];
+    const curIn  = cur.y  <= yCut;
+    const nextIn = next.y <= yCut;
+    if (curIn && nextIn) {
+      out.push({ x: next.x, y: next.y });
+    } else if (curIn && !nextIn) {
+      // Leaving the half-plane — emit intersection at yCut.
+      const t = (yCut - cur.y) / (next.y - cur.y);
+      out.push({ x: cur.x + (next.x - cur.x) * t, y: yCut });
+    } else if (!curIn && nextIn) {
+      // Entering — emit intersection then next.
+      const t = (yCut - cur.y) / (next.y - cur.y);
+      out.push({ x: cur.x + (next.x - cur.x) * t, y: yCut });
+      out.push({ x: next.x, y: next.y });
+    }
+    // both outside: emit nothing
+  }
+  return out;
+}
+
+// Sutherland-Hodgman clip against an axis-aligned half-plane x <= xCut.
+// Returns a new polygon containing only the portion to the left of xCut.
+export function clipPolygonLeftOfX(poly, xCut) {
+  const n = poly.length;
+  if (n === 0) return [];
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const cur  = poly[i];
+    const next = poly[(i + 1) % n];
+    const curIn  = cur.x  <= xCut;
+    const nextIn = next.x <= xCut;
+    if (curIn && nextIn) {
+      out.push({ x: next.x, y: next.y });
+    } else if (curIn && !nextIn) {
+      const t = (xCut - cur.x) / (next.x - cur.x);
+      out.push({ x: xCut, y: cur.y + (next.y - cur.y) * t });
+    } else if (!curIn && nextIn) {
+      const t = (xCut - cur.x) / (next.x - cur.x);
+      out.push({ x: xCut, y: cur.y + (next.y - cur.y) * t });
+      out.push({ x: next.x, y: next.y });
+    }
+  }
+  return out;
+}
+
+// Sutherland-Hodgman clip against an axis-aligned half-plane x >= xCut.
+export function clipPolygonRightOfX(poly, xCut) {
+  const n = poly.length;
+  if (n === 0) return [];
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const cur  = poly[i];
+    const next = poly[(i + 1) % n];
+    const curIn  = cur.x  >= xCut;
+    const nextIn = next.x >= xCut;
+    if (curIn && nextIn) {
+      out.push({ x: next.x, y: next.y });
+    } else if (curIn && !nextIn) {
+      const t = (xCut - cur.x) / (next.x - cur.x);
+      out.push({ x: xCut, y: cur.y + (next.y - cur.y) * t });
+    } else if (!curIn && nextIn) {
+      const t = (xCut - cur.x) / (next.x - cur.x);
+      out.push({ x: xCut, y: cur.y + (next.y - cur.y) * t });
+      out.push({ x: next.x, y: next.y });
+    }
+  }
+  return out;
+}
+
 // Ray-casting point-in-polygon test (winding number variant). Returns
 // true if (x, y) is strictly inside `poly`. Edges count as outside.
 export function pointInPolygon(x, y, poly) {

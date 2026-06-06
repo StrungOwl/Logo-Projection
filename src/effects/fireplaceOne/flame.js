@@ -1322,24 +1322,45 @@ function buildLights({ vpX, minY, maxY, maxZ }) {
 // flame's vertical axis; main.js toggles each one's `.visible`
 // (Three.js samples light.visible directly, not the parent group's).
 // -----------------------------------------------------------------------
-export function createFlame({ logoMesh, meta, renderer }) {
+export function createFlame({
+  logoMesh, meta, renderer,
+  cutoutOverride  = null,    // polygon (mesh-local) to use instead of extractInnerCutout
+  vpXOverride     = null,    // x of vanishing point (flame-local); defaults to fadeCenter
+  vpYOverride     = null,    // y of vanishing point (flame-local); defaults to fadeCenter
+  groupName       = 'flame',
+  skipStretch     = false,
+  disableRim      = false,   // skip the chase-pulse ribbon along the cutout perimeter
+  cfgOverride     = null,    // shallow-merged onto ANIM.flame for this instance only
+                             // (used by the hearth flame to widen the column,
+                             // disable secondary/tertiary layers, etc. without
+                             // touching the inner-star flame's defaults)
+}) {
   const { patternFadeCenter, cx, cy, maxZ } = meta;
   const group = new THREE.Group();
-  group.name = 'flame';
+  group.name = groupName;
   // Y is finalised below once the cutout extents are known (so yOffsetFrac
   // can express the nudge as a fraction of the cutout height).
   group.position.set(cx, cy, 0);
   group.visible = false;
 
-  // Extract the inner-star cutout outline directly from the model's edges.
-  // The default silhouette walk in src/logo.js folds the inner cutout into
-  // the outer perimeter for this model, so we sidestep it here using an
-  // EdgesGeometry-based chain bounded by an elliptical mask centred on
-  // the fade centre (same isolation strategy as src/particles.js).
-  const cutoutMeshLocal = extractInnerCutout(logoMesh, meta);
-  if (!cutoutMeshLocal || cutoutMeshLocal.length < 4) {
-    console.warn('[flame] could not extract inner cutout; flame disabled');
-    return { group, update: () => {}, lights: [], flameMesh: null, sparkPoints: null };
+  // If a custom cutout polygon was provided (e.g. the hearth flame uses
+  // the lower-half silhouette), skip the inner-star extraction + the
+  // downstream stretch. Custom callers are expected to hand us a
+  // polygon already in mesh-local coords with the right Y extent.
+  let cutoutMeshLocal;
+  if (cutoutOverride && cutoutOverride.length >= 4) {
+    cutoutMeshLocal = cutoutOverride;
+  } else {
+    // Extract the inner-star cutout outline directly from the model's edges.
+    // The default silhouette walk in src/logo.js folds the inner cutout into
+    // the outer perimeter for this model, so we sidestep it here using an
+    // EdgesGeometry-based chain bounded by an elliptical mask centred on
+    // the fade centre (same isolation strategy as src/particles.js).
+    cutoutMeshLocal = extractInnerCutout(logoMesh, meta);
+    if (!cutoutMeshLocal || cutoutMeshLocal.length < 4) {
+      console.warn('[flame] could not extract inner cutout; flame disabled');
+      return { group, update: () => {}, lights: [], flameMesh: null, sparkPoints: null };
+    }
   }
   // Convert mesh-local -> flame-local (flame group sits at (cx, cy, 0)).
   const cutoutLoop = cutoutMeshLocal.map(p => ({ x: p.x - cx, y: p.y - cy }));
@@ -1349,15 +1370,15 @@ export function createFlame({ logoMesh, meta, renderer }) {
   // mutate the rim's geometry source.
   const cutoutLoopForRim = cutoutLoop.map(p => ({ x: p.x, y: p.y }));
 
-  // Stretch the polygon's lower portion downward so its visible bottom
-  // reaches the logo silhouette's bottom (`meta.bbox.min.y`) rather
-  // than stopping where the inner-star bay's neck closes. Vertices
-  // above the pattern fade center are untouched; vertices below get
-  // pulled down proportionally so the bottom-most vertex lands at the
-  // bbox bottom. The flame's vertical column is centered on the fade
-  // center anyway, so widening the polygon's bottom tip doesn't change
-  // what's visible — only the y-range the flame occupies.
-  {
+  if (!skipStretch && !cutoutOverride) {
+    // Stretch the polygon's lower portion downward so its visible bottom
+    // reaches the logo silhouette's bottom (`meta.bbox.min.y`) rather
+    // than stopping where the inner-star bay's neck closes. Vertices
+    // above the pattern fade center are untouched; vertices below get
+    // pulled down proportionally so the bottom-most vertex lands at the
+    // bbox bottom. The flame's vertical column is centered on the fade
+    // center anyway, so widening the polygon's bottom tip doesn't change
+    // what's visible — only the y-range the flame occupies.
     const targetBottomY = meta.bbox.min.y - cy;
     const pivotY = patternFadeCenter[1];
     let curMinY = Infinity;
@@ -1384,11 +1405,13 @@ export function createFlame({ logoMesh, meta, renderer }) {
 
   // Vanishing point (flame-local). patternFadeCenter is already
   // panel-local (mesh-local minus (cx, cy)), which is exactly what we
-  // want here.
-  const vpX = patternFadeCenter[0];
-  const vpY = patternFadeCenter[1];
+  // want here. For the hearth flame variant the caller passes its own
+  // (vpX, vpY) so the flame's columns converge toward a point above
+  // the lower-half cutout instead of toward the inner-star centroid.
+  const vpX = vpXOverride !== null ? vpXOverride : patternFadeCenter[0];
+  const vpY = vpYOverride !== null ? vpYOverride : patternFadeCenter[1];
 
-  const cfg = ANIM.flame;
+  const cfg = cfgOverride ? mergeFlameCfg(ANIM.flame, cfgOverride) : ANIM.flame;
   const zBack  = maxZ + cfg.zBack;
   const zFront = maxZ + cfg.zFront;
 
@@ -1468,7 +1491,7 @@ export function createFlame({ logoMesh, meta, renderer }) {
   // y-offset (so the rim stays glued to the logo even when the flame
   // is nudged up).
   let rim = null;
-  if (cfg.rim && cfg.rim.enabled) {
+  if (!disableRim && cfg.rim && cfg.rim.enabled) {
     // Recompute the launch reference point using the unstretched
     // polygon's actual lower extent, not the stretched-flame minY.
     let rimMinY = Infinity;
@@ -1574,7 +1597,11 @@ export function createFlame({ logoMesh, meta, renderer }) {
     }
 
     // Hot-swap body uniforms each frame so devtools edits take effect.
-    const bcfg = ANIM.flame;
+    // For instances built with `cfgOverride`, merge those overrides onto
+    // the live ANIM.flame each frame so the live tweakable fields keep
+    // working while the per-instance fields (column width, disabled
+    // layers) stay applied.
+    const bcfg = cfgOverride ? mergeFlameCfg(ANIM.flame, cfgOverride) : ANIM.flame;
     applyBodyUniforms(body, bcfg);
 
     // Shadow uniforms — keep noise + column shape in lock-step with the

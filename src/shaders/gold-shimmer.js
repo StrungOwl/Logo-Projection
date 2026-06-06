@@ -13,7 +13,7 @@
 //   // once per frame from your render loop:
 //   tickShimmer(t);
 //
-// Knobs live under ANIM.arch.shimmer (or the merged archCarved.shimmer).
+// Knobs live under ANIM.arch.shimmer.
 // Set sheenStrength to 0 or enabled to false to no-op the patch.
 
 import * as THREE from 'three';

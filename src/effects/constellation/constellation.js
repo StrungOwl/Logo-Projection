@@ -315,6 +315,11 @@ export function createConstellation({
   gapDuration         = 5.0,        // rest period — pure starry sky between figures
   drawingMaxDuration  = 14.0,       // safety cap if draws stall
   pulseTriggerDelay   = 2.5,        // seconds into pulsing phase before pulse fires
+  // After all 5 figures fade out, hold a 60 s "hearth flame" window
+  // before looping back to figure #1.
+  flamePhaseDuration  = 60.0,
+  flameFadeIn         = 2.5,
+  flameFadeOut        = 2.5,
 } = {}) {
   const group = new THREE.Group();
   group.name = 'constellation';
@@ -462,6 +467,7 @@ export function createConstellation({
   const PHASE_PULSING = 2;
   const PHASE_FADING  = 3;
   const PHASE_GAP     = 4;
+  const PHASE_FLAME   = 5;
   let phase       = PHASE_IDLE;
   let phaseStart  = 0;
   let cycleIndex  = -1;            // -1 until the first figure activates
@@ -471,6 +477,7 @@ export function createConstellation({
   let pulseActive = false;
   let pulseStartT = 0;
   let pulseFiredThisCycle = false;
+  let flamePhaseQueued = false;    // true after last constellation; consumed on enter
   let activeTime  = 0;             // local clock; only advances while visible
 
   // Activate the next constellation in the sequence: reset edge state,
@@ -576,6 +583,8 @@ export function createConstellation({
       if (phaseElapsed >= pulsingDuration) {
         phase      = PHASE_FADING;
         phaseStart = activeTime;
+        // Queue the flame phase right after the LAST figure's fade+gap.
+        if (cycleIndex === sequence.length - 1) flamePhaseQueued = true;
       }
     } else if (phase === PHASE_FADING) {
       if (phaseElapsed >= fadingDuration) {
@@ -584,10 +593,27 @@ export function createConstellation({
       }
     } else if (phase === PHASE_GAP) {
       if (phaseElapsed >= gapDuration) {
-        cycleIndex = (cycleIndex + 1) % sequence.length;
-        phase      = PHASE_DRAWING;
+        // After the LAST constellation in the sequence, the next slot is
+        // the hearth-flame window; flamePhaseQueued is set when cycle 5
+        // entered FADING. The flame phase then exits back into PHASE_GAP
+        // for a second rest before constellation #1 restarts.
+        if (flamePhaseQueued) {
+          flamePhaseQueued = false;
+          phase      = PHASE_FLAME;
+          phaseStart = activeTime;
+          console.log('[constellation] entering flame phase');
+        } else {
+          cycleIndex = (cycleIndex + 1) % sequence.length;
+          phase      = PHASE_DRAWING;
+          phaseStart = activeTime;
+          activateCycle(cycleIndex);
+        }
+      }
+    } else if (phase === PHASE_FLAME) {
+      if (phaseElapsed >= flamePhaseDuration) {
+        phase      = PHASE_GAP;
         phaseStart = activeTime;
-        activateCycle(cycleIndex);
+        console.log('[constellation] flame phase done; resting before cycle 1');
       }
     }
 
@@ -614,11 +640,13 @@ export function createConstellation({
     if (phase === PHASE_IDLE)      phaseMul = 0;
     else if (phase === PHASE_FADING) phaseMul = Math.max(0, 1 - phaseElapsed / fadingDuration);
     else if (phase === PHASE_GAP)    phaseMul = 0;
+    else if (phase === PHASE_FLAME)  phaseMul = 0;
     const visualOpacity = groupOpacity * phaseMul;
 
-    // Early-out for the IDLE phase + GAP — nothing to animate, just clear
-    // the visible state. Skip the per-edge / per-anchor loops entirely.
-    if (!activeEntry || phase === PHASE_IDLE || phase === PHASE_GAP) {
+    // Early-out for the IDLE/GAP/FLAME phases — nothing to animate on
+    // the constellation, just clear the visible state. Skip the per-edge
+    // / per-anchor loops entirely.
+    if (!activeEntry || phase === PHASE_IDLE || phase === PHASE_GAP || phase === PHASE_FLAME) {
       lineMat.opacity = visualOpacity;
       ptsMat.uniforms.uOpacity.value = visualOpacity;
       return;
@@ -730,6 +758,21 @@ export function createConstellation({
     }
   }
 
+  // Hearth-flame opacity target — 0 outside the flame phase, ramps in
+  // over flameFadeIn at the start of PHASE_FLAME, holds at 1 through the
+  // body, ramps out over flameFadeOut before the phase ends. main.js
+  // reads this each frame to drive the hearth-flame group's visibility
+  // and material opacity.
+  function getFlameOpacity() {
+    if (phase !== PHASE_FLAME) return 0;
+    const e = activeTime - phaseStart;
+    if (e < flameFadeIn)                       return e / flameFadeIn;
+    if (e > flamePhaseDuration - flameFadeOut) {
+      return Math.max(0, (flamePhaseDuration - e) / flameFadeOut);
+    }
+    return 1;
+  }
+
   console.log(`[constellation] sequence built — ${sequence.length} figures, max ${maxStars} stars / ${maxEdges} edges per buffer`);
 
   return {
@@ -737,6 +780,7 @@ export function createConstellation({
     update,
     setOpacity,
     triggerPulse,
+    getFlameOpacity,
     figureCount: sequence.length,
   };
 }

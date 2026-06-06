@@ -50,10 +50,10 @@ const ctx = {
   overlayHexRoots:    [],
   overlayMaskMesh:    null,
   archGroup:          null,
-  archCarvedGroup:    null,
-  updateArchCarved:   null,
   updateArch:         null,
   triggerArchCascade: null,
+  recedeGroup:        null,
+  updateRecede:       null,
   flameGroup:         null,
   updateFlame:        null,
   flameLights:        [],
@@ -63,6 +63,10 @@ const ctx = {
   updateConstellation:     null,
   setConstellationOpacity: null,
   triggerStellarPulse:     null,
+  hearthFlameGroup:        null,
+  updateHearthFlame:       null,
+  hearthFlameLights:       [],
+  getHearthFlameOpacity:   null,
   lights,
   scene,
   camera,
@@ -178,10 +182,10 @@ loadLogo().then((logo) => {
   ctx.gateRimGroup       = patternResult.gateRimGroup;
   ctx.updateGateRim      = patternResult.updateGateRim;
   ctx.archGroup          = patternResult.archGroup;
-  ctx.archCarvedGroup    = patternResult.archCarvedGroup;
-  ctx.updateArchCarved   = patternResult.updateArchCarved;
   ctx.updateArch         = patternResult.updateArch;
   ctx.triggerArchCascade = patternResult.triggerArchCascade;
+  ctx.recedeGroup        = patternResult.recedeGroup;
+  ctx.updateRecede       = patternResult.updateRecede;
   ctx.flameGroup         = patternResult.flameGroup;
   ctx.updateFlame        = patternResult.updateFlame;
   ctx.flameLights        = patternResult.flameLights || [];
@@ -191,6 +195,10 @@ loadLogo().then((logo) => {
   ctx.updateConstellation     = patternResult.updateConstellation;
   ctx.setConstellationOpacity = patternResult.setConstellationOpacity;
   ctx.triggerStellarPulse     = patternResult.triggerStellarPulse;
+  ctx.hearthFlameGroup        = patternResult.hearthFlameGroup;
+  ctx.updateHearthFlame       = patternResult.updateHearthFlame;
+  ctx.hearthFlameLights       = patternResult.hearthFlameLights || [];
+  ctx.getHearthFlameOpacity   = patternResult.getHearthFlameOpacity;
   ctx.silhouettePolygons = patternResult.silhouettePolygons;
 
   // cascadeState is passed in so the overlay can sync its brick↔petals
@@ -264,7 +272,7 @@ export function tick(t, dt) {
   //   2 → 'hexagons'        overlay BIG hex bricks only
   //   3 → 'flowers'         full flower overlay (hex → roses → hex)
   //   4 → 'fireplaceOne'    cascading brick arch + flame + starry sky
-  //   5 → 'fireplaceTwo'    horseshoe arch + petals + flame + starry sky
+  //   5 → 'fireplaceTwo'    nested receding logo silhouettes + flame
   // `ANIM.patterns.enabled === false` is the legacy kill switch — when
   // off, panel + lattice stay hidden regardless of view mode.
   const mode = ANIM.viewMode || 'visualSequence';
@@ -274,15 +282,16 @@ export function tick(t, dt) {
   const showHexBrick  = (mode === 'visualSequence' || mode === 'hexagons');
   const showFlowers   = (mode === 'visualSequence' || mode === 'flowers');
   const showFireplace = (mode === 'fireplaceOne');
-  const showCarved    = (mode === 'fireplaceTwo');
+  const showRecede    = (mode === 'fireplaceTwo');
   const showFlameOnly = (mode === 'flameOnly');
-  // Lerp logoStarryBlend toward 1 in flameOnly mode, 0 elsewhere. Slow
-  // fadeSpeed gives a few-second cross-fade between the galaxy plate and
-  // the logo-body starry shader. The blend is split into two halves
+  // Lerp logoStarryBlend toward 1 in flameOnly mode AND fireplaceTwo mode
+  // (the receding-logo effect wants the same shimmering body), 0 elsewhere.
+  // Slow fadeSpeed gives a few-second cross-fade between the galaxy plate
+  // and the logo-body starry shader. The blend is split into two halves
   // (galaxy fades first, then logo stars come up) — see the galaxy
   // uBrightness block above for the front-half curve.
   {
-    const target = showFlameOnly ? 1 : 0;
+    const target = (showFlameOnly || showRecede) ? 1 : 0;
     const fadeSpeed = 0.15;
     const k = 1 - Math.exp(-fadeSpeed * dt);
     logoStarryBlend += (target - logoStarryBlend) * k;
@@ -291,25 +300,26 @@ export function tick(t, dt) {
     const logoStarsBlend = Math.max(0, (logoStarryBlend - 0.5) / 0.5);
     tickLogoStarry(t, logoStarsBlend);
   }
-  // Fireplace modes share the central flame, voussoir ring, and starry
-  // backdrop. flameOnly (key 6) shares only the flame + dark backdrop —
-  // no bricks, no voussoir; the gate-frame stays on and is recolored
-  // fiery so the silhouette reads as molten metal around the flame.
-  const showFireOrCarved = showFireplace || showCarved;
-  const showFlame        = showFireOrCarved;
-  const fireLikeMode     = showFireOrCarved || showFlameOnly;
+  // Flame stays lit in fireplaceOne (key 4), fireplaceTwo (key 5 — recede),
+  // and flameOnly (key 6). fireplaceTwo no longer carries any bricks; the
+  // recede stack + flame + galaxy is the whole show. flameOnly remains the
+  // "molten frame" mode where the gate frame is recolored fiery.
+  const showFlame    = showFireplace || showRecede;
+  const fireLikeMode = showFlame || showFlameOnly;
   if (ctx.panelGroup)   ctx.panelGroup.visible   = showPanel;
   if (ctx.latticeGroup) ctx.latticeGroup.visible = showLattice;
   if (ctx.archGroup)    ctx.archGroup.visible    = showFireplace;
-  if (ctx.archCarvedGroup) ctx.archCarvedGroup.visible = showCarved;
+  if (ctx.recedeGroup)  ctx.recedeGroup.visible  = showRecede;
   if (ctx.flameGroup)   ctx.flameGroup.visible   = showFlame;
   if (ctx.gateRimGroup) ctx.gateRimGroup.visible = showFlameOnly;
-  if (ctx.fireplaceGroup) ctx.fireplaceGroup.visible = showFireOrCarved;
-  // Hide the smooth extruded gate-frame ring when fireplace/carved mode
-  // wants to own the perimeter look — set ANIM.arch.hideGateFrame in
-  // config to drop the procedural frame so only the brick layers read.
+  // fireplaceOne still wants the outer brick fireplace; fireplaceTwo doesn't.
+  if (ctx.fireplaceGroup) ctx.fireplaceGroup.visible = showFireplace;
+  // Hide the smooth extruded gate-frame ring when fireplaceOne wants to
+  // own the perimeter look — set ANIM.arch.hideGateFrame in config to
+  // drop the procedural frame so only the brick layers read. Recede mode
+  // keeps the gate frame visible — it caps the receding silhouette nicely.
   if (ctx.gateFrameGroup) {
-    ctx.gateFrameGroup.visible = !(showFireOrCarved && ANIM.arch && ANIM.arch.hideGateFrame);
+    ctx.gateFrameGroup.visible = !(showFireplace && ANIM.arch && ANIM.arch.hideGateFrame);
   }
   // Three.js checks light.visible directly when collecting scene lights —
   // hiding the parent group does NOT remove the light from the shader's
@@ -437,8 +447,8 @@ export function tick(t, dt) {
   }
   if (ctx.updateOverlay)    ctx.updateOverlay(t);
   if (ctx.updateArch)       ctx.updateArch(t, dt);
-  if (ctx.updateArchCarved) ctx.updateArchCarved(t, dt);
   if (ctx.updateFireplace)  ctx.updateFireplace(t, dt);
+  if (ctx.updateRecede)     ctx.updateRecede(t, dt);
   // Drive the gold-shimmer sparkle phase. Cheap — one uniform write —
   // and a no-op on materials the shader patch wasn't applied to.
   tickShimmer(t);
@@ -495,6 +505,21 @@ export function tick(t, dt) {
     if (ctx.setConstellationOpacity) ctx.setConstellationOpacity(constellationOpacity);
     if (visible && ctx.updateConstellation) ctx.updateConstellation(t, dt);
   }
+
+  // Hearth flame (key 6 only) — single wide flame masked to the gate-
+  // frame interior. While iterating on the look, force always-visible
+  // in flameOnly mode (bypass the constellation cycle's flame-phase
+  // gating). To restore cycle gating swap the line below back to:
+  //   const hearthVisible = showFlameOnly &&
+  //     (ctx.getHearthFlameOpacity ? ctx.getHearthFlameOpacity() : 0) > 0.05;
+  const hearthVisible = showFlameOnly;
+  if (ctx.hearthFlameGroup) ctx.hearthFlameGroup.visible = hearthVisible;
+  if (ctx.hearthFlameLights) {
+    for (let i = 0; i < ctx.hearthFlameLights.length; i++) {
+      ctx.hearthFlameLights[i].visible = hearthVisible;
+    }
+  }
+  if (ctx.updateHearthFlame) ctx.updateHearthFlame(t, dt);
 
   // Galaxy starry-night blend — lerps toward 1 in fireplace mode (black
   // sky + denser flickering stars behind the flame), toward 0 otherwise
@@ -581,6 +606,19 @@ export function tick(t, dt) {
       ctx.overlayHexRoots[i].visible = false;
     }
   }
+  // flameOnly: updateOverlay's internal morph state can re-enable BOTH
+  // the hex wall and the rose flowers during its brick-hold and rose-
+  // hold phases. Mode 6 wants only the starry sky + frame + hearth, so
+  // suppress everything the overlay owns here.
+  if (mode === 'flameOnly') {
+    for (let i = 0; i < ctx.overlayHexRoots.length; i++) {
+      ctx.overlayHexRoots[i].visible = false;
+    }
+    for (let i = 0; i < ctx.overlayFlowerRoots.length; i++) {
+      ctx.overlayFlowerRoots[i].visible = false;
+    }
+    if (ctx.overlayMaskMesh) ctx.overlayMaskMesh.visible = false;
+  }
   const snapScale = ctx.cascadeState ? ctx.cascadeState.active : 1;
   // Sparks fade out (not snap to invisible) while the playAll overlay
   // window is open — the stroke cloud is a load-time snapshot that
@@ -618,7 +656,7 @@ export function tick(t, dt) {
     if (host === 'panel' || host === 'lattice') {
       hostVisible = (mode === 'visualSequence' || mode === 'fractalPattern');
     } else if (host === 'arch') {
-      hostVisible = showFireOrCarved;
+      hostVisible = showFireplace;
     }
     let target = hostVisible ? 1 : 0;
     if (mode === 'visualSequence' && inOverlayWindow) target = 0;

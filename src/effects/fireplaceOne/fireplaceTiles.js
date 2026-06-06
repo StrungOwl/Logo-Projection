@@ -1623,9 +1623,8 @@ function placeOuterBrickArch({
 export function createArch({ silhouette, maxZ, frameDepth = 0.5,
                              gateFrameWidth = 1.6, configOverride = null,
                              groupName = 'arch' }) {
-  // configOverride lets a caller build a second, parallel arch group
-  // with different config (e.g. the 'carved' viewMode's deeper-wall
-  // experiment) without swapping ANIM.arch globally.
+  // configOverride lets a caller build a parallel arch group with
+  // different config without swapping ANIM.arch globally.
   const cfg = configOverride || ANIM.arch || {};
   const group = new THREE.Group();
   group.name = groupName;

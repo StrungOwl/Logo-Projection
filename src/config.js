@@ -46,7 +46,7 @@ export const ANIM = {
   //   2 → 'hexagons'        (Hexagons)
   //   3 → 'flowers'         (Flowers)
   //   4 → 'fireplaceOne'    (Fireplace One — cascading bricks + flame)
-  //   5 → 'fireplaceTwo'    (Fireplace Two — horseshoe arch + petals + flame)
+  //   5 → 'fireplaceTwo'    (Fireplace Two — nested receding logo silhouettes + flame)
   viewMode: 'flameOnly',
 
   keyLight:          { intensityMin: 0.0,  intensityMax: 4.6,
@@ -1527,63 +1527,6 @@ export const ANIM = {
       shadowStrength: 0.55,
       shadowFalloff:  1.6,
     },
-  },
-
-  // -----------------------------------------------------------------------
-  // ARCH CARVED — experimental viewMode (key 5). Fork of ANIM.arch where
-  // the topLayer staircase is built MUCH deeper (more steps, taller Z
-  // extrusion) and bricks are STRATEGICALLY removed in patterns to
-  // expose lantern alcoves carved into the deeper wall. The user's
-  // playground for sculpting carved-brick muqarnas-style patterns.
-  // Inherits everything from ANIM.arch unless explicitly overridden;
-  // the patterns-layer.js wiring shallow-merges ANIM.arch onto this
-  // block before passing as configOverride.
-  // -----------------------------------------------------------------------
-  archCarved: {
-    // Deep brick facade: 10 stair tiers, ALL bricks (no hex grooves),
-    // with a much larger maxStepHeight so the outermost step pops
-    // dramatically forward of the floor — reads as a thick masonry
-    // wall whose 10 receding courses can be sculpted via niches.
-    topLayer: {
-      enabled:        true,
-      reachFraction:  0.66,
-      stepCount:      10,
-      minStepHeight:  0.6,
-      maxStepHeight:  7.0,
-      zLift:          0.05,
-      // All 10 tiers brick — no hex layers in this carved facade.
-      layerKinds:     ['brick','brick','brick','brick','brick',
-                       'brick','brick','brick','brick','brick'],
-      niches:         [],            // populated by createArch from lantern positions
-      widthScale:     1.0,
-      depthScale:     1.0,
-      mortarGapX:     0.08,
-      mortarGapY:     0.08,
-      maskInset:      0.4,
-      underHexes: { enabled: false },
-      cornerHexes: { enabled: false },
-      // Mode 5 keeps the rectangular tier rings (nested rectangles).
-      // arch.topLayer.tierShape is 'lancet' for mode 4; the shallow merge
-      // would inherit it without this explicit override.
-      tierShape:      'rect',
-      archShape: {
-        enabled:        false,
-        springerYFrac:  0.10,
-        apexYFrac:      0.85,
-        springerXFrac:  0.55,
-        innerSFrac:     0.05,
-      },
-    },
-    // Override mode-4's gold metallic palette so mode 5 keeps the grey
-    // stone look. Lanterns + floor intentionally OMITTED so they still
-    // inherit from ANIM.arch via the shallow merge.
-    color:           '#888888',
-    gradientDark:    '#3F3F3F',
-    gradientBright:  '#C8C8C8',
-    metalness:       0.10,
-    roughness:       0.85,
-    // Disable the gold shimmer — stone shouldn't twinkle.
-    shimmer:         { enabled: false },
   },
 
   // -----------------------------------------------------------------------

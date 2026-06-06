@@ -157,10 +157,12 @@ export function createGalaxyMaterial() {
         // the "many flickering stars" feel during flame mode.
         if (uStarryMode > 0.001) {
           float extraStars = 0.0;
-          extraStars += starLayer(vLocalPos.xy, 1.40, 0.86,  7.0) * 1.15;
-          extraStars += starLayer(vLocalPos.xy, 2.80, 0.90, 10.0) * 0.85;
-          extraStars += starLayer(vLocalPos.xy, 5.40, 0.94, 14.0) * 0.6;
-          extraStars += starLayer(vLocalPos.xy, 9.00, 0.97, 19.0) * 0.4;
+          extraStars += starLayer(vLocalPos.xy, 1.40, 0.65,  7.0) * 1.15;
+          extraStars += starLayer(vLocalPos.xy, 2.80, 0.72, 10.0) * 0.85;
+          extraStars += starLayer(vLocalPos.xy, 5.40, 0.80, 14.0) * 0.6;
+          extraStars += starLayer(vLocalPos.xy, 9.00, 0.86, 19.0) * 0.4;
+          extraStars += starLayer(vLocalPos.xy, 14.0, 0.90, 24.0) * 0.3;
+          extraStars += starLayer(vLocalPos.xy, 20.0, 0.93, 28.0) * 0.25;
           vec3 starrySky = vec3(0.0);
           // Multipliers compensate for the dim galaxy uBrightness in
           // flame mode (~0.18) — without the boost the stars almost

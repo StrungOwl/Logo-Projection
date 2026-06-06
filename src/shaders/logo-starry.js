@@ -68,10 +68,12 @@ export function applyLogoStarry(material) {
           // — at the logo's world scale they seeded ~a handful of huge
           // blob stars that read as bright spots rather than starlight.
           // The kept layers stay tight + numerous.
-          stars += starryLayer(sp, 2.20, 0.88, 12.0) * 1.05;
-          stars += starryLayer(sp, 4.20, 0.92, 15.0) * 0.8;
-          stars += starryLayer(sp, 7.50, 0.95, 18.0) * 0.55;
-          stars += starryLayer(sp, 12.0, 0.97, 22.0) * 0.4;
+          stars += starryLayer(sp, 2.20, 0.68, 12.0) * 1.05;
+          stars += starryLayer(sp, 4.20, 0.76, 15.0) * 0.8;
+          stars += starryLayer(sp, 7.50, 0.82, 18.0) * 0.55;
+          stars += starryLayer(sp, 12.0, 0.88, 22.0) * 0.4;
+          stars += starryLayer(sp, 18.0, 0.92, 26.0) * 0.3;
+          stars += starryLayer(sp, 26.0, 0.94, 30.0) * 0.25;
           vec3 starColor = vec3(1.0, 0.95, 0.85) * stars * 3.5;
           totalEmissiveRadiance += starColor * uStarryBlend;
         }
