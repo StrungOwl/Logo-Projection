@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Logo Projection — Control</title>
+  <!-- Zero-dependency control panel. Open in a SECOND window/tab of the
+       same browser as the viewer (BroadcastChannel is same-browser only;
+       cross-device control goes through TouchDesigner's WebSocket — see
+       docs/TOUCHDESIGNER.md). -->
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0d0a07; color: #ffd9a0;
+      font: 14px/1.5 ui-monospace, Menlo, Consolas, monospace;
+      padding: 20px; max-width: 760px; margin: 0 auto;
+    }
+    h1 { font-size: 16px; color: #ffc24a; margin-bottom: 4px; }
+    #status { font-size: 12px; color: #8a7a5e; margin-bottom: 18px; }
+    section { margin-bottom: 20px; }
+    h2 {
+      font-size: 11px; text-transform: uppercase; letter-spacing: 0.12em;
+      color: #8a7a5e; border-bottom: 1px solid #2a2115;
+      padding-bottom: 4px; margin-bottom: 10px;
+    }
+    .grid { display: flex; flex-wrap: wrap; gap: 8px; }
+    button {
+      background: #1c150c; color: #ffd9a0;
+      border: 1px solid #3a2d1a; border-radius: 6px;
+      padding: 9px 14px; font: inherit; cursor: pointer;
+    }
+    button:hover { background: #2a2013; border-color: #6b4a26; }
+    button.active { background: #4a3416; border-color: #ffc24a; color: #ffe9c0; }
+    input {
+      background: #12100b; color: #ffd9a0; border: 1px solid #3a2d1a;
+      border-radius: 6px; padding: 8px 10px; font: inherit;
+    }
+    #paramRow { display: flex; gap: 8px; }
+    #paramPath { flex: 2; } #paramValue { flex: 1; }
+    #log {
+      font-size: 11px; color: #6e6048; white-space: pre-wrap;
+      max-height: 140px; overflow-y: auto; background: #0a0805;
+      border: 1px solid #221a0e; border-radius: 6px; padding: 8px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Logo Projection — Control</h1>
+  <div id="status">connecting to viewer…</div>
+
+  <section>
+    <h2>Mode</h2>
+    <div class="grid" id="modes"></div>
+  </section>
+
+  <section>
+    <h2>Show</h2>
+    <div class="grid">
+      <button data-show="toggle">▶ / ⏸ Play–Pause</button>
+      <button data-show="prev">⏮ Prev</button>
+      <button data-show="next">⏭ Next</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Triggers</h2>
+    <div class="grid" id="triggers"></div>
+  </section>
+
+  <section>
+    <h2>Calibration</h2>
+    <div class="grid" id="calibration"></div>
+  </section>
+
+  <section>
+    <h2>Engine</h2>
+    <div class="grid">
+      <button data-msg='{"type":"quality","value":"HIGH"}'>Quality HIGH</button>
+      <button data-msg='{"type":"quality","value":"MED"}'>Quality MED</button>
+      <button data-msg='{"type":"quality","value":"LOW"}'>Quality LOW</button>
+      <button id="postBtn">Post FX on/off</button>
+      <button data-msg='{"type":"projection","enabled":true}'>Projection ON</button>
+      <button data-msg='{"type":"projection","enabled":false}'>Projection OFF</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Param (dotted path into ANIM)</h2>
+    <div id="paramRow">
+      <input id="paramPath"  placeholder="flame.light.intensityMax">
+      <input id="paramValue" placeholder="4.5">
+      <button id="paramSend">Set</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Log</h2>
+    <div id="log"></div>
+  </section>
+
+  <script>
+    const bc = new BroadcastChannel('logo-projection-control');
+    const $ = (id) => document.getElementById(id);
+    const MODES = [
+      ['0', 'visualSequence'], ['1', 'fractalPattern'], ['2', 'hexagons'],
+      ['3', 'flowers'], ['4', 'fireplaceOne'], ['5', 'fireplaceTwo'],
+      ['6', 'flameOnly'], ['7', 'moltenGold'], ['9', 'calibration'],
+    ];
+    const CAL = ['off', 'fill', 'outline', 'grid', 'checker', 'corners'];
+    // Seed list — replaced by the live registry from the first state msg.
+    let TRIGGERS = ['cascade.now', 'arch.cascade', 'fractal.zoom', 'domino.toggle', 'stellar.pulse'];
+
+    let lastState = null;
+    function send(obj) { bc.postMessage(obj); log('→ ' + JSON.stringify(obj)); }
+    function log(s) {
+      const el = $('log');
+      el.textContent = (s + '\n' + el.textContent).split('\n').slice(0, 60).join('\n');
+    }
+
+    function renderModes() {
+      $('modes').innerHTML = '';
+      for (const [key, mode] of MODES) {
+        const b = document.createElement('button');
+        b.textContent = `${key} ${mode}`;
+        if (lastState && lastState.mode === mode) b.classList.add('active');
+        b.onclick = () => send({ type: 'mode', value: mode });
+        $('modes').appendChild(b);
+      }
+    }
+    function renderTriggers() {
+      $('triggers').innerHTML = '';
+      for (const name of TRIGGERS) {
+        const b = document.createElement('button');
+        b.textContent = name;
+        b.onclick = () => send({ type: 'trigger', name });
+        $('triggers').appendChild(b);
+      }
+    }
+    function renderCalibration() {
+      $('calibration').innerHTML = '';
+      for (const p of CAL) {
+        const b = document.createElement('button');
+        b.textContent = p;
+        if (lastState && lastState.calibration === p) b.classList.add('active');
+        b.onclick = () => send({ type: 'calibration', pattern: p });
+        $('calibration').appendChild(b);
+      }
+    }
+
+    bc.onmessage = (e) => {
+      const msg = e.data;
+      if (!msg || !msg.type) return;
+      if (msg.type === 'state') {
+        lastState = msg;
+        if (Array.isArray(msg.triggers) && msg.triggers.length) TRIGGERS = msg.triggers;
+        $('status').textContent =
+          `mode: ${msg.mode} · show: ${msg.show ? (msg.show.playing ? 'playing #' + msg.show.index : 'paused') : '—'}` +
+          ` · projection: ${msg.projection && msg.projection.enabled ? 'on' : 'off'}`;
+        renderModes(); renderTriggers(); renderCalibration();
+      } else if (msg.type !== 'pong') {
+        log('← ' + JSON.stringify(msg));
+      }
+    };
+
+    document.body.addEventListener('click', (e) => {
+      const raw = e.target.dataset && e.target.dataset.msg;
+      if (raw) send(JSON.parse(raw));
+      const show = e.target.dataset && e.target.dataset.show;
+      if (show) send({ type: 'show', action: show });
+    });
+    $('postBtn').onclick = () => {
+      const on = lastState && lastState.post ? !lastState.post.enabled : false;
+      send({ type: 'param', path: 'post.enabled', value: on });
+      send({ type: 'show', action: 'state' });   // pull fresh state
+    };
+    $('paramSend').onclick = () => {
+      const path = $('paramPath').value.trim();
+      const rawV = $('paramValue').value.trim();
+      if (!path) return;
+      let value; try { value = JSON.parse(rawV); } catch { value = rawV; }
+      send({ type: 'param', path, value });
+    };
+
+    renderModes(); renderTriggers(); renderCalibration();
+    send({ type: 'ping' });
+    send({ type: 'show', action: 'state' });
+  </script>
+</body>
+</html>

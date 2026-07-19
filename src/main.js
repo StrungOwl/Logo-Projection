@@ -17,7 +17,11 @@ import { addParticles, updateParticles } from './effects/_shared/streams.js';
 import { toggleDominoes, updateDominoes } from './effects/fireplaceTwo/dominoAnim.js';
 import { tickShimmer } from './shaders/gold-shimmer.js';
 import { applyLogoStarry, tickLogoStarry } from './shaders/logo-starry.js';
-import { cycleQuality } from './quality.js';
+import { cycleQuality, setQuality } from './quality.js';
+import { registerTrigger, fireTrigger, listTriggers } from './show/triggers.js';
+import { createTransitionManager } from './show/transitions.js';
+import { createSequencer } from './show/sequencer.js';
+import { initControl } from './core/control.js';
 
 const { scene, camera, renderer, controls } = createScene();
 const lights = createLights(scene);
@@ -91,6 +95,29 @@ const ctx = {
 const pipeline   = createPipeline({ renderer, scene, camera, ctx });
 const projection = createProjectionMode({ camera, controls, pipeline });
 let calibration  = null;   // built once the logo (and its silhouette) loads
+
+// Show system: transition manager owns viewMode flips (dip/wipe/edgeFlash
+// envelopes); the sequencer walks ANIM.show.playlist through it; the
+// control dispatcher feeds both from TouchDesigner (WebSocket), the
+// control.html panel (BroadcastChannel), and window.__control.
+const transitions = createTransitionManager({ renderer });
+pipeline.setEnvelopeSource(transitions.envelope);
+const sequencer = createSequencer({ transitions, getTime: () => clock.elapsedTime });
+const controlDeps = {
+  getTime: () => clock.elapsedTime,
+  transitions, sequencer, projection,
+  calibration: null,          // filled in after the logo loads
+  setQuality: (name) => setQuality(name, pipeline),
+};
+const control = initControl(controlDeps);
+
+// Dominoes toggle with explicit on/off tracking so the sequencer can cue
+// 'domino.on' / 'domino.off' without knowing the current state.
+let dominoesOn = false;
+function setDominoes(on, t) {
+  if (on === dominoesOn) return;
+  dominoesOn = toggleDominoes(scene, t);
+}
 
 // Low-passed flame brightness 0..1 — driven by the live PointLight stack
 // in src/effects/fireplaceOne/flame.js. Read by the galaxy uBrightness
@@ -237,11 +264,30 @@ loadLogo().then((logo) => {
   // Calibration patterns + projection framing both need the finalised
   // logo world transform (they copy matrixWorld / fit the world bbox).
   calibration = createCalibration({ scene, logoMesh: logo.logoMesh, meta: logo.meta });
+  controlDeps.calibration = calibration;
   projection.setLogo(logo.logoMesh);
+  scene.add(transitions.attachWipe(logo.logoMesh, logo.meta));
+
+  // Trigger registry — every control surface (keyboard, playlist cues,
+  // TouchDesigner, control.html, window.__triggers) fires these by name.
+  registerTrigger('cascade.now',   (t) => ctx.cascadeState?.triggerNow?.(t));
+  registerTrigger('fractal.zoom',  (t) => ctx.fractalState?.triggerZoom?.(t));
+  registerTrigger('arch.cascade',  (t) => ctx.triggerArchCascade?.(t));
+  registerTrigger('domino.on',     (t) => setDominoes(true, t));
+  registerTrigger('domino.off',    (t) => setDominoes(false, t));
+  registerTrigger('domino.toggle', (t) => { dominoesOn = toggleDominoes(scene, t); });
+  registerTrigger('stellar.pulse', ()  => ctx.triggerStellarPulse?.());
+  registerTrigger('quality.cycle', ()  => cycleQuality(pipeline));
 
   frameLogo(camera, controls);
   // ?proj=1 boots straight into fixed-resolution projection framing.
   if (projection.bootRequested) projection.enable();
+  // Installation duty: the show starts itself in projection boots (or
+  // whenever autoStart is set) so nobody has to touch a keyboard.
+  if ((projection.bootRequested && ANIM.show?.autoStartInProjection) || ANIM.show?.autoStart) {
+    sequencer.play();
+  }
+  control.sendState();
 }).catch(err => console.error('Failed to load logo:', err));
 
 // Single per-frame update — called by both the live animate loop and the
@@ -249,6 +295,12 @@ loadLogo().then((logo) => {
 // size for stateful systems (sparks) — the live loop passes real delta;
 // the export loop passes a fixed 1/fps.
 export function tick(t, dt) {
+  // Show system first: transitions may flip ANIM.viewMode at a blackpoint
+  // this frame (the gating below then reacts immediately); the sequencer
+  // schedules those flips + fires playlist cues.
+  transitions.update(t, dt);
+  sequencer.update(t, dt);
+
   if (ctx.galaxyMat) {
     ctx.galaxyMat.uniforms.uTime.value       = t * ANIM.galaxy.timeScale;
     // In fireplace mode, lerp uBrightness toward the configured override
@@ -739,6 +791,11 @@ if (typeof window !== 'undefined') {
   window.startExport1080p = () => runExport({ width: 1920, height: 1080 });
   window.__ctx = ctx;  // debug handle
   window.__pipeline = pipeline;
+  // Devtools trigger surface: __triggers.fire('cascade.now'), .list().
+  window.__triggers = {
+    fire: (name, args) => fireTrigger(name, clock.elapsedTime, args),
+    list: listTriggers,
+  };
   // Deterministic driver for the .verify probes: with ctx.paused=true the
   // rAF loop idles, and a probe can step the scene manually via
   // __tick(t, dt) + __renderer.render(...) for reproducible screenshots.
@@ -774,8 +831,22 @@ if (typeof window !== 'undefined') {
     // to rest.
     if (e.code === 'KeyD' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
       e.preventDefault();
-      const on = toggleDominoes(scene, clock.elapsedTime);
-      console.log(`[dominoes] ${on ? 'on' : 'off'}`);
+      dominoesOn = toggleDominoes(scene, clock.elapsedTime);
+      console.log(`[dominoes] ${dominoesOn ? 'on' : 'off'}`);
+      return;
+    }
+    // 's' — play/pause the auto-show. 'n' — skip to the next playlist step.
+    if (e.code === 'KeyS' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      console.log(`[show] ${sequencer.toggle() ? 'playing' : 'paused'}`);
+      control.sendState();
+      return;
+    }
+    if (e.code === 'KeyN' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      sequencer.play();
+      sequencer.next();
+      control.sendState();
       return;
     }
     // 'p' (no modifiers) — manually fire the constellation's stellar pulse
@@ -821,7 +892,11 @@ if (typeof window !== 'undefined') {
       const next = modeByKey[e.code];
       if (next) {
         e.preventDefault();
-        ANIM.viewMode = next;
+        // Manual mode keys pause the auto-show (it would yank the mode
+        // right back) and go through the transition manager's envelope.
+        sequencer.notifyManualInput();
+        transitions.requestMode(next);
+        control.sendState();
         return;
       }
     }
