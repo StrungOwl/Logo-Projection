@@ -10,6 +10,15 @@
 !patterns/**/*.png
 !3DModels/**/*.png
 
+# Verify harness — deps + probe output (reinstall: cd .verify && npm i)
+.verify/node_modules/
+.verify/shots/
+
+# Video/frame export output
+HighResOutput/
+
+# Vendored deps are committed on purpose — do NOT ignore vendor/
+
 # OS / editor
 .DS_Store
 Thumbs.db

@@ -709,6 +709,10 @@ if (typeof window !== 'undefined') {
   window.startExport      = runExport;                                       // default 4K
   window.startExport1080p = () => runExport({ width: 1920, height: 1080 });
   window.__ctx = ctx;  // debug handle
+  // Deterministic driver for the .verify probes: with ctx.paused=true the
+  // rAF loop idles, and a probe can step the scene manually via
+  // __tick(t, dt) + __renderer.render(...) for reproducible screenshots.
+  window.__tick = tick;
   window.addEventListener('keydown', (e) => {
     // Spacebar — fire the cascade sequence now (skip rest, begin exit
     // immediately). Auto-loop continues from this new phase. In arch
