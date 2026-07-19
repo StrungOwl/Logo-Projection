@@ -197,15 +197,33 @@ export function loadLogo() {
 
       // Apply amber metallic + vertical gradient tint to every mesh.
       // Collect materials so the animate loop can breathe their base color.
+      //
+      // COLORS.logo.physical.enabled upgrades the body to
+      // MeshPhysicalMaterial — full metal + clearcoat lacquer so the env
+      // studio's softbox streaks read twice (base specular + coat sheen).
+      // The physical shader is a superset of the standard chunks, so the
+      // gradient-tint patch below and main.js's applyLogoStarry patch
+      // (both anchored on standard chunk names) keep working unchanged.
       const logoMaterials = [];
+      const phys = COLORS.logo.physical;
+      const usePhysical = !!(phys && phys.enabled);
       model.traverse((child) => {
         if (child.isMesh) {
-          child.material = new THREE.MeshStandardMaterial({
-            color: COLORS.logo.base,
-            metalness: COLORS.logo.metalness,
-            roughness: COLORS.logo.roughness,
-            flatShading: true,
-          });
+          child.material = usePhysical
+            ? new THREE.MeshPhysicalMaterial({
+                color: COLORS.logo.base,
+                metalness: phys.metalness ?? 1.0,
+                roughness: phys.roughness ?? 0.28,
+                clearcoat: phys.clearcoat ?? 0.55,
+                clearcoatRoughness: phys.clearcoatRoughness ?? 0.22,
+                flatShading: true,
+              })
+            : new THREE.MeshStandardMaterial({
+                color: COLORS.logo.base,
+                metalness: COLORS.logo.metalness,
+                roughness: COLORS.logo.roughness,
+                flatShading: true,
+              });
           child.geometry.computeVertexNormals();
           applyGradientTint(child.material, {
             minY: -5.5,

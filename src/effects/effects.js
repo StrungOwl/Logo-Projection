@@ -165,6 +165,7 @@ export function addEffects(logoMesh, meta, renderer) {
     gradientDark:   hexToRgb(COLORS.gateFrame.gradientDark),
     gradientBright: hexToRgb(COLORS.gateFrame.gradientBright),
     bottomCutY: null,
+    gild: COLORS.gateFrame.gild,
   });
   gate.name = 'gate-frame';
   gate.position.set(cx, cy, maxZ + 0.45);

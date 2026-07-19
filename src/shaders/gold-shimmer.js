@@ -28,6 +28,10 @@ const sharedUniforms = {
   uSheenScale:     { value: 0.20 },    // world-XY scale for sheen noise
   uSheenSpeed:     { value: 0.25 },    // noise drift speed
   uSheenStrength:  { value: 0.6 },     // emissive multiplier (sheen)
+  // Glint boost — extra emissive applied at the sheen PEAKS only
+  // (pow(sheen, 4) gate) so the hottest sparkle points cross the bloom
+  // threshold and glint under the composer's bloom pass. 0 = off.
+  uGlintBoost:     { value: 0.0 },
   // Per-fragment shadow gradient — darkens each brick face toward its
   // bottom edge (uv.v = 0) and lets the top edge (uv.v = 1) keep its
   // full gold colour. Fakes the soft shadow that would naturally fall
@@ -45,6 +49,7 @@ function syncFromConfig() {
   sharedUniforms.uSheenScale.value    = s.sheenScale    ?? 0.20;
   sharedUniforms.uSheenSpeed.value    = s.sheenSpeed    ?? 0.25;
   sharedUniforms.uSheenStrength.value = s.sheenStrength ?? 0.6;
+  sharedUniforms.uGlintBoost.value    = s.glintBoost    ?? 0.0;
   sharedUniforms.uShadowStrength.value = s.shadowStrength ?? 0.55;
   sharedUniforms.uShadowFalloff.value  = s.shadowFalloff  ?? 1.6;
 }
@@ -75,6 +80,7 @@ export function applyGoldShimmer(material) {
         uniform float uSheenScale;
         uniform float uSheenSpeed;
         uniform float uSheenStrength;
+        uniform float uGlintBoost;
         uniform float uShadowStrength;
         uniform float uShadowFalloff;
         varying vec3  vShimWorldPos;
@@ -125,7 +131,11 @@ export function applyGoldShimmer(material) {
         // doesn't get washed out by bright sparkles at the bottom edge.
         float shadowGradE = pow(clamp(vShadowUv.y, 0.0, 1.0), uShadowFalloff);
         float shadowMul   = mix(1.0 - uShadowStrength, 1.0, shadowGradE);
-        totalEmissiveRadiance += uShimColor * sheen * uSheenStrength * shadowMul;
+        // Sheen-peak glint — pow(sheen, 4) isolates only the hottest
+        // sparkle points; uGlintBoost pushes those past the bloom
+        // threshold so they glint, while the broad sheen stays below it.
+        float glint = pow(sheen, 4.0) * uGlintBoost;
+        totalEmissiveRadiance += uShimColor * (sheen * uSheenStrength + glint) * shadowMul;
       `);
   };
 }

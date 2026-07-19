@@ -75,6 +75,11 @@ export function createGateFrame({
   gradientBright = [1.0, 1.0, 1.0],
   bottomCutY = null,
   innerOffsetter = insetPolygon,
+  // Gild — constant warm emissive on the lip + boss material so bloom
+  // permanently outlines the frame edge with a thin luminous line.
+  // { color, intensity }; null/intensity 0 keeps the legacy shared-mat
+  // behaviour (lips render with the body material).
+  gild = null,
 } = {}) {
   const group = new THREE.Group();
 
@@ -91,27 +96,46 @@ export function createGateFrame({
     uGradDark:    { value: new THREE.Vector3(...gradientDark) },
     uGradBright:  { value: new THREE.Vector3(...gradientBright) },
   };
-  mat.onBeforeCompile = (shader) => {
-    Object.assign(shader.uniforms, gradUniforms);
-    shader.vertexShader = shader.vertexShader
-      .replace('#include <common>',
-        '#include <common>\nvarying vec3 vGradWP;')
-      .replace('#include <project_vertex>',
-        '#include <project_vertex>\nvGradWP = (modelMatrix * vec4(position, 1.0)).xyz;');
-    shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>',
-        `#include <common>
-         uniform float uGradMinY;
-         uniform float uGradMaxY;
-         uniform vec3  uGradDark;
-         uniform vec3  uGradBright;
-         varying vec3  vGradWP;`)
-      .replace('#include <color_fragment>',
-        `#include <color_fragment>
-         float _gt = clamp((vGradWP.y - uGradMinY) / max(uGradMaxY - uGradMinY, 1e-4), 0.0, 1.0);
-         diffuseColor.rgb *= mix(uGradDark, uGradBright, _gt);`);
+  const patchGradient = (m) => {
+    m.onBeforeCompile = (shader) => {
+      Object.assign(shader.uniforms, gradUniforms);
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>',
+          '#include <common>\nvarying vec3 vGradWP;')
+        .replace('#include <project_vertex>',
+          '#include <project_vertex>\nvGradWP = (modelMatrix * vec4(position, 1.0)).xyz;');
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>',
+          `#include <common>
+           uniform float uGradMinY;
+           uniform float uGradMaxY;
+           uniform vec3  uGradDark;
+           uniform vec3  uGradBright;
+           varying vec3  vGradWP;`)
+        .replace('#include <color_fragment>',
+          `#include <color_fragment>
+           float _gt = clamp((vGradWP.y - uGradMinY) / max(uGradMaxY - uGradMinY, 1e-4), 0.0, 1.0);
+           diffuseColor.rgb *= mix(uGradDark, uGradBright, _gt);`);
+    };
   };
+  patchGradient(mat);
   group.userData.gradUniforms = gradUniforms;
+
+  // Lips + bosses get their own material when gilding is on, so the
+  // constant emissive never bleeds onto the frame body (which must stay
+  // BELOW the bloom threshold like all ordinary lit gold).
+  const gildOn = !!(gild && (gild.intensity ?? 0) > 0);
+  const lipMat = gildOn
+    ? new THREE.MeshStandardMaterial({
+        color,
+        metalness: 0.7,
+        roughness: 0.3,
+        envMapIntensity: 0.3,
+        emissive: new THREE.Color(gild.color || '#FFC24A'),
+        emissiveIntensity: gild.intensity,
+      })
+    : mat;
+  if (gildOn) patchGradient(lipMat);
 
   const inner = innerOffsetter(hull, frameWidth);
   const innerLipOuter = innerOffsetter(hull, frameWidth - lipWidth);
@@ -150,7 +174,7 @@ export function createGateFrame({
     bevelSegments: 2,
     curveSegments: 2,
   });
-  const innerLip = new THREE.Mesh(innerLipGeo, mat);
+  const innerLip = new THREE.Mesh(innerLipGeo, lipMat);
   innerLip.position.z = frameDepth;
   group.add(innerLip);
 
@@ -166,7 +190,7 @@ export function createGateFrame({
     bevelSegments: 2,
     curveSegments: 2,
   });
-  const outerLip = new THREE.Mesh(outerLipGeo, mat);
+  const outerLip = new THREE.Mesh(outerLipGeo, lipMat);
   outerLip.position.z = frameDepth;
   group.add(outerLip);
 
@@ -199,7 +223,7 @@ export function createGateFrame({
       samples = samplePerimeter(midline, bossCount);
     }
     for (const s of samples) {
-      const mesh = new THREE.Mesh(bossGeo, mat);
+      const mesh = new THREE.Mesh(bossGeo, lipMat);
       mesh.position.set(s.x, s.y, frameDepth + lipDepth - 0.01);
       mesh.rotation.z = Math.atan2(s.ty, s.tx);
       group.add(mesh);
@@ -208,8 +232,10 @@ export function createGateFrame({
 
   // Expose the shared material + gradient uniforms so callers (main.js)
   // can recolor the frame for special modes (e.g. fiery silhouette in
-  // flame-only mode 6) without re-traversing the group.
+  // flame-only mode 6) without re-traversing the group. lipMaterial is
+  // the gilded lip/boss material (=== frameMaterial when gilding is off).
   group.userData.frameMaterial = mat;
+  group.userData.lipMaterial   = lipMat;
   group.userData.gradUniforms  = gradUniforms;
   return group;
 }

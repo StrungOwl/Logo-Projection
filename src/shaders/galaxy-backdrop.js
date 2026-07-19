@@ -35,6 +35,15 @@ export function createGalaxyMaterial() {
       // during the hex-mode auto-cycle (effect 2 only). Effect 4/5
       // leave it at 0 so their starry look is unchanged.
       uStarryBoost: { value: 0.0 },
+      // 1 while the post-processing composer is active, 0 on the legacy
+      // direct-render path (driven per-frame from main.js). This shader
+      // is authored display-referred (no tonemapping chunks) — under the
+      // composer its output lands in a LINEAR HalfFloat target and
+      // OutputPass applies ACES + sRGB-encode on top, which lifts all
+      // mids toward white. When flagged, we pre-linearize the final rgb
+      // (pow 2.2) so the OutputPass sRGB-encode restores the authored
+      // tone; ACES then only gently compresses the brightest values.
+      uOutputLinear: { value: 0.0 },
     },
     vertexShader: `
       varying vec3 vLocalPos;
@@ -55,6 +64,7 @@ export function createGalaxyMaterial() {
       uniform float uStarryMode;
       uniform float uStarSizeScale;
       uniform float uStarryBoost;
+      uniform float uOutputLinear;
       varying vec3 vLocalPos;
       varying vec3 vNormal;
 
@@ -197,7 +207,18 @@ export function createGalaxyMaterial() {
         float bottomFade = smoothstep(uMinY, uMinY + uFadeHeight, vLocalPos.y);
         color *= bottomFade;
 
-        gl_FragColor = vec4(color * uBrightness, 1.0);
+        vec3 outRgb = color * uBrightness;
+        // Composer path: convert display-referred → linear so OutputPass's
+        // sRGB encode round-trips the authored look (see uOutputLinear).
+        // The clamp reproduces the legacy canvas's per-channel clip at 1.0
+        // — without it, overbright core-glow stacks become huge linear
+        // values that cross the bloom threshold and wash the interior.
+        // The galaxy is ambience, not an intentional emitter; it must stay
+        // below bloom on both paths.
+        if (uOutputLinear > 0.5) {
+          outRgb = pow(clamp(outRgb, 0.0, 1.0), vec3(2.2));
+        }
+        gl_FragColor = vec4(outRgb, 1.0);
       }
     `,
   });

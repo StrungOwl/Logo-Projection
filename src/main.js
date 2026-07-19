@@ -303,6 +303,11 @@ export function tick(t, dt) {
 
   if (ctx.galaxyMat) {
     ctx.galaxyMat.uniforms.uTime.value       = t * ANIM.galaxy.timeScale;
+    // Composer active → galaxy must emit linear (OutputPass re-encodes);
+    // legacy direct render → display-referred as always (exact old look).
+    if (ctx.galaxyMat.uniforms.uOutputLinear) {
+      ctx.galaxyMat.uniforms.uOutputLinear.value = ANIM.post?.enabled ? 1 : 0;
+    }
     // In fireplace mode, lerp uBrightness toward the configured override
     // so the backdrop is dimmer and the flame body reads clearly against
     // mostly-black sky-with-stars.

@@ -1518,6 +1518,11 @@ export const ANIM = {
       sheenScale:    0.18,       // world-XY scale for sheen noise
       sheenSpeed:    0.35,       // drift speed
       sheenStrength: 1.2,        // emissive multiplier for sheen
+      // Extra emissive at the sheen PEAKS only (gated by pow(sheen,4)
+      // in gold-shimmer.js) so the hottest sparkle points cross the
+      // bloom threshold and glint — occasional sparkles, not a glowing
+      // wall. 0 disables. Live-tunable (re-read each frame).
+      glintBoost:    2.5,
       // Per-fragment overhang-shadow gradient. Each brick face fades
       // from full gold at the top (uv.y = 1) to a darkened tone at the
       // bottom (uv.y = 0), faking the soft shadow that would naturally
@@ -2375,7 +2380,7 @@ export const ANIM = {
   // -----------------------------------------------------------------------
   post: {
     enabled: true,
-    bloom: { enabled: true, strength: 0.3, radius: 0.4, threshold: 1.6 },
+    bloom: { enabled: true, strength: 0.3, radius: 0.3, threshold: 1.6 },
   },
 
   // -----------------------------------------------------------------------
@@ -2458,11 +2463,37 @@ export const ANIM = {
 // -----------------------------------------------------------------------
 export const COLORS = {
   sceneBackground: '#000000',
-  envTint:         '#888888',
+  envTint:         '#888888',   // legacy flat-grey env (unused since the
+                                // procedural studio below landed; kept as
+                                // a reference value).
+
+  // Procedural studio environment (src/core/scene.js). PMREM-baked once
+  // at boot: a 3-stop vertical gradient sphere + thin overbright softbox
+  // strips whose streaked reflections make the metallic gold read
+  // dimensional instead of flat. Reload to apply.
+  //   floor / horizon / zenith — gradient stops bottom → mid → top
+  //   softboxColor             — strip tint (white-gold)
+  //   softboxIntensity         — radiance multiplier; higher = hotter,
+  //                              longer specular streaks on the metal
+  env: {
+    floor:            '#1A120A',
+    horizon:          '#6B4A26',
+    zenith:           '#2A2E38',
+    softboxColor:     '#FFF2D8',
+    softboxIntensity: 3.0,
+  },
 
   logo:            { base: '#FFBF00', metalness: 0.6, roughness: 0.35,
                      gradientDark:   '#B89466',
-                     gradientBright: '#FFFFF2' },
+                     gradientBright: '#FFFFF2',
+                     // Physical-gold upgrade — when enabled the body is
+                     // rebuilt as MeshPhysicalMaterial (full metal +
+                     // clearcoat lacquer) instead of MeshStandardMaterial;
+                     // metalness/roughness here override the standard pair
+                     // above. Set enabled:false to fall back. Reload.
+                     physical: { enabled: true,
+                                 clearcoat: 0.55, clearcoatRoughness: 0.22,
+                                 roughness: 0.28, metalness: 0.85 } },
   islamicPanel:    { gold: '#B08552', stroke: '#E06A3A',
                      gradientDark:   '#AD8C66',
                      gradientBright: '#FFFFF2' },
@@ -2471,7 +2502,14 @@ export const COLORS = {
                      gradientBright: '#FFFFF2' },
   gateFrame:       { base: '#B8915A',
                      gradientDark:   '#594733',
-                     gradientBright: '#FFFFF2' },
+                     gradientBright: '#FFFFF2',
+                     // Gilded lip — the frame's inner/outer lips + boss
+                     // studs get a constant warm emissive strong enough
+                     // to cross the bloom threshold, so bloom permanently
+                     // draws a thin luminous outline around the logo.
+                     // intensity 0 disables (lips share the body
+                     // material again). Reload to apply.
+                     gild: { color: '#FFC24A', intensity: 3.0 } },
 
   ambient: '#FFFFFF',
   fill:    '#FFFFFF',
