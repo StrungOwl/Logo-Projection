@@ -150,6 +150,25 @@ function smoothstep01(x, a, b) {
   return t * t * (3 - 2 * t);
 }
 
+// onBeforeCompile patch shared by every instanced hex-wall material
+// (front prisms + back discs). Per-instance opacity isn't a native
+// three.js feature, so the per-tile fade (entry/exit edge fade, back-disc
+// reveal) rides a custom instanced attribute `aHexAlpha` multiplied into
+// diffuseColor.a. Defined once at module scope so every wall material
+// shares one compiled program per material class.
+function patchInstancedHexAlpha(shader) {
+  shader.vertexShader = shader.vertexShader
+    .replace('#include <common>',
+      '#include <common>\nattribute float aHexAlpha;\nvarying float vHexAlpha;')
+    .replace('#include <begin_vertex>',
+      '#include <begin_vertex>\nvHexAlpha = aHexAlpha;');
+  shader.fragmentShader = shader.fragmentShader
+    .replace('#include <common>',
+      '#include <common>\nvarying float vHexAlpha;')
+    .replace('vec4 diffuseColor = vec4( diffuse, opacity );',
+      'vec4 diffuseColor = vec4( diffuse, opacity * vHexAlpha );');
+}
+
 // Pick the two "lower" seed petals for a flower — one on the world-left
 // (x<0) and one on the world-right (x>0), each with the most-negative
 // world-y (i.e. closest to "below" from each side). `wrapperRotation` is
@@ -652,9 +671,8 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
   const brickEnabled  = brickCfg.enabled !== false;
   let morphGroup     = null;
   let brickHexWall      = null;        // outer parent group toggled by main.js
-  let brickHexMeshes    = [];          // canonical wall meshes (ghost pairing)
-  let brickHexCanonical = null;        // { wall, meshes, slots } for canonical
-  let brickHexPool      = [];          // [{ wall, meshes, radius, trigger }, ...]
+  let brickHexCanonical = null;        // instanced wall record for canonical
+  let brickHexPool      = [];          // [{ wall, rec, radius, trigger }, ...]
   const ghosts = [];
 
   if (brickEnabled && silhouette && silhouette[0] && silhouette[0].length >= 3) {
@@ -754,10 +772,17 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
     const backEnabled  = backCfg.enabled !== false;
     const altZOff      = backCfg.zOffset ?? 0.02;
 
-    // Builder: produce one self-contained hex wall set. Returns the
-    // sub-group, the per-tile mesh array, and the slot positions used.
+    // Builder: produce one self-contained hex wall set as TWO InstancedMeshes
+    // (front prisms + back discs) instead of hundreds of individual meshes.
+    // Per-tile state that used to live on mesh.userData (flip step/speed,
+    // evolution seeds, drift vectors, home positions) moves into flat arrays
+    // on the returned record; per-tile visual state that used to be
+    // per-material (colour wiggle, opacity fade) rides instanceColor + the
+    // aHexAlpha instanced attribute. Wall-wide state (drift colour, brickW
+    // opacity) stays on the two shared materials.
     function buildOneHexWall(hexR_) {
       const slots_ = buildHexSlots(inner, hexR_);
+      const n = slots_.length;
 
       // Flat-top hex prism — depth scales with radius so smaller hexes
       // stay proportionally thin (otherwise the small wall reads as
@@ -785,56 +810,90 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
       const wall_ = new THREE.Group();
       hexWall.add(wall_);
 
-      const meshes_ = [];
-      for (const slot of slots_) {
-        const hMat = starMats[0].clone();
-        hMat.color = hexColor.clone();
-        hMat.emissive = hexColor.clone();
-        hMat.emissiveIntensity = 0;
-        hMat.transparent = true;       // needed for brickW-driven opacity
-        const mesh = new THREE.Mesh(hexGeo_, hMat);
-        mesh.position.set(slot.x, slot.y, wallZ);
-        wall_.add(mesh);
-        meshes_.push(mesh);
-        // Per-tile evolution seeds (effect-2 long-form variation):
-        // random phase + ±40% speed scatter, used in the brick-wall
-        // per-frame LFO to wiggle each tile's brightness with its own
-        // phase. Picked at build so neighbours never sync up.
-        mesh.userData.evoSeed   = Math.random() * Math.PI * 2;
-        mesh.userData.evoFactor = 1 + (Math.random() - 0.5) * 0.8;
-        // Per-tile flip-speed scatter — each hex flips on its own clock
-        // so the wave reads as mixed speeds. Size stays uniform per wall
-        // so the honeycomb tessellates cleanly; wall-wide breathing lerp
-        // (updateOverlay) drives any size variation.
-        mesh.userData.flipSpeed = 1 + (Math.random() - 0.5) * 2 * speedJitter;
+      // ONE shared front material for the whole wall — the clone carries
+      // the stencil-mask state over from starMats[0]. emissiveIntensity
+      // stays 0 (as it always was), so emissive never contributes.
+      const hMat = starMats[0].clone();
+      hMat.color = hexColor.clone();
+      hMat.emissive = hexColor.clone();
+      hMat.emissiveIntensity = 0;
+      hMat.transparent = true;       // needed for brickW-driven opacity
+      hMat.onBeforeCompile = patchInstancedHexAlpha;
 
-        // Every tile gets an unlit back disc matching the front color
-        // (drift-tracked per-frame). MeshBasicMaterial with
-        // toneMapped:false keeps the scene lights from washing the
-        // back toward white, so both sides read as the same hue.
-        if (backEnabled && altGeo_) {
-          const backMatOpts = {
-            color:       hexColor.clone(),
-            transparent: true,
-            opacity:     1.0,
-            depthWrite:  false,
-            toneMapped:  false,
-            side:        THREE.DoubleSide,
-          };
-          if (maskClip) {
-            backMatOpts.stencilWrite = true;
-            backMatOpts.stencilRef   = 1;
-            backMatOpts.stencilFunc  = THREE.EqualStencilFunc;
-            backMatOpts.stencilFail  = THREE.KeepStencilOp;
-            backMatOpts.stencilZFail = THREE.KeepStencilOp;
-            backMatOpts.stencilZPass = THREE.KeepStencilOp;
-          }
-          const backMat  = new THREE.MeshBasicMaterial(backMatOpts);
-          const backMesh = new THREE.Mesh(altGeo_, backMat);
-          backMesh.position.set(0, 0, -hexDepth_ * 0.5 - altZOff);
-          backMesh.renderOrder = 7;
-          mesh.add(backMesh);
-          mesh.userData.backMat = backMat;
+      const alphaAttr = new THREE.InstancedBufferAttribute(
+        new Float32Array(n).fill(1), 1);
+      alphaAttr.setUsage(THREE.DynamicDrawUsage);
+      hexGeo_.setAttribute('aHexAlpha', alphaAttr);
+
+      const front = new THREE.InstancedMesh(hexGeo_, hMat, n);
+      front.frustumCulled = false;   // instances spread past base bounds
+      front.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      front.instanceColor = new THREE.InstancedBufferAttribute(
+        new Float32Array(n * 3).fill(1), 3);
+      front.instanceColor.setUsage(THREE.DynamicDrawUsage);
+      // Object z carries wallZ so the transparent-pass depth sort sees the
+      // same z each individual hex mesh used to have; instance translations
+      // below are relative to it (z = 0).
+      front.position.z = wallZ;
+      wall_.add(front);
+
+      // Back discs — every tile gets one (matching the front colour,
+      // drift-tracked per-frame). MeshBasicMaterial with toneMapped:false
+      // keeps the scene lights from washing the back toward white.
+      let back = null, backAlphaAttr = null;
+      const backOff = hexDepth_ * 0.5 + altZOff;
+      if (backEnabled && altGeo_) {
+        const backMatOpts = {
+          color:       hexColor.clone(),
+          transparent: true,
+          opacity:     1.0,
+          depthWrite:  false,
+          toneMapped:  false,
+          side:        THREE.DoubleSide,
+        };
+        if (maskClip) {
+          backMatOpts.stencilWrite = true;
+          backMatOpts.stencilRef   = 1;
+          backMatOpts.stencilFunc  = THREE.EqualStencilFunc;
+          backMatOpts.stencilFail  = THREE.KeepStencilOp;
+          backMatOpts.stencilZFail = THREE.KeepStencilOp;
+          backMatOpts.stencilZPass = THREE.KeepStencilOp;
+        }
+        const backMat = new THREE.MeshBasicMaterial(backMatOpts);
+        backMat.onBeforeCompile = patchInstancedHexAlpha;
+        backAlphaAttr = new THREE.InstancedBufferAttribute(new Float32Array(n), 1);
+        backAlphaAttr.setUsage(THREE.DynamicDrawUsage);
+        altGeo_.setAttribute('aHexAlpha', backAlphaAttr);
+        back = new THREE.InstancedMesh(altGeo_, backMat, n);
+        back.frustumCulled = false;
+        back.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        back.renderOrder = 7;
+        back.position.z = wallZ;
+        wall_.add(back);
+      }
+
+      // Per-tile data arrays. The Math.random() call ORDER inside this
+      // loop matches the old per-mesh builder exactly (evoSeed, evoFactor,
+      // flipSpeed per tile) so the downstream RNG stream is unmoved.
+      //   evoSeed/evoFactor — effect-2 brightness wiggle phase + ±40% rate.
+      //   flipSpeed         — per-tile flip-duration scatter (mixed speeds).
+      const homeX     = new Float32Array(n);
+      const homeY     = new Float32Array(n);
+      const evoSeed   = new Float32Array(n);
+      const evoFactor = new Float32Array(n);
+      const flipSpeed = new Float32Array(n);
+      const _m = new THREE.Matrix4();
+      for (let i = 0; i < n; i++) {
+        homeX[i] = slots_[i].x;
+        homeY[i] = slots_[i].y;
+        evoSeed[i]   = Math.random() * Math.PI * 2;
+        evoFactor[i] = 1 + (Math.random() - 0.5) * 0.8;
+        flipSpeed[i] = 1 + (Math.random() - 0.5) * 2 * speedJitter;
+        _m.makeTranslation(homeX[i], homeY[i], 0);
+        front.setMatrixAt(i, _m);
+        if (back) {
+          _m.makeTranslation(homeX[i], homeY[i], -backOff);
+          back.setMatrixAt(i, _m);
         }
       }
 
@@ -851,16 +910,15 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
       const _twoPi = Math.PI * 2;
       const spiralRange = spiralTurns * _twoPi;
       let _wallMaxR = 0;
-      for (const hex of meshes_) {
-        const dx = hex.position.x - fadeCX;
-        const dy = hex.position.y - fadeCY;
-        const r = Math.hypot(dx, dy);
+      for (let i = 0; i < n; i++) {
+        const r = Math.hypot(homeX[i] - fadeCX, homeY[i] - fadeCY);
         if (r > _wallMaxR) _wallMaxR = r;
       }
       if (_wallMaxR < 1e-6) _wallMaxR = 1;
-      for (const hex of meshes_) {
-        const dx = hex.position.x - fadeCX;
-        const dy = hex.position.y - fadeCY;
+      const spiralPhase = new Float32Array(n);
+      for (let i = 0; i < n; i++) {
+        const dx = homeX[i] - fadeCX;
+        const dy = homeY[i] - fadeCY;
         const r = Math.hypot(dx, dy);
         const uR = r / _wallMaxR;            // 0 at center, 1 at outer
         // Outermost tile → alphaTarget = 0 (fires first); center → spiralRange.
@@ -870,15 +928,16 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
         // at the same angle on different rings get sequential alphas
         // along the spiral arm rather than colliding modulo 2π.
         alpha += _twoPi * Math.round((alphaTarget - alpha) / _twoPi);
-        hex.userData.spiralPhase = alpha;
+        spiralPhase[i] = alpha;
       }
-      const sortedHexes = [...meshes_].sort((a, b) =>
-        a.userData.spiralPhase - b.userData.spiralPhase);
+      const order = Array.from({ length: n }, (_, i) => i)
+        .sort((a, b) => spiralPhase[a] - spiralPhase[b]);
       const stepJitter = Math.max(0, stepJitterRaw);
-      const maxStepIdx = Math.max(0, sortedHexes.length - 1);
-      for (let i = 0; i < sortedHexes.length; i++) {
+      const maxStepIdx = Math.max(0, n - 1);
+      const flipStep = new Float32Array(n);
+      for (let i = 0; i < order.length; i++) {
         const jittered = i + (Math.random() - 0.5) * 2 * stepJitter;
-        sortedHexes[i].userData.flipStep = Math.max(0, Math.min(maxStepIdx, jittered));
+        flipStep[order[i]] = Math.max(0, Math.min(maxStepIdx, jittered));
       }
 
       // Per-tile drift vector for the brick→rose transit. Drift base
@@ -886,21 +945,25 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
       // proportionally less.
       const driftDistBase = brickCfg.hexDriftDist   ?? hexR_ * 4.0;
       const driftJitter   = brickCfg.hexDriftJitter ?? 0.5;
-      for (const hex of meshes_) {
-        const sx = hex.position.x - cx;
-        const sy = hex.position.y - cy;
+      const driftX    = new Float32Array(n);
+      const driftY    = new Float32Array(n);
+      const driftDist = new Float32Array(n);
+      for (let i = 0; i < n; i++) {
+        const sx = homeX[i] - cx;
+        const sy = homeY[i] - cy;
         const len = Math.hypot(sx, sy) || 1;
         const baseX = sx / len, baseY = sy / len;
         const ja = (Math.random() - 0.5) * driftJitter * 2;
         const ca = Math.cos(ja), sa = Math.sin(ja);
-        hex.userData.driftDirX = baseX * ca - baseY * sa;
-        hex.userData.driftDirY = baseX * sa + baseY * ca;
-        hex.userData.driftDist = driftDistBase * (0.7 + Math.random() * 0.6);
-        hex.userData.homeX = hex.position.x;
-        hex.userData.homeY = hex.position.y;
+        driftX[i] = baseX * ca - baseY * sa;
+        driftY[i] = baseX * sa + baseY * ca;
+        driftDist[i] = driftDistBase * (0.7 + Math.random() * 0.6);
       }
 
-      return { wall: wall_, meshes: meshes_, slots: slots_ };
+      return { wall: wall_, front, back, alphaAttr, backAlphaAttr, backOff,
+               count: n, slots: slots_, homeX, homeY,
+               evoSeed, evoFactor, flipSpeed, flipStep,
+               driftX, driftY, driftDist };
     }
 
     // Canonical wall (used by the brick↔rose ghost pairing in 'all'
@@ -939,7 +1002,7 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
       res.wall.position.z = i * 0.003;
       poolWalls.push({
         wall:     res.wall,
-        meshes:   res.meshes,
+        rec:      res,
         radius:   r,
         trigger:  triggerForR(r),
       });
@@ -947,7 +1010,6 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
 
     // Legacy ghost pairing slots come from the canonical wall.
     const slots = canonicalRes.slots;
-    const hexMeshes = canonicalRes.meshes;
 
     // Pair each rosette petal with its nearest unused hex slot — the
     // slot becomes that petal's emergence point during transit. Unused
@@ -1010,16 +1072,13 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
 
     // Stash on the closure so updateOverlay can drive everything.
     //   brickHexWall      — outer parent group toggled by main.js
-    //   brickHexCanonical — the LARGE canonical wall (ghost pairing
+    //   brickHexCanonical — the LARGE canonical wall record (ghost pairing
     //                       in 'all' mode; hidden in hex mode).
-    //   brickHexPool      — array of {wall, meshes, radius, trigger}
+    //   brickHexPool      — array of {wall, rec, radius, trigger}
     //                       the hex-mode state machine cycles through.
-    //   brickHexMeshes    — alias for canonical meshes (back-compat with
-    //                       brick↔rose morph code further down).
     brickHexWall        = hexWall;
     brickHexCanonical   = canonicalRes;
     brickHexPool        = poolWalls;
-    brickHexMeshes      = hexMeshes;            // canonical
   }
 
   // Large 3D hexagon — a neutral canvas for future "looks". Held in its
@@ -1147,12 +1206,13 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
   // --- Brick-wall evolution state (effect-2 long-form variation) -------
   // Pre-allocated flash pool so the per-frame scheduler has zero
   // allocations. A "flash" is a transient bell-curve brightness boost
-  // on a randomly-chosen visible-wall hex. Slots are reused once their
-  // envelope completes (hex set back to null).
+  // on a randomly-chosen visible-wall hex — addressed as (wall record,
+  // instance index). Slots are reused once their envelope completes
+  // (rec set back to null).
   const _evoMaxFlashes = 5;
   const _evoFlashes = new Array(_evoMaxFlashes);
   for (let i = 0; i < _evoMaxFlashes; i++) {
-    _evoFlashes[i] = { hex: null, start: 0, dur: 1, intensity: 0 };
+    _evoFlashes[i] = { rec: null, index: 0, start: 0, dur: 1, intensity: 0 };
   }
   let _evoLastT = -1;
 
@@ -1445,15 +1505,15 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
         if (Math.random() < flashRate * dtRoll) {
           let free = -1;
           for (let i = 0; i < _evoMaxFlashes; i++) {
-            if (_evoFlashes[i].hex === null) { free = i; break; }
+            if (_evoFlashes[i].rec === null) { free = i; break; }
           }
           if (free >= 0) {
-            const activeWall = (_hexActiveIdx >= 0 && _hexActiveIdx < brickHexPool.length)
-              ? brickHexPool[_hexActiveIdx] : null;
-            const fmeshes = activeWall ? activeWall.meshes : brickHexMeshes;
-            if (fmeshes.length) {
+            const activeRec = (_hexActiveIdx >= 0 && _hexActiveIdx < brickHexPool.length)
+              ? brickHexPool[_hexActiveIdx].rec : brickHexCanonical;
+            if (activeRec && activeRec.count) {
               const slot = _evoFlashes[free];
-              slot.hex   = fmeshes[Math.floor(Math.random() * fmeshes.length)];
+              slot.rec   = activeRec;
+              slot.index = Math.floor(Math.random() * activeRec.count);
               slot.start = t;
               const dMin = evoCfg.flashDurMin ?? 0.7;
               const dMax = evoCfg.flashDurMax ?? 1.9;
@@ -1464,14 +1524,14 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
             }
           }
         }
-        // Free completed slots (set hex = null so they can be reused).
+        // Free completed slots (set rec = null so they can be reused).
         for (let i = 0; i < _evoMaxFlashes; i++) {
           const f = _evoFlashes[i];
-          if (f.hex !== null && (t - f.start) / f.dur >= 1) f.hex = null;
+          if (f.rec !== null && (t - f.start) / f.dur >= 1) f.rec = null;
         }
       } else {
         _evoLastT = -1;
-        for (let i = 0; i < _evoMaxFlashes; i++) _evoFlashes[i].hex = null;
+        for (let i = 0; i < _evoMaxFlashes; i++) _evoFlashes[i].rec = null;
       }
       const evoWiggleAmp   = evoOn ? (evoCfg.wiggleAmp   ?? 0.18) : 0;
       const evoWiggleSpeed = evoCfg.wiggleSpeed ?? 0.60;
@@ -1516,9 +1576,8 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
         _hexWaveOffsets = new Array(brickHexPool.length).fill(0);
       }
 
-      const computeWavePhase = (meshes, trigger, waveOffset = 0) => {
-        const n = meshes.length;
-        const maxStep = Math.max(0, n - 1);
+      const computeWavePhase = (tileCount, trigger, waveOffset = 0) => {
+        const maxStep = Math.max(0, tileCount - 1);
         const cycleLen = maxStep * trigger + slowestFall;
         const fullCyc = cycleLen + hexPause;
         if (fullCyc <= 0) return { elapsed: 0, cycleLen, fullCyc };
@@ -1540,7 +1599,7 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
           // start the cross-fade during the inter-wave pause.
           const active = brickHexPool[_hexActiveIdx];
           const activeOffset = _hexWaveOffsets[_hexActiveIdx] || 0;
-          const wave = computeWavePhase(active.meshes, active.trigger, activeOffset);
+          const wave = computeWavePhase(active.rec.count, active.trigger, activeOffset);
           if (wave.elapsed >= wave.cycleLen) {
             // Pick a random NEW target index different from active.
             // This is the ONE random roll per transition; everything
@@ -1554,24 +1613,19 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
             _hexTransStart = t;
             // Anchor both walls' clocks to their inter-wave pause so
             // no tile flips during the cross-fade.
-            const srcMaxStep = Math.max(0, active.meshes.length - 1);
+            const srcMaxStep = Math.max(0, active.rec.count - 1);
             _hexWaveOffsets[_hexActiveIdx] =
               t - (srcMaxStep * active.trigger + slowestFall);
             const dest = brickHexPool[target];
-            const destMaxStep = Math.max(0, dest.meshes.length - 1);
+            const destMaxStep = Math.max(0, dest.rec.count - 1);
             _hexWaveOffsets[target] =
               t - (destMaxStep * dest.trigger + slowestFall);
           }
         }
       } else {
         // Reset state when leaving hex mode so the next entry starts
-        // cleanly. Also reset any lingering per-tile scale from an
-        // in-flight cross-fade.
-        if (_hexActiveIdx >= 0 || _hexTransStart >= 0) {
-          for (const pw of brickHexPool) {
-            for (const m of pw.meshes) m.scale.setScalar(1);
-          }
-        }
+        // cleanly. (Per-tile transforms need no reset — instance matrices
+        // are recomposed from scratch on every frame a wall draws.)
         _hexActiveIdx   = -1;
         _hexTargetIdx   = -1;
         _hexNextSwitchT = -1;
@@ -1636,7 +1690,7 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
       const wallSpecs = [];
       if (canonicalAlpha > 0.001 && brickHexCanonical) {
         wallSpecs.push({
-          meshes:     brickHexCanonical.meshes,
+          rec:        brickHexCanonical,
           trigger:    brickCfg.largeDominoTrigger
                    ?? brickCfg.hexDominoTrigger ?? 0.18,
           sizeAlpha:  canonicalAlpha,
@@ -1648,7 +1702,7 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
         if (poolAlphas[i] <= 0.001) continue;
         const pw = brickHexPool[i];
         wallSpecs.push({
-          meshes:     pw.meshes,
+          rec:        pw.rec,
           trigger:    pw.trigger,
           sizeAlpha:  poolAlphas[i],
           wallScale:  1,
@@ -1657,13 +1711,13 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
       }
 
       for (const ws of wallSpecs) {
-        if (ws.sizeAlpha <= 0.001 || !ws.meshes.length) continue;
-        const meshes = ws.meshes;
+        const rec = ws.rec;
+        if (ws.sizeAlpha <= 0.001 || !rec || !rec.count) continue;
         const hexTrigger = ws.trigger;
         const sizeAlpha  = ws.sizeAlpha;
         const wallScale  = ws.wallScale;
         const waveOffset = ws.waveOffset || 0;
-        const hexCount   = meshes.length;
+        const hexCount   = rec.count;
         const hexMaxStep = Math.max(0, hexCount - 1);
         const hexCycleLen = hexMaxStep * hexTrigger + slowestFall;
         const hexFullCyc  = hexCycleLen + hexPause;
@@ -1672,29 +1726,55 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
           : 0;
         const stepDenom   = Math.max(1, hexCount - 1);
 
-        for (const hex of meshes) {
-          hex.material.color.copy(_hexDriftColor);
+        // Wall-wide state that used to be per-mesh material writes: the
+        // whole wall shares one front + one back material now. Per-tile
+        // components (edge fade, back-face reveal, wiggle/flash colour)
+        // ride the instanced attributes below instead.
+        const s = wallScale * breathScale;
+        const fMat = rec.front.material;
+        fMat.color.copy(_hexDriftColor);
+        fMat.opacity = brickW * sizeAlpha * baseOpacity;
+        if (rec.back) {
+          const bMat = rec.back.material;
+          // Back disc tracks the wall's color drift so both sides read
+          // as the same hue. Outside hex mode altOpacity is 0 — the
+          // discs used to render fully transparent; now they skip the
+          // draw entirely (visually identical).
+          bMat.color.copy(_hexDriftColor);
+          bMat.opacity = brickW * sizeAlpha * altOpacity;
+          rec.back.visible = altOpacity > 0;
+        }
+
+        const mArr  = rec.front.instanceMatrix.array;
+        const cArr  = rec.front.instanceColor.array;
+        const aArr  = rec.alphaAttr.array;
+        const bmArr = (rec.back && rec.back.visible)
+          ? rec.back.instanceMatrix.array : null;
+        const baArr = bmArr ? rec.backAlphaAttr.array : null;
+        const backOff = rec.backOff;
+
+        for (let i = 0; i < hexCount; i++) {
+          // Per-tile colour multiplier (evolution wiggle + ember
+          // flashes) — amplitude-only, multiplied against the wall's
+          // drift colour in the shader via instanceColor.
+          let mul = 1;
           if (evoOn) {
-            // Per-tile slow sine on RGB with per-hex seed + speed factor.
-            // Amplitude-only so the domino phase + size-switch timing
-            // can't be disturbed.
-            const wig = 1 + evoWiggleAmp * Math.sin(
-              t * evoWiggleSpeed * hex.userData.evoFactor + hex.userData.evoSeed);
-            hex.material.color.multiplyScalar(wig);
-            // Layered transient flashes (bell-curve envelope). Touches
-            // only colour magnitude on the targeted hex this frame.
+            mul = 1 + evoWiggleAmp * Math.sin(
+              t * evoWiggleSpeed * rec.evoFactor[i] + rec.evoSeed[i]);
             for (let fi = 0; fi < _evoMaxFlashes; fi++) {
               const f = _evoFlashes[fi];
-              if (f.hex !== hex) continue;
+              if (f.rec !== rec || f.index !== i) continue;
               const u = (t - f.start) / f.dur;
               if (u >= 0 && u < 1) {
-                hex.material.color.multiplyScalar(1 + Math.sin(u * Math.PI) * f.intensity);
+                mul *= 1 + Math.sin(u * Math.PI) * f.intensity;
               }
             }
           }
-          hex.scale.setScalar(wallScale * breathScale);
-          const step      = hex.userData.flipStep;
-          const flipSpeed = hex.userData.flipSpeed ?? 1;
+          const ci = i * 3;
+          cArr[ci] = mul; cArr[ci + 1] = mul; cArr[ci + 2] = mul;
+
+          const step      = rec.flipStep[i];
+          const flipSpeed = rec.flipSpeed[i] || 1;
           // Per-tile fall duration: faster hexes finish their flip sooner,
           // slower hexes drag — wave reads as mixed speeds across the wall.
           const thisFall  = hexFall / Math.max(flipSpeed, 0.05);
@@ -1704,7 +1784,6 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
             const eased = 0.5 - 0.5 * Math.cos(ph * Math.PI);
             angle = eased * twoPi;
           }
-          hex.rotation.x = angle;
 
           let edgeDrift = 0;
           let edgeFade  = 1;
@@ -1728,17 +1807,37 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
           }
 
           const driftFactor = e > edgeDrift ? e : edgeDrift;
-          hex.position.x = hex.userData.homeX
-                         + hex.userData.driftDirX * hex.userData.driftDist * driftFactor;
-          hex.position.y = hex.userData.homeY
-                         + hex.userData.driftDirY * hex.userData.driftDist * driftFactor;
-          const hexAlpha = brickW * edgeFade * sizeAlpha;
-          hex.material.opacity = hexAlpha * baseOpacity;
+          const px = rec.homeX[i]
+                   + rec.driftX[i] * rec.driftDist[i] * driftFactor;
+          const py = rec.homeY[i]
+                   + rec.driftY[i] * rec.driftDist[i] * driftFactor;
 
-          if (hex.userData.backMat) {
+          // Compose T(px, py, 0) · Rx(angle) · S(s) straight into the
+          // instance buffer (column-major). z stays 0 — the wall's z
+          // lives on the InstancedMesh object itself.
+          const cA = Math.cos(angle), sA = Math.sin(angle);
+          const o = i * 16;
+          mArr[o]      = s;  mArr[o + 1]  = 0;        mArr[o + 2]  = 0;      mArr[o + 3]  = 0;
+          mArr[o + 4]  = 0;  mArr[o + 5]  = cA * s;   mArr[o + 6]  = sA * s; mArr[o + 7]  = 0;
+          mArr[o + 8]  = 0;  mArr[o + 9]  = -sA * s;  mArr[o + 10] = cA * s; mArr[o + 11] = 0;
+          mArr[o + 12] = px; mArr[o + 13] = py;       mArr[o + 14] = 0;      mArr[o + 15] = 1;
+
+          aArr[i] = edgeFade;
+
+          if (bmArr) {
+            // Back disc rides the same rotation/scale, offset along the
+            // tile's local -z (matches the old child at z = -backOff).
+            bmArr[o]      = s;  bmArr[o + 1]  = 0;       bmArr[o + 2]  = 0;      bmArr[o + 3]  = 0;
+            bmArr[o + 4]  = 0;  bmArr[o + 5]  = cA * s;  bmArr[o + 6]  = sA * s; bmArr[o + 7]  = 0;
+            bmArr[o + 8]  = 0;  bmArr[o + 9]  = -sA * s; bmArr[o + 10] = cA * s; bmArr[o + 11] = 0;
+            bmArr[o + 12] = px;
+            bmArr[o + 13] = py + sA * s * backOff;
+            bmArr[o + 14] = -cA * s * backOff;
+            bmArr[o + 15] = 1;
+
             let backVis = 0;
             if (isHexMode) {
-              const backFacing = -Math.cos(hex.rotation.x);
+              const backFacing = -cA;
               if (backFacing > 0) {
                 if (backFacing >= 0.4) {
                   backVis = 1;
@@ -1748,12 +1847,16 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
                 }
               }
             }
-            const backMat = hex.userData.backMat;
-            // Back disc tracks the wall's color drift so both sides
-            // read as the same hue.
-            backMat.color.copy(_hexDriftColor);
-            backMat.opacity = hexAlpha * altOpacity * backVis;
+            baArr[i] = edgeFade * backVis;
           }
+        }
+
+        rec.front.instanceMatrix.needsUpdate = true;
+        rec.front.instanceColor.needsUpdate  = true;
+        rec.alphaAttr.needsUpdate = true;
+        if (bmArr) {
+          rec.back.instanceMatrix.needsUpdate = true;
+          rec.backAlphaAttr.needsUpdate = true;
         }
       }
 

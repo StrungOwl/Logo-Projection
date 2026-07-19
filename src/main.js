@@ -750,11 +750,14 @@ export function tick(t, dt) {
       ctx.overlayHexRoots[i].visible = false;
     }
   }
-  // flameOnly: updateOverlay's internal morph state can re-enable BOTH
-  // the hex wall and the rose flowers during its brick-hold and rose-
-  // hold phases. Mode 6 wants only the starry sky + frame + hearth (and
-  // mode 7 only the liquid), so suppress everything the overlay owns.
-  if (mode === 'flameOnly' || mode === 'moltenGold') {
+  // flameOnly / moltenGold / fireplace modes: updateOverlay's internal
+  // morph state can re-enable BOTH the hex wall and the rose flowers
+  // during its brick-hold and rose-hold phases. None of these modes want
+  // any overlay content — and the leak isn't just visual: ~1000 masked
+  // hex bricks were issuing draw calls in the fireplace modes whenever
+  // the morph happened to sit in a brick phase.
+  if (mode === 'flameOnly' || mode === 'moltenGold'
+      || mode === 'fireplaceOne' || mode === 'fireplaceTwo') {
     for (let i = 0; i < ctx.overlayHexRoots.length; i++) {
       ctx.overlayHexRoots[i].visible = false;
     }

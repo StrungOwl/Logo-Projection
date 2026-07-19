@@ -603,10 +603,35 @@ export function addEffects(logoMesh, meta, renderer) {
     logoMesh,
   });
 
+  // Lattice instanced-fill switch-over (see hexagons.js). MUST run after
+  // createFractalZoom: the fractal clones deep-copy the per-hex meshes
+  // while their material is still the live render path, so the clone
+  // stack keeps its original per-mesh behaviour (frozen uniforms,
+  // per-tile reveal). From here on the live underlay's fills draw as ONE
+  // InstancedMesh; the per-hex meshes stay as invisible anchors that the
+  // cascade / rotation / fractal-park drivers keep writing to (their
+  // stroke children still render normally). The sync below mirrors
+  // anchors → instance buffers and is chained after BOTH drivers that
+  // can move tiles this frame (only one of the two runs per frame —
+  // main.js gates them — and the sync is idempotent, so wrapping both
+  // is safe).
+  if (underlay.userData.finalizeInstancing) underlay.userData.finalizeInstancing();
+  const syncLatticeInstances = underlay.userData.syncLatticeInstances || (() => {});
+  const updateRowCascadeSynced = (t, dt = 0) => {
+    updateRowCascade(t, dt);
+    syncLatticeInstances();
+  };
+  const updateFractalZoomSynced = (t, dt) => {
+    updateFractalZoom(t, dt);
+    syncLatticeInstances();
+  };
+
   return { strokeTimeUniforms, sparkSystems, patternsToRefresh,
-           updateRowCascade, cascadeState, updateRotations,
+           updateRowCascade: updateRowCascadeSynced,
+           cascadeState, updateRotations,
            updateLatticeEvolution,
-           updateFractalZoom, fractalState,
+           updateFractalZoom: updateFractalZoomSynced,
+           fractalState,
            panelGroup: panel,
            latticeGroup: underlay,
            gateFrameGroup: gate,
