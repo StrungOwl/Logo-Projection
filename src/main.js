@@ -240,6 +240,12 @@ loadLogo().then((logo) => {
   ctx.hearthFlameLights       = patternResult.hearthFlameLights || [];
   ctx.getHearthFlameOpacity   = patternResult.getHearthFlameOpacity;
   ctx.silhouettePolygons = patternResult.silhouettePolygons;
+  ctx.moltenGroup        = patternResult.moltenGroup;
+  ctx.updateMolten       = patternResult.updateMolten;
+  ctx.moltenTriggers     = patternResult.moltenTriggers;
+  ctx.getMoltenFill      = patternResult.getMoltenFill;
+  ctx.edgeChase          = patternResult.edgeChase;
+  ctx.triggerPortalRush  = patternResult.triggerPortalRush;
 
   // cascadeState is passed in so the overlay can sync its brick↔petals
   // morph to the cascade's all-at-center window when ANIM.timings.playAll
@@ -279,6 +285,12 @@ loadLogo().then((logo) => {
   registerTrigger('domino.toggle', (t) => { dominoesOn = toggleDominoes(scene, t); });
   registerTrigger('stellar.pulse', ()  => ctx.triggerStellarPulse?.());
   registerTrigger('quality.cycle', ()  => cycleQuality(pipeline));
+  registerTrigger('edge.burst',    (t) => ctx.edgeChase?.burst(t));
+  registerTrigger('portal.rush',   (t) => ctx.triggerPortalRush?.(t));
+  registerTrigger('molten.fill',     (t, a) => ctx.moltenTriggers?.fill(t, a));
+  registerTrigger('molten.drain',    (t, a) => ctx.moltenTriggers?.drain(t, a));
+  registerTrigger('molten.surge',    (t, a) => ctx.moltenTriggers?.surge(t, a));
+  registerTrigger('molten.setLevel', (t, a) => ctx.moltenTriggers?.setLevel(t, a));
 
   frameLogo(camera, controls);
   // ?proj=1 boots straight into fixed-resolution projection framing.
@@ -362,6 +374,7 @@ export function tick(t, dt) {
   const showFireplace = (mode === 'fireplaceOne');
   const showRecede    = (mode === 'fireplaceTwo');
   const showFlameOnly = (mode === 'flameOnly');
+  const showMolten    = (mode === 'moltenGold');
   // Lerp logoStarryBlend toward 1 in flameOnly mode AND fireplaceTwo mode
   // (the receding-logo effect wants the same shimmering body), 0 elsewhere.
   // Slow fadeSpeed gives a few-second cross-fade between the galaxy plate
@@ -369,7 +382,7 @@ export function tick(t, dt) {
   // (galaxy fades first, then logo stars come up) — see the galaxy
   // uBrightness block above for the front-half curve.
   {
-    const target = (showFlameOnly || showRecede) ? 1 : 0;
+    const target = (showFlameOnly || showRecede || showMolten) ? 1 : 0;
     const fadeSpeed = 0.15;
     const k = 1 - Math.exp(-fadeSpeed * dt);
     logoStarryBlend += (target - logoStarryBlend) * k;
@@ -382,14 +395,28 @@ export function tick(t, dt) {
   // and flameOnly (key 6). fireplaceTwo no longer carries any bricks; the
   // recede stack + flame + galaxy is the whole show. flameOnly remains the
   // "molten frame" mode where the gate frame is recolored fiery.
-  const showFlame    = showFireplace || showRecede;
-  const fireLikeMode = showFlame || showFlameOnly;
+  // Portal (conveyor) mode owns the whole frame: body black, flame off,
+  // full-size corridor. Legacy static recede keeps the old flame + body.
+  const portalActive = showRecede && !(ANIM.recede?.conveyor?.enabled === false);
+  const showFlame    = showFireplace
+    || (showRecede && (!portalActive || ANIM.recede?.flameEnabled === true));
+  const fireLikeMode = showFlame || showFlameOnly || showMolten || showRecede;
   if (ctx.panelGroup)   ctx.panelGroup.visible   = showPanel;
   if (ctx.latticeGroup) ctx.latticeGroup.visible = showLattice;
   if (ctx.archGroup)    ctx.archGroup.visible    = showFireplace;
   if (ctx.recedeGroup)  ctx.recedeGroup.visible  = showRecede;
   if (ctx.flameGroup)   ctx.flameGroup.visible   = showFlame;
   if (ctx.gateRimGroup) ctx.gateRimGroup.visible = showFlameOnly;
+  if (ctx.moltenGroup)  ctx.moltenGroup.visible  = showMolten;
+  // Edge chase: idle comets only in the modes that own it; the mesh stays
+  // live through burst decay in any mode (edgeFlash transitions), then
+  // hides itself once every comet has faded.
+  if (ctx.edgeChase) {
+    ctx.edgeChase.setIdleEnabled(showFlameOnly || showMolten);
+    ctx.edgeChase.setMaster(showMolten && ctx.getMoltenFill
+      ? 0.35 + 0.65 * ctx.getMoltenFill()
+      : 1);
+  }
   // fireplaceOne still wants the outer brick fireplace; fireplaceTwo doesn't.
   if (ctx.fireplaceGroup) ctx.fireplaceGroup.visible = showFireplace;
   // Hide the smooth extruded gate-frame ring when fireplaceOne wants to
@@ -449,6 +476,19 @@ export function tick(t, dt) {
   if (ctx.logoModel) ctx.logoModel.visible = mode !== 'calibration';
   if (calibration)   calibration.update(renderer, mode === 'calibration');
 
+  // Portal mode: the body must not merely go black — its depth writes
+  // would still occlude the full-size corridor behind it. Dropping
+  // colorWrite+depthWrite makes it a pure transform parent (children —
+  // frame, galaxy, effects — keep rendering) while the corridor shows
+  // through the whole interior. Can't hide the mesh: effects are its
+  // children and visible=false stops subtree traversal.
+  if (ctx.logoMaterials) {
+    for (let i = 0; i < ctx.logoMaterials.length; i++) {
+      ctx.logoMaterials[i].colorWrite = !portalActive;
+      ctx.logoMaterials[i].depthWrite = !portalActive;
+    }
+  }
+
   // Brightness clock — pauses while the fractal zoom is animating
   // (clones visible OR displacement non-zero). The dive's own brightness
   // motion is dramatic enough that any background breath / pulse / stroke
@@ -478,11 +518,14 @@ export function tick(t, dt) {
     // flameOnly (key 6) forces the logo body to pure black so the
     // silhouette reads as a void framing the central flame. envI is
     // already at the fireplace-low value so any residual env reflection
-    // is killed too.
-    const effectiveFactor = showFlameOnly ? 0 : factor;
+    // is killed too. moltenGold (key 7) dims the body to a faint amber
+    // (~15%) instead — "the emblem being filled" — so the liquid surface
+    // reads against a barely-there vessel rather than a void.
+    const blackBody = showFlameOnly || portalActive;
+    const effectiveFactor = blackBody ? 0 : (showMolten ? factor * 0.15 : factor);
     if (Math.abs(effectiveFactor - lastBrightness) > 1e-4 || envI !== lastEnvIntensity) {
-      if (showFlameOnly) ctx.baseColorScratch.setRGB(0, 0, 0);
-      else               ctx.baseColorScratch.set(COLORS.logo.base).multiplyScalar(factor);
+      if (blackBody) ctx.baseColorScratch.setRGB(0, 0, 0);
+      else           ctx.baseColorScratch.set(COLORS.logo.base).multiplyScalar(effectiveFactor);
       for (let i = 0; i < ctx.logoMaterials.length; i++) {
         ctx.logoMaterials[i].color.copy(ctx.baseColorScratch);
         ctx.logoMaterials[i].envMapIntensity = envI;
@@ -543,6 +586,15 @@ export function tick(t, dt) {
   // (no first-frame popping in when switching to mode 5).
   if (ctx.updateFlame)      ctx.updateFlame(t, dt);
   if (ctx.updateGateRim)    ctx.updateGateRim(t, dt);
+  // Molten + edge chase stay warm every frame (cheap when hidden) so
+  // entering their modes never pops a cold first frame. The chase mesh
+  // shows itself whenever any comet is lit — including edge.burst flares
+  // fired mid-transition in unrelated modes.
+  if (ctx.updateMolten)     ctx.updateMolten(t, dt);
+  if (ctx.edgeChase) {
+    ctx.edgeChase.update(t, dt);
+    ctx.edgeChase.mesh.visible = ctx.edgeChase.isActive();
+  }
 
   // Read the live flame PointLight stack and low-pass it to drive the
   // galaxy backdrop pulse. The lights are flickered by patterns/flame.js
@@ -693,9 +745,9 @@ export function tick(t, dt) {
   }
   // flameOnly: updateOverlay's internal morph state can re-enable BOTH
   // the hex wall and the rose flowers during its brick-hold and rose-
-  // hold phases. Mode 6 wants only the starry sky + frame + hearth, so
-  // suppress everything the overlay owns here.
-  if (mode === 'flameOnly') {
+  // hold phases. Mode 6 wants only the starry sky + frame + hearth (and
+  // mode 7 only the liquid), so suppress everything the overlay owns.
+  if (mode === 'flameOnly' || mode === 'moltenGold') {
     for (let i = 0; i < ctx.overlayHexRoots.length; i++) {
       ctx.overlayHexRoots[i].visible = false;
     }
@@ -895,7 +947,7 @@ if (typeof window !== 'undefined') {
       const modeByKey = {
         Digit0: 'visualSequence', Digit1: 'fractalPattern', Digit2: 'hexagons',
         Digit3: 'flowers',         Digit4: 'fireplaceOne',   Digit5: 'fireplaceTwo',
-        Digit6: 'flameOnly',       Digit9: 'calibration',
+        Digit6: 'flameOnly',       Digit7: 'moltenGold',     Digit9: 'calibration',
       };
       const next = modeByKey[e.code];
       if (next) {

@@ -24,6 +24,8 @@ import { createFireplace }       from './fireplaceTwo/outerArch.js';
 import { createRecede }          from './fireplaceTwo/recede.js';
 import { createFractalZoom }     from './fractalPattern/fractalZoom.js';
 import { createConstellation }   from './constellation/constellation.js';
+import { createMolten }          from './moltenGold/molten.js';
+import { createEdgeChase }       from './_shared/edgeChase.js';
 
 export function addEffects(logoMesh, meta, renderer) {
   const { hull, silhouette, cx, cy, maxR, maxZ, patternFadeCenter } = meta;
@@ -279,6 +281,28 @@ export function addEffects(logoMesh, meta, renderer) {
   recede.group.position.set(cx, cy, maxZ - 1.5);
   recede.group.visible = false;
   logoMesh.add(recede.group);
+
+  // ---------------------------------------------------------------------
+  // Molten Gold — mode 7 (key 7, viewMode 'moltenGold'). Liquid-gold fill
+  // inside the silhouette. meta coords are mesh-local so the group
+  // parents straight onto the logo mesh with no centroid offset (same
+  // convention as the calibration patterns). Gated in src/main.js.
+  // ---------------------------------------------------------------------
+  const molten = createMolten({ logoMesh, meta });
+  molten.group.visible = false;
+  logoMesh.add(molten.group);
+
+  // Edge-light chase — comet heads racing the OUTER silhouette loop
+  // (mesh-local coords, straight onto the logo mesh). Idle comets run in
+  // flameOnly/moltenGold; 'edge.burst' flares it in any mode (edgeFlash
+  // transitions). Visibility driven per-frame in src/main.js.
+  const edgeChase = createEdgeChase({
+    loop: silhouette && silhouette[0] ? silhouette[0] : hull,
+    z: maxZ + 0.5,
+    closeLoop: true,
+  });
+  edgeChase.mesh.visible = false;
+  logoMesh.add(edgeChase.mesh);
 
   // ---------------------------------------------------------------------
   // Constellation — visible only in flameOnly mode (key 6). Anchor stars
@@ -593,6 +617,12 @@ export function addEffects(logoMesh, meta, renderer) {
            triggerArchCascade: arch.triggerCascade,
            recedeGroup:  recede.group,
            updateRecede: recede.update,
+           triggerPortalRush: recede.triggerRush,
+           moltenGroup:    molten.group,
+           updateMolten:   molten.update,
+           moltenTriggers: molten.triggers,
+           getMoltenFill:  molten.getFill,
+           edgeChase,
            flameGroup:   flame.group,
            updateFlame:  flame.update,
            flameLights:  flame.lights,

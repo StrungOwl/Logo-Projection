@@ -2520,15 +2520,85 @@ export const ANIM = {
         cues: [ { at: 4,  trigger: 'arch.cascade' },
                 { at: 25, trigger: 'domino.on' },
                 { at: 45, trigger: 'domino.off' } ] },
-      { mode: 'fireplaceTwo',   dwell: 45 },
+      { mode: 'fireplaceTwo',   dwell: 45,
+        cues: [ { at: 18, trigger: 'portal.rush', every: 20 } ] },
       { mode: 'flameOnly',      dwell: 60,
-        cues: [ { at: 15, trigger: 'stellar.pulse', every: 25 } ] },
+        cues: [ { at: 15, trigger: 'stellar.pulse', every: 25 },
+                { at: 10, trigger: 'edge.burst',    every: 30 } ] },
+      { mode: 'moltenGold',     dwell: 50, transition: 'wipe',
+        cues: [ { at: 3,  trigger: 'molten.fill' },
+                { at: 28, trigger: 'molten.surge' },
+                { at: 38, trigger: 'molten.drain' } ] },
     ],
   },
 
   // Remote control. wsUrl e.g. '127.0.0.1:9980' (TouchDesigner WebSocket
   // DAT in server mode) — usually supplied per-session via ?ws= instead.
   control: { wsUrl: null },
+
+  // -----------------------------------------------------------------------
+  // DEPTH PORTAL (mode 5 rework) — the recede stack on an infinite
+  // conveyor toward the viewer, per-copy oscillating twist, overbright
+  // rim lines that bloom into receding concentric outlines.
+  //   conveyor.enabled:false → the original static stack (legacy look).
+  //   'portal.rush' → speedMul × conveyor + brightMul rims for duration.
+  // -----------------------------------------------------------------------
+  recede: {
+    copies: 10,
+    shrinkFactor: 0.78,
+    zStep: 1.3,
+    conveyor: { enabled: true, speed: 0.35 },
+    // Conveyor corridor runs full-size (fraction of the true silhouette);
+    // the body goes black + the flame yields in portal mode so nothing
+    // occludes it. flameEnabled:true restores the old flame-in-cutout.
+    headScale: 0.86,
+    flameEnabled: false,
+    twistDeg: 4,
+    wobble: { ampDeg: 3, period: 16 },
+    // Corridor fills are translucent depth-haze; rims carry the shape.
+    opacity: { head: 0.45, tail: 0.12 },
+    rim: { enabled: true, color: '#FFD070', intensity: 4.5 },
+    rush: { duration: 4, speedMul: 6, brightMul: 1.8 },
+  },
+
+  // -----------------------------------------------------------------------
+  // EDGE-LIGHT CHASE — comet heads with ember tails racing the outer
+  // silhouette. Idle comets run in flameOnly + moltenGold; 'edge.burst'
+  // (also fired by the edgeFlash transition style) ignites all comets to
+  // overbright for burst.duration in ANY mode. Speeds are perimeter
+  // fractions per second; each comet gets ±speedVariance and alternating
+  // direction at load.
+  // -----------------------------------------------------------------------
+  edgeChase: {
+    comets: 4,
+    idleComets: 2,
+    idleIntensity: 1.0,     // the gilded frame is already bright — comets need contrast
+    speed: 0.06,
+    speedVariance: 0.4,
+    tailLength: 0.08,
+    headWidth: 0.02,
+    thickness: 1.1,
+    colorHot: '#FFF6D8',
+    colorTail: '#FF7A1E',
+    burst: { duration: 3.0, intensity: 3.5, speedMul: 3.0 },
+  },
+
+  // -----------------------------------------------------------------------
+  // MOLTEN GOLD (mode 7, key 7) — liquid-gold fill inside the silhouette.
+  // Idle: fill breathes between idle.min/max. Triggers: molten.fill /
+  // molten.drain / molten.surge / molten.setLevel {level, duration}.
+  // meniscusBoost is overbright (×3) — the surface band is the bloom
+  // emitter; the body below stays under threshold.
+  // -----------------------------------------------------------------------
+  molten: {
+    idle: { min: 0.35, max: 0.75, period: 40 },
+    fillDuration: 12,
+    drainDuration: 8,
+    drainTo: 0.06,
+    waveAmp: 0.45,
+    meniscusBoost: 3.0,
+    surge: { duration: 4 },
+  },
 };
 
 // -----------------------------------------------------------------------
