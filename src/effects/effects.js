@@ -10,16 +10,16 @@
 // frame; the gate frame then crops to the original hull so the visible
 // edge reads flush with the gate's inner lip.
 
-import * as THREE from 'three';
 import { ANIM, COLORS } from '../config.js';
 import { hexToRgb } from '../util/color.js';
 import { createIslamicPanel }    from './fractalPattern/fractalPattern.js';
 import { createLatticeUnderlay } from './hexagons/hexagons.js';
 import { createGateFrame }       from './_shared/logoFrame.js';
-import { createSparkSystem }     from './_shared/sparks.js';
+import { makeSparks }            from './_shared/sparkFactory.js';
 import { createArch }            from './fireplaceOne/fireplaceTiles.js';
-import { createFlame, buildFlameRim } from './fireplaceOne/flame.js';
-import { insetPolygon, clipPolygonBelowY, clipPolygonLeftOfX, clipPolygonRightOfX } from '../util/polygon.js';
+import { createFlame, createHearthFlame } from './fireplaceOne/flame.js';
+import { createGateRim }         from './_shared/gateRim.js';
+import { clipPolygonBelowY, clipPolygonLeftOfX, clipPolygonRightOfX } from '../util/polygon.js';
 import { createFireplace }       from './fireplaceTwo/outerArch.js';
 import { createRecede }          from './fireplaceTwo/recede.js';
 import { createFractalZoom }     from './fractalPattern/fractalZoom.js';
@@ -170,179 +170,34 @@ export function addEffects(logoMesh, meta, renderer) {
   gate.position.set(cx, cy, maxZ + 0.45);
   logoMesh.add(gate);
 
-  // Gate-frame rim — same buildFlameRim ribbon system the central flame
-  // uses on its inner-star cutout, but here the polygon is the gate-frame's
-  // inner aperture (the entire logo silhouette inset by gateFrameWidth).
-  // Only shown in flameOnly mode (key 6); main.js toggles .visible. The
-  // driver below mirrors flame.js's chase/ignite scheduler.
-  const gateRimCfg = ANIM.flame && ANIM.flame.gateRim;
-  let gateRimGroup = null;
-  let updateGateRim = null;
-  try {
-  if (gateRimCfg && gateRimCfg.enabled !== false) {
-    const innerOffset = gateRimCfg.inset || 0;
-    const gateInnerLoop = insetPolygon(gateOutline, gateFrameWidth + innerOffset);
-    let gateMinY = Infinity;
-    let gateLaunchX = 0;
-    for (const p of gateInnerLoop) {
-      if (p.y < gateMinY) { gateMinY = p.y; gateLaunchX = p.x; }
-    }
-    const rim = buildFlameRim({
-      cutoutLoop: gateInnerLoop,
-      zCenter:    0,
-      vpX:        gateLaunchX,
-      minY:       gateMinY,
-      cfg:        { rim: gateRimCfg },
-    });
-    if (rim) {
-      gateRimGroup = new THREE.Group();
-      gateRimGroup.name = 'gate-rim';
-      // Sit slightly in front of the gate frame's front face so the
-      // additive ribbon glows ON the metal rather than getting depth-
-      // culled behind it. Gate frame extrudes 1.5 + 0.22 lip from
-      // maxZ + 0.45.
-      gateRimGroup.position.set(cx, cy, maxZ + 2.2);
-      gateRimGroup.visible = false;
-      gateRimGroup.add(rim.mesh);
-      logoMesh.add(gateRimGroup);
-
-      let pulseStart  = -1, pulseEnd  = -1;
-      let igniteStart = -1, igniteEnd = -1;
-      const pulseColorVec  = new THREE.Vector3();
-      const igniteColorVec = new THREE.Vector3();
-
-      updateGateRim = (t, dt) => {
-        const rcfg    = ANIM.flame.gateRim || {};
-        const rPulse  = rcfg.pulse  || {};
-        const rIgnite = rcfg.ignite || {};
-
-        if (rPulse.enabled !== false && rPulse.rate > 0 && t > pulseEnd) {
-          if (Math.random() < rPulse.rate * dt) {
-            pulseStart = t;
-            pulseEnd   = t + (rPulse.duration ?? 6.0);
-            if (rPulse.color) {
-              const c = new THREE.Color(rPulse.color);
-              pulseColorVec.set(c.r, c.g, c.b);
-              rim.uniforms.uPulseColor.value.copy(pulseColorVec);
-            }
-          }
-        }
-        if (t >= pulseStart && t <= pulseEnd) {
-          const dur = Math.max((rPulse.duration ?? 6.0), 0.01);
-          const u   = (t - pulseStart) / dur;
-          const phase = (rim.launchS + u) % 1;
-          rim.uniforms.uPulsePhase.value = (phase + 1) % 1;
-          rim.uniforms.uPulseWidth.value = rPulse.width ?? 0.08;
-          const env = u < 0.10 ? (u / 0.10)
-                                : Math.max(0, 1.0 - (u - 0.10) / 0.90);
-          rim.uniforms.uPulseEnv.value = env * (rPulse.intensity ?? 3.0);
-        } else {
-          rim.uniforms.uPulseEnv.value = 0;
-        }
-
-        if (rIgnite.enabled !== false && rIgnite.rate > 0 && t > igniteEnd) {
-          if (Math.random() < rIgnite.rate * dt) {
-            igniteStart = t;
-            igniteEnd   = t + (rIgnite.duration ?? 5.0);
-            if (rIgnite.color) {
-              const c = new THREE.Color(rIgnite.color);
-              igniteColorVec.set(c.r, c.g, c.b);
-              rim.uniforms.uIgniteColor.value.copy(igniteColorVec);
-            }
-            rim.uniforms.uIgniteCenter.value = rim.launchS;
-          }
-        }
-        if (t >= igniteStart && t <= igniteEnd) {
-          const dur = Math.max((rIgnite.duration ?? 5.0), 0.01);
-          const u   = (t - igniteStart) / dur;
-          const maxSpread = Math.min(rIgnite.maxSpread ?? 0.55, 0.55);
-          const spread = 0.005 + maxSpread * Math.min(u * 2.0, 1.0);
-          const env = u < 0.30 ? (u / 0.30)
-                                : Math.max(0, 1.0 - (u - 0.30) / 0.70);
-          rim.uniforms.uIgniteSpread.value = spread;
-          rim.uniforms.uIgniteEnv.value    = env * (rIgnite.intensity ?? 2.4);
-        } else {
-          rim.uniforms.uIgniteEnv.value = 0;
-        }
-      };
-    }
-  }
-  } catch (e) {
-    console.error('[gateRim] build failed:', e);
-    gateRimGroup = null;
-    updateGateRim = null;
-  }
+  // Gate-frame rim — buildFlameRim ribbon along the gate frame's inner
+  // aperture, only shown in flameOnly mode (key 6). Built + driven in
+  // _shared/gateRim.js; both handles are null when disabled in config.
+  const { gateRimGroup, updateGateRim } = createGateRim({
+    logoMesh, gateOutline, gateFrameWidth, cx, cy, maxZ,
+  });
 
   // Spark systems — gravity pulls each spark toward patternFadeCenter,
   // with a per-frame snap to whatever stroke vertex is closest. That
   // combination lets sparks hop between strokes as they drift inward.
-  const panelSparks = createSparkSystem({
-    patternGroup: panel,
-    fadeCenter: patternFadeCenter,
-    fadeOuter:  maxR * 0.55,
-    count:            ANIM.panelSparks.count,
-    gravity:          ANIM.panelSparks.gravity,
-    maxSpeed:         ANIM.panelSparks.maxSpeed,
-    damping:          ANIM.panelSparks.damping,
-    snapStrength:     ANIM.panelSparks.snapStrength,
-    tangentialFactor: ANIM.panelSparks.tangentialFactor,
-    speedVariance:    ANIM.panelSparks.speedVariance,
-    sizeVariance:     ANIM.panelSparks.sizeVariance,
-    color:            ANIM.panelSparks.color,
-    hueVariance:      ANIM.panelSparks.hueVariance,
-    pointSize:        ANIM.panelSparks.pointSize,
-    trailSize:        ANIM.panelSparks.trailSize,
-    z: 0.12,
+  // Creation order (panel → lattice → central → arch below) is load-
+  // bearing: each system consumes Math.random at build time.
+  const panelSparks = makeSparks({
+    cfg: ANIM.panelSparks, patternGroup: panel, host: 'panel',
+    fadeCenter: patternFadeCenter, fadeOuter: maxR * 0.55, z: 0.12,
   });
-  panel.add(panelSparks.points);
-  panelSparks.host = 'panel';
 
-  const latticeSparks = createSparkSystem({
-    patternGroup: underlay,
-    fadeCenter: patternFadeCenter,
-    fadeOuter:  maxR * 0.65,
-    count:            ANIM.latticeSparks.count,
-    gravity:          ANIM.latticeSparks.gravity,
-    maxSpeed:         ANIM.latticeSparks.maxSpeed,
-    damping:          ANIM.latticeSparks.damping,
-    snapStrength:     ANIM.latticeSparks.snapStrength,
-    tangentialFactor: ANIM.latticeSparks.tangentialFactor,
-    speedVariance:    ANIM.latticeSparks.speedVariance,
-    sizeVariance:     ANIM.latticeSparks.sizeVariance,
-    color:            ANIM.latticeSparks.color,
-    hueVariance:      ANIM.latticeSparks.hueVariance,
-    pointSize:        ANIM.latticeSparks.pointSize,
-    trailSize:        ANIM.latticeSparks.trailSize,
-    z: 0.12,
+  const latticeSparks = makeSparks({
+    cfg: ANIM.latticeSparks, patternGroup: underlay, host: 'lattice',
+    fadeCenter: patternFadeCenter, fadeOuter: maxR * 0.65, z: 0.12,
   });
-  underlay.add(latticeSparks.points);
-  latticeSparks.host = 'lattice';
 
   // Central companion layer — streams straight to centre, starts after the
   // main spark layer, dimmer.
-  const centralSparks = createSparkSystem({
-    patternGroup: panel,
-    fadeCenter: patternFadeCenter,
-    fadeOuter:  maxR * 0.55,
-    count:            ANIM.centralSparks.count,
-    gravity:          ANIM.centralSparks.gravity,
-    maxSpeed:         ANIM.centralSparks.maxSpeed,
-    damping:          ANIM.centralSparks.damping,
-    snapStrength:     ANIM.centralSparks.snapStrength,
-    tangentialFactor: ANIM.centralSparks.tangentialFactor,
-    speedVariance:    ANIM.centralSparks.speedVariance,
-    sizeVariance:     ANIM.centralSparks.sizeVariance,
-    color:            ANIM.centralSparks.color,
-    hueVariance:      ANIM.centralSparks.hueVariance,
-    pointSize:        ANIM.centralSparks.pointSize,
-    trailSize:        ANIM.centralSparks.trailSize,
-    startDelay:       ANIM.centralSparks.startDelay,
-    startDelayMax:    ANIM.centralSparks.startDelayMax,
-    brightness:       ANIM.centralSparks.brightness,
-    z: 0.13,
+  const centralSparks = makeSparks({
+    cfg: ANIM.centralSparks, patternGroup: panel, host: 'panel',
+    fadeCenter: patternFadeCenter, fadeOuter: maxR * 0.55, z: 0.13,
   });
-  panel.add(centralSparks.points);
-  centralSparks.host = 'panel';
 
   sparkSystems.push(panelSparks, latticeSparks, centralSparks);
 
@@ -362,26 +217,11 @@ export function addEffects(logoMesh, meta, renderer) {
   // sparks but the snap cloud is built from an invisible LineSegments layer
   // inside arch.group (see patterns/arch.js).
   if (ANIM.archSparks) {
-    const archSparks = createSparkSystem({
-      patternGroup: arch.group,
-      fadeCenter: patternFadeCenter,
-      fadeOuter:  maxR * 0.55,
-      count:            ANIM.archSparks.count,
-      gravity:          ANIM.archSparks.gravity,
-      maxSpeed:         ANIM.archSparks.maxSpeed,
-      damping:          ANIM.archSparks.damping,
-      snapStrength:     ANIM.archSparks.snapStrength,
-      tangentialFactor: ANIM.archSparks.tangentialFactor,
-      speedVariance:    ANIM.archSparks.speedVariance,
-      sizeVariance:     ANIM.archSparks.sizeVariance,
-      color:            ANIM.archSparks.color,
-      hueVariance:      ANIM.archSparks.hueVariance,
-      pointSize:        ANIM.archSparks.pointSize,
-      trailSize:        ANIM.archSparks.trailSize,
+    const archSparks = makeSparks({
+      cfg: ANIM.archSparks, patternGroup: arch.group, host: 'arch',
+      fadeCenter: patternFadeCenter, fadeOuter: maxR * 0.55,
       z: arch.sparkZ ?? 0.12,
     });
-    arch.group.add(archSparks.points);
-    archSparks.host = 'arch';
     sparkSystems.push(archSparks);
   }
 
@@ -400,90 +240,11 @@ export function addEffects(logoMesh, meta, renderer) {
 
   // ---------------------------------------------------------------------
   // Hearth flame — single wide flame using the LOGO SILHOUETTE itself as
-  // the cutout polygon. The polygon extrusion naturally masks the flame
-  // to the gate-frame interior (anything past the silhouette has no
-  // geometry to render onto). The silhouette is inset slightly so the
-  // flame body sits inside the frame's inner edge rather than flush with
-  // the frame's outer outline.
-  //
-  // The column shader centres brightness at vpX and tapers outward by
-  // colHalfWidth = uHalfWidth * cfg.bodyHalfWidthBase. With the silhouette
-  // as the cutout, uHalfWidth is the silhouette's half-width — the inner-
-  // star default (0.14) would shrink the bright column to a thin band in
-  // the centre, most of which lands in the negative space between the
-  // logo's feet. We override the column to 0.95/0.35 so the bright zone
-  // spans almost the full silhouette width and the visible flame fills
-  // the gate-frame interior.
-  //
-  // vpY anchors PARTWAY up the silhouette (not above it) so the flame's
-  // tip vanishes inside the gate-frame — the dark space above the tip
-  // shows the starry sky and the flame reads as a hearth fire sitting
-  // inside the frame, rather than filling the whole interior.
-  //
-  // Secondary blue core + tertiary outline are layers designed for the
-  // narrow inner-star flame; on a wide hearth column they read as a thick
-  // saturated band and a hard ring, so we disable both. Branching, wobble,
-  // and waist pinches are also off — the hearth wants one steady wide
-  // flame, not a column that meanders.
-  //
-  // Disabling depth test on the flame body lets it render on top of the
-  // opaque-black logo body in mode 6 (which would otherwise occlude the
-  // flame except where the inner-star cutout opens into the silhouette).
-  //
-  // Rim ribbon is suppressed via disableRim — no chase-pulse tracer.
+  // the cutout polygon (mode 6). Column widening, layer disables, and the
+  // depth-test override live with the rest of the flame machinery in
+  // fireplaceOne/flame.js; createHearthFlame adds its group to logoMesh.
   // ---------------------------------------------------------------------
-  const hearthMaskInset = 1.6;
-  const hearthCutout = insetPolygon(meta.silhouette[0], hearthMaskInset);
-  // Silhouette vertical extents in flame-local coords (mesh-local minus cy).
-  let hearthSilTop = -Infinity, hearthSilBot = Infinity;
-  for (const p of hearthCutout) {
-    const y = p.y - cy;
-    if (y > hearthSilTop) hearthSilTop = y;
-    if (y < hearthSilBot) hearthSilBot = y;
-  }
-  // Vanishing point sits ~55% of the way up — flame tip is visible
-  // inside the silhouette with empty starry sky above it.
-  const hearthVpYFrac = 0.55;
-  const hearthVpY = hearthSilBot + (hearthSilTop - hearthSilBot) * hearthVpYFrac;
-  const hearthFlame = createFlame({
-    logoMesh, meta, renderer,
-    cutoutOverride: hearthCutout,
-    vpXOverride:    0,                          // panel-local centre
-    vpYOverride:    hearthVpY,
-    groupName:      'hearth-flame',
-    skipStretch:    true,
-    disableRim:     true,
-    cfgOverride: {
-      // Wide column — colHalfWidth scales with the silhouette's half-width,
-      // so 0.95 base means the bright zone reaches nearly to the silhouette
-      // edges; 0.35 top still tapers toward the vanishing point.
-      bodyHalfWidthBase: 0.95,
-      bodyHalfWidthTop:  0.35,
-      // Hold the column steady — no lateral wander, no width modulation,
-      // no mid-column pinches, no split into branches.
-      columnWobble:      0,
-      widthNoiseAmt:     0.12,
-      waistAmt:          0,
-      waist2Amt:         0,
-      branching:         { enabled: false, separation: 0 },
-      // One flame, one layer — the inner blue core and red→blue outline
-      // ring belong to the inner-star variant.
-      secondary:         { enabled: false },
-      tertiary:          { enabled: false },
-    },
-  });
-  logoMesh.add(hearthFlame.group);
-
-  // Disable depth test on every flame material so the body renders on
-  // top of the opaque logo body in mode 6 (key 6 sets the body color
-  // to pure black; depthTest=true would have the body's depth occlude
-  // the flame everywhere except the inner-star cutout).
-  hearthFlame.group.traverse(o => {
-    if (o.isMesh && o.material) {
-      o.material.depthTest   = false;
-      o.material.needsUpdate = true;
-    }
-  });
+  const hearthFlame = createHearthFlame({ logoMesh, meta, renderer });
 
   // ---------------------------------------------------------------------
   // Fireplace frame — standalone Roman-horseshoe brick + petal frame

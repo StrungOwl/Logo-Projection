@@ -23,6 +23,7 @@
 import * as THREE from 'three';
 import { ANIM } from '../../config.js';
 import { hexToRgb } from '../../util/color.js';
+import { insetPolygon } from '../../util/polygon.js';
 
 // Merge a secondary-flame override block onto the main-flame cfg. Top-
 // level fields override directly. Nested blocks (shimmer, flares) are
@@ -1933,4 +1934,99 @@ export function createFlame({
     sparkPoints: sparks ? sparks.points : null,
     sparkOpacity: sparks ? sparks.uniforms.uOpacity : null,
   };
+}
+
+// ---------------------------------------------------------------------
+// Hearth flame — single wide flame using the LOGO SILHOUETTE itself as
+// the cutout polygon. The polygon extrusion naturally masks the flame
+// to the gate-frame interior (anything past the silhouette has no
+// geometry to render onto). The silhouette is inset slightly so the
+// flame body sits inside the frame's inner edge rather than flush with
+// the frame's outer outline.
+//
+// The column shader centres brightness at vpX and tapers outward by
+// colHalfWidth = uHalfWidth * cfg.bodyHalfWidthBase. With the silhouette
+// as the cutout, uHalfWidth is the silhouette's half-width — the inner-
+// star default (0.14) would shrink the bright column to a thin band in
+// the centre, most of which lands in the negative space between the
+// logo's feet. We override the column to 0.95/0.35 so the bright zone
+// spans almost the full silhouette width and the visible flame fills
+// the gate-frame interior.
+//
+// vpY anchors PARTWAY up the silhouette (not above it) so the flame's
+// tip vanishes inside the gate-frame — the dark space above the tip
+// shows the starry sky and the flame reads as a hearth fire sitting
+// inside the frame, rather than filling the whole interior.
+//
+// Secondary blue core + tertiary outline are layers designed for the
+// narrow inner-star flame; on a wide hearth column they read as a thick
+// saturated band and a hard ring, so we disable both. Branching, wobble,
+// and waist pinches are also off — the hearth wants one steady wide
+// flame, not a column that meanders.
+//
+// Disabling depth test on the flame body lets it render on top of the
+// opaque-black logo body in mode 6 (which would otherwise occlude the
+// flame except where the inner-star cutout opens into the silhouette).
+//
+// Rim ribbon is suppressed via disableRim — no chase-pulse tracer.
+//
+// Adds the flame group to logoMesh itself; returns the createFlame
+// handles ({ group, update, lights, ... }).
+// ---------------------------------------------------------------------
+export function createHearthFlame({ logoMesh, meta, renderer }) {
+  const { cy } = meta;
+  const hearthMaskInset = 1.6;
+  const hearthCutout = insetPolygon(meta.silhouette[0], hearthMaskInset);
+  // Silhouette vertical extents in flame-local coords (mesh-local minus cy).
+  let hearthSilTop = -Infinity, hearthSilBot = Infinity;
+  for (const p of hearthCutout) {
+    const y = p.y - cy;
+    if (y > hearthSilTop) hearthSilTop = y;
+    if (y < hearthSilBot) hearthSilBot = y;
+  }
+  // Vanishing point sits ~55% of the way up — flame tip is visible
+  // inside the silhouette with empty starry sky above it.
+  const hearthVpYFrac = 0.55;
+  const hearthVpY = hearthSilBot + (hearthSilTop - hearthSilBot) * hearthVpYFrac;
+  const hearthFlame = createFlame({
+    logoMesh, meta, renderer,
+    cutoutOverride: hearthCutout,
+    vpXOverride:    0,                          // panel-local centre
+    vpYOverride:    hearthVpY,
+    groupName:      'hearth-flame',
+    skipStretch:    true,
+    disableRim:     true,
+    cfgOverride: {
+      // Wide column — colHalfWidth scales with the silhouette's half-width,
+      // so 0.95 base means the bright zone reaches nearly to the silhouette
+      // edges; 0.35 top still tapers toward the vanishing point.
+      bodyHalfWidthBase: 0.95,
+      bodyHalfWidthTop:  0.35,
+      // Hold the column steady — no lateral wander, no width modulation,
+      // no mid-column pinches, no split into branches.
+      columnWobble:      0,
+      widthNoiseAmt:     0.12,
+      waistAmt:          0,
+      waist2Amt:         0,
+      branching:         { enabled: false, separation: 0 },
+      // One flame, one layer — the inner blue core and red→blue outline
+      // ring belong to the inner-star variant.
+      secondary:         { enabled: false },
+      tertiary:          { enabled: false },
+    },
+  });
+  logoMesh.add(hearthFlame.group);
+
+  // Disable depth test on every flame material so the body renders on
+  // top of the opaque logo body in mode 6 (key 6 sets the body color
+  // to pure black; depthTest=true would have the body's depth occlude
+  // the flame everywhere except the inner-star cutout).
+  hearthFlame.group.traverse(o => {
+    if (o.isMesh && o.material) {
+      o.material.depthTest   = false;
+      o.material.needsUpdate = true;
+    }
+  });
+
+  return hearthFlame;
 }

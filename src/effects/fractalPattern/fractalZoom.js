@@ -25,6 +25,8 @@
 
 import * as THREE from 'three';
 import { ANIM } from '../../config.js';
+import { chainOnBeforeCompile, RADIAL_FADE_ALPHA_BODY, RADIAL_FADE_ALPHA_STROKE }
+  from '../_shared/shaderPatches.js';
 
 function noop() {}
 
@@ -97,7 +99,6 @@ export function createFractalZoom({
     // run, so each clone has its OWN proportionally-sized inner-star
     // cutout and full fade range.
     if (origMat.onBeforeCompile) {
-      const origCb = origMat.onBeforeCompile;
       // Per-clone frozen uniform refs. Each call builds its own set so
       // clones don't share state with each other either — every clone is
       // a fully independent static snapshot of the source material at
@@ -107,8 +108,11 @@ export function createFractalZoom({
         uTime:        { value: 0 },
         uTwinkleSeed: { value: 0 },
       };
-      m.onBeforeCompile = (shader) => {
-        origCb(shader);
+      // Material.clone() does not carry onBeforeCompile over — re-attach
+      // the source material's patch, then chain the clone-specific rewrite
+      // AFTER it so the replace targets below exist when it runs.
+      m.onBeforeCompile = origMat.onBeforeCompile;
+      chainOnBeforeCompile(m, (shader) => {
         shader.uniforms.uCloneScale          = cloneScaleUniform;
         shader.uniforms.uCloneScaleFadeStart = cloneScaleFadeStartUniform;
         shader.uniforms.uCloneScaleFadeEnd   = cloneScaleFadeEndUniform;
@@ -119,7 +123,7 @@ export function createFractalZoom({
         }
         // Isolate uMaxOpacity per-clone. fadeGradUniforms.uMaxOpacity is
         // a SHARED ref between every original mesh and every cloned mesh
-        // (origCb just Object.assign'd it). The clone-fade code writes
+        // (the source patch just Object.assign'd it). The clone-fade code
         // mat.uniforms.uMaxOpacity.value every frame to drive cloneOp —
         // but because the ref is shared, those writes also mutate the
         // originals' rendered opacity. Replace with a fresh per-clone
@@ -163,14 +167,14 @@ export function createFractalZoom({
              uniform float uCloneScaleFadeEnd;`
           )
           .replace(
-            'gl_FragColor.a *= _a * uMaxOpacity * _twinkle;',
+            RADIAL_FADE_ALPHA_STROKE,
             `gl_FragColor.a *= _a * uMaxOpacity * _twinkle * (1.0 - smoothstep(uCloneScaleFadeStart, uCloneScaleFadeEnd, uCloneScale));`
           )
           .replace(
-            'gl_FragColor.a *= _a * uMaxOpacity;',
+            RADIAL_FADE_ALPHA_BODY,
             `gl_FragColor.a *= _a * uMaxOpacity * (1.0 - smoothstep(uCloneScaleFadeStart, uCloneScaleFadeEnd, uCloneScale));`
           );
-      };
+      });
       // Force the cached compiled program to be discarded so our wrapper
       // actually runs.
       m.needsUpdate = true;

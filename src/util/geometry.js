@@ -39,6 +39,28 @@ export function makeBrickGeometry(seed, dims) {
   return geo;
 }
 
+// THREE.Shape from silhouette loops — loops[0] is the outer outline (CCW),
+// every remaining loop becomes an interior hole (CW). Pure geometry
+// helper: callers own extrusion/ShapeGeometry and all scene state.
+// Used by fireplaceTwo/recede.js; the molten effect and transition wipe
+// reuse the same silhouette → Shape conversion.
+export function buildSilhouetteShape(loops) {
+  const outer = loops[0];
+  const shape = new THREE.Shape();
+  shape.moveTo(outer[0].x, outer[0].y);
+  for (let i = 1; i < outer.length; i++) shape.lineTo(outer[i].x, outer[i].y);
+  shape.closePath();
+  for (let h = 1; h < loops.length; h++) {
+    const hole = loops[h];
+    const path = new THREE.Path();
+    path.moveTo(hole[0].x, hole[0].y);
+    for (let i = 1; i < hole.length; i++) path.lineTo(hole[i].x, hole[i].y);
+    path.closePath();
+    shape.holes.push(path);
+  }
+  return shape;
+}
+
 // Quaternion that maps brick-local axes onto chosen world directions.
 // Each parameter is a unit world-space vector for the corresponding local
 // axis. Three.js' Matrix4.makeBasis takes the columns of the rotation

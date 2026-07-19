@@ -17,6 +17,7 @@ import { COLORS } from '../../config.js';
 import { hexToRgb } from '../../util/color.js';
 import { applyLogoStarry } from '../../shaders/logo-starry.js';
 import { applyGradientTint } from '../../shaders/gradient-tint.js';
+import { buildSilhouetteShape } from '../../util/geometry.js';
 
 export function createRecede({
   silhouettePolygons,
@@ -31,19 +32,8 @@ export function createRecede({
 
   // Master shape: outer loop CCW + remaining loops as holes (CW).
   const outer = silhouettePolygons[0];
-  const shape = new THREE.Shape();
-  shape.moveTo(outer[0].x, outer[0].y);
-  for (let i = 1; i < outer.length; i++) shape.lineTo(outer[i].x, outer[i].y);
-  shape.closePath();
-  for (let h = 1; h < silhouettePolygons.length; h++) {
-    const hole = silhouettePolygons[h];
-    const path = new THREE.Path();
-    path.moveTo(hole[0].x, hole[0].y);
-    for (let i = 1; i < hole.length; i++) path.lineTo(hole[i].x, hole[i].y);
-    path.closePath();
-    shape.holes.push(path);
-  }
-  const sharedGeometry = new THREE.ShapeGeometry(shape);
+  const sharedGeometry =
+    new THREE.ShapeGeometry(buildSilhouetteShape(silhouettePolygons));
 
   // Copy 0 is the LARGEST visible silhouette — it must fit inside the
   // logo body's central cutout, otherwise it sits BEHIND the body's solid

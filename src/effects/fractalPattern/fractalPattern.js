@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { buildHullClip, buildRadialFade } from '../_shared/shaderPatches.js';
 
 function buildHubStar(symmetry, rOuter, rInner) {
   const shape = new THREE.Shape();
@@ -207,56 +208,15 @@ export function createIslamicPanel({
     goldMat.transparent = true;
   }
 
-  // Pack polygon edges for an even-odd point-in-polygon test in the
-  // shader (handles concave outline + interior holes). Accept either a
-  // single polygon (array of {x,y}) or a list of loops (outer CCW + holes
-  // CW). Each edge → vec4(ax, ay, bx, by); fragment shader counts edges
-  // crossed by a horizontal +X ray from the fragment — even = outside.
-  let hullEdges = null;
-  let hullEdgeCount = 0;
-  if (hullClip && hullClip.length > 0) {
-    const loops = (hullClip[0] && 'x' in hullClip[0]) ? [hullClip] : hullClip;
-    let total = 0;
-    for (const loop of loops) if (loop && loop.length >= 3) total += loop.length;
-    if (total > 0) {
-      hullEdges = new Float32Array(total * 4);
-      let off = 0;
-      for (const loop of loops) {
-        if (!loop || loop.length < 3) continue;
-        for (let i = 0; i < loop.length; i++) {
-          const a = loop[i];
-          const b = loop[(i + 1) % loop.length];
-          hullEdges[off++] = a.x;
-          hullEdges[off++] = a.y;
-          hullEdges[off++] = b.x;
-          hullEdges[off++] = b.y;
-        }
-      }
-      hullEdgeCount = total;
-    }
-  }
-  const hullClipUniforms = hullEdges
-    ? { uHullEdges: { value: hullEdges } }
-    : null;
-  const hullClipCommon = hullEdges
-    ? `
-      #define HULL_EDGE_COUNT ${hullEdgeCount}
-      uniform vec4 uHullEdges[HULL_EDGE_COUNT];`
-    : '';
-  const hullClipCall = hullEdges
-    ? `
-      int _ci = 0;
-      for (int _ei = 0; _ei < HULL_EDGE_COUNT; _ei++) {
-        vec4 _e = uHullEdges[_ei];
-        bool _ay = _e.y > vPanelXY.y;
-        bool _by = _e.w > vPanelXY.y;
-        if (_ay != _by) {
-          float _xc = (_e.z - _e.x) * (vPanelXY.y - _e.y) / (_e.w - _e.y) + _e.x;
-          if (vPanelXY.x < _xc) _ci++;
-        }
-      }
-      if (_ci - (_ci / 2) * 2 == 0) discard;`
-    : '';
+  // Hull-clip + radial-fade GLSL — shared builders (see shaderPatches.js).
+  // Emitted text is byte-identical to the previously inlined blocks, so
+  // the compiled programs (and fractalZoom's replace anchors) are
+  // unchanged.
+  const { uniforms: hullClipUniforms,
+          glslCommon: hullClipCommon,
+          glslCall:   hullClipCall } = buildHullClip(hullClip);
+  const radialFadeBody   = buildRadialFade({ variant: 'body',   indent: 9 });
+  const radialFadeStroke = buildRadialFade({ variant: 'stroke', indent: 11 });
 
   goldMat.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, fadeGradUniforms);
@@ -292,15 +252,7 @@ export function createIslamicPanel({
          diffuseColor.rgb *= mix(uGradDark, uGradBright, _gt);`)
       .replace('#include <dithering_fragment>',
         `#include <dithering_fragment>
-         vec2  _delta = vPanelXY - uFadeCenter;
-         _delta.y /= max(uFadeDownStretch, 1e-4);
-         float _downN = clamp(abs(_delta.y) / max(uFadeOuter, 1e-4), 0.0, 2.0);
-         _delta.x *= 1.0 + uFadeBottomTaper * _downN;
-         float _d = length(_delta);
-         float _a = (uFadeOuter > uFadeInner)
-            ? smoothstep(uFadeInner, uFadeOuter, _d)
-            : 1.0;
-         gl_FragColor.a *= _a * uMaxOpacity;`);
+         ${radialFadeBody}`);
   };
 
   group.userData.refreshFade = () => {
@@ -385,20 +337,7 @@ export function createIslamicPanel({
         .replace('#include <dithering_fragment>',
           `#include <dithering_fragment>
            ${hullClipCall}
-           vec2  _delta = vPanelXY - uFadeCenter;
-           if (_delta.y < 0.0) _delta.y /= max(uFadeDownStretch, 1e-4);
-           float _downN = clamp(-_delta.y / max(uFadeOuter, 1e-4), 0.0, 2.0);
-           _delta.x *= 1.0 + uFadeBottomTaper * _downN;
-           float _d = length(_delta);
-           float _a = (uFadeOuter > uFadeInner)
-              ? smoothstep(uFadeInner, uFadeOuter, _d)
-              : 1.0;
-           // Per-instance twinkle: two sine waves offset by a random seed
-           // give a non-periodic-feeling flicker from 0 to full brightness.
-           float _t1 = sin(uTime * 1.2 + uTwinkleSeed);
-           float _t2 = sin(uTime * 0.7 + uTwinkleSeed * 2.3);
-           float _twinkle = clamp(0.5 + 0.65 * (_t1 * 0.6 + _t2 * 0.4), 0.0, 1.0);
-           gl_FragColor.a *= _a * uMaxOpacity * _twinkle;`);
+           ${radialFadeStroke}`);
     };
   }
 
