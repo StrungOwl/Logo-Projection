@@ -17,6 +17,12 @@
 // particles shrink to a fraction of their intended frame-relative size —
 // same trick export.js has always used.
 
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { ANIM } from '../config.js';
 import { QUALITY } from '../quality.js';
 
 export function createPipeline({ renderer, scene, camera, ctx }) {
@@ -101,12 +107,91 @@ export function createPipeline({ renderer, scene, camera, ctx }) {
     sizeComposer(w, h, 1);
   }
 
-  // Composer hook — no-op until Phase 4 attaches one via setComposer().
+  // ---- post-processing composer ---------------------------------------
+  // Chain: RenderPass → UnrealBloomPass → OutputPass (ACES + sRGB applied
+  // once, at the end, to the whole frame — including the custom
+  // ShaderMaterials that used to bypass tone mapping entirely; that
+  // uniform treatment is the one deliberate look re-baseline of the
+  // revamp, and ANIM.post.enabled=false remains a permanent exact-legacy
+  // escape hatch).
+  //
+  // The composer's render target must be custom:
+  //   - stencilBuffer: the overlay mask + fireplace tiles stencil-test
+  //     (modes 0/2/3/4 silently break on the default stencil-less RT)
+  //   - HalfFloatType: HDR headroom so additive stacks can exceed 1.0 and
+  //     feed the bloom threshold meaningfully
+  //   - samples: MSAA lives on the default framebuffer only; without
+  //     samples the composer path would regress to aliased edges
+  // Built lazily on the first post-enabled frame so the legacy path costs
+  // nothing; rebuilt when the quality preset changes msaaSamples.
   let composer = null;
+  let bloomPass = null;
+  let builtSamples = -1;
+  // Transition manager hook — bloom strength rides the dip envelope so
+  // glow can't ghost through a fade-to-black (set via setEnvelopeSource).
+  let envelopeFn = null;
+
+  function buildComposer() {
+    disposeComposer();
+    const size = new THREE.Vector2();
+    renderer.getDrawingBufferSize(size);
+    const samples = QUALITY.preset.msaaSamples ?? 4;
+    const rt = new THREE.WebGLRenderTarget(size.x, size.y, {
+      type: THREE.HalfFloatType,
+      samples,
+      stencilBuffer: true,
+    });
+    composer = new EffectComposer(renderer, rt);
+    composer.setPixelRatio(renderer.getPixelRatio());
+    const css = new THREE.Vector2();
+    renderer.getSize(css);
+    composer.setSize(css.x, css.y);
+    composer.addPass(new RenderPass(scene, camera));
+    const b = ANIM.post?.bloom || {};
+    bloomPass = new UnrealBloomPass(size.clone(), b.strength ?? 0.35, b.radius ?? 0.5, b.threshold ?? 1.0);
+    composer.addPass(bloomPass);
+    composer.addPass(new OutputPass());
+    builtSamples = samples;
+    applyBloomScale();
+  }
+
+  function disposeComposer() {
+    if (!composer) return;
+    composer.renderTarget1.dispose();
+    composer.renderTarget2.dispose();
+    for (const p of composer.passes) p.dispose?.();
+    composer = null;
+    bloomPass = null;
+  }
+
+  // Lower presets run the bloom pyramid at reduced resolution.
+  function applyBloomScale() {
+    if (!bloomPass) return;
+    const scale = QUALITY.preset.bloomScale ?? 1.0;
+    const size = new THREE.Vector2();
+    renderer.getDrawingBufferSize(size);
+    bloomPass.setSize(Math.round(size.x * scale), Math.round(size.y * scale));
+  }
+
+  // Live-sync pass settings from ANIM each frame (codebase convention —
+  // devtools/remote writes take effect next frame).
+  function syncPost() {
+    const b = ANIM.post?.bloom || {};
+    // Calibration patterns must render halo-free: alignment needs crisp
+    // edges, and bloom around a white fill corrupts them.
+    const calibrating = ANIM.viewMode === 'calibration';
+    bloomPass.enabled = b.enabled !== false && !calibrating;
+    const env = envelopeFn ? envelopeFn() : 1;
+    bloomPass.strength   = (b.strength ?? 0.35) * env;
+    bloomPass.radius     = b.radius ?? 0.5;
+    bloomPass.threshold  = b.threshold ?? 1.0;
+  }
+
   function sizeComposer(w, h, pixelRatio) {
     if (!composer) return;
     composer.setPixelRatio(pixelRatio);
     composer.setSize(w, h);
+    applyBloomScale();
   }
 
   // ---- public API ------------------------------------------------------
@@ -115,11 +200,16 @@ export function createPipeline({ renderer, scene, camera, ctx }) {
     get mode() { return state.mode; },
 
     render() {
-      // Phase 4 swaps in: composer.render() when ANIM.post.enabled.
-      renderer.render(scene, camera);
+      if (ANIM.post?.enabled) {
+        if (!composer) buildComposer();
+        syncPost();
+        composer.render();
+      } else {
+        renderer.render(scene, camera);
+      }
     },
 
-    setComposer(c) { composer = c; },
+    setEnvelopeSource(fn) { envelopeFn = fn; },
 
     enterProjection(w, h) {
       if (state.mode === 'export') return;   // export owns the canvas right now
@@ -157,10 +247,18 @@ export function createPipeline({ renderer, scene, camera, ctx }) {
     },
 
     // Quality cycle entry point — window mode re-applies the DPR cap;
-    // fixed-resolution modes are always pixelRatio 1 so only the (future)
-    // composer settings react there.
+    // fixed-resolution modes stay pixelRatio 1 but the composer reacts:
+    // an msaaSamples change forces a rebuild (RT samples are baked at
+    // creation), bloomScale just resizes the bloom pyramid.
     applyQuality() {
       if (state.mode === 'window') applyWindowSize();
+      if (composer) {
+        if ((QUALITY.preset.msaaSamples ?? 4) !== builtSamples) {
+          buildComposer();
+        } else {
+          applyBloomScale();
+        }
+      }
     },
 
     getState() {

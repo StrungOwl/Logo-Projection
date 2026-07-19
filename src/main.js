@@ -738,6 +738,7 @@ if (typeof window !== 'undefined') {
   window.startExport      = runExport;                                       // default 4K
   window.startExport1080p = () => runExport({ width: 1920, height: 1080 });
   window.__ctx = ctx;  // debug handle
+  window.__pipeline = pipeline;
   // Deterministic driver for the .verify probes: with ctx.paused=true the
   // rAF loop idles, and a probe can step the scene manually via
   // __tick(t, dt) + __renderer.render(...) for reproducible screenshots.
@@ -794,6 +795,14 @@ if (typeof window !== 'undefined') {
       cycleQuality(pipeline);
       return;
     }
+    // 'b' (no modifiers) — toggle the bloom pass alone. Shift+B (below)
+    // bypasses the whole composer for an exact-legacy A/B comparison.
+    if (e.code === 'KeyB' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      ANIM.post.bloom.enabled = !ANIM.post.bloom.enabled;
+      console.log(`[post] bloom ${ANIM.post.bloom.enabled ? 'on' : 'off'}`);
+      return;
+    }
     // 'c' (no modifiers) — cycle the calibration pattern (and jump into
     // calibration mode if not already there, so alignment is one key).
     if (e.code === 'KeyC' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
@@ -820,5 +829,9 @@ if (typeof window !== 'undefined') {
     if (e.key === 'E') runExport();
     else if (e.key === 'D') runExport({ width: 1920, height: 1080 });
     else if (e.key === 'P') projection.toggle();   // Shift+P — projection mode
+    else if (e.key === 'B') {                      // Shift+B — composer on/off A-B
+      ANIM.post.enabled = !ANIM.post.enabled;
+      console.log(`[post] composer ${ANIM.post.enabled ? 'on' : 'off (legacy pipeline)'}`);
+    }
   });
 }

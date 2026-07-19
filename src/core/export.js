@@ -252,7 +252,11 @@ export async function startExport(bridge, opts = {}) {
       const t = START_T + frame * DT;
       tick(t, DT);
 
-      renderer.render(scene, camera);
+      // pipeline.render() = composer (bloom + OutputPass → default
+      // framebuffer) when post is on, plain renderer.render otherwise —
+      // either way the tone-mapped sRGB result lands in the canvas and
+      // readPixels in the same task sees a valid drawing buffer.
+      pipeline.render();
       gl.readPixels(0, 0, WIDTH, HEIGHT, gl.RGBA, gl.UNSIGNED_BYTE, pixelBuffer);
 
       // WebGL origin is bottom-left, Canvas2D is top-left. Flip row order.

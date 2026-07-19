@@ -59,7 +59,7 @@ await page.evaluate(() => {
   window.__ctx.paused = true;
   let t = 0;
   for (let i = 0; i < 360; i++) { t += 1 / 60; window.__tick(t, 1 / 60); }
-  window.__renderer.render(window.__scene, window.__camera);
+  if (window.__pipeline) window.__pipeline.render(); else window.__renderer.render(window.__scene, window.__camera);
 });
 await page.screenshot({ path: join(OUT, 'projection-framing.png') });
 
@@ -69,7 +69,7 @@ for (const pattern of ['fill', 'outline', 'grid', 'checker', 'corners']) {
     window.ANIM.viewMode = 'calibration';
     window.ANIM.calibration.pattern = p;
     window.__tick(400, 1 / 60);
-    window.__renderer.render(window.__scene, window.__camera);
+    if (window.__pipeline) window.__pipeline.render(); else window.__renderer.render(window.__scene, window.__camera);
   }, pattern);
   await page.screenshot({ path: join(OUT, `cal-${pattern}.png`) });
 }
@@ -79,7 +79,7 @@ const restored = await page.evaluate(() => {
   window.ANIM.viewMode = 'visualSequence';
   window.ANIM.calibration.pattern = 'off';
   window.__tick(401, 1 / 60);
-  window.__renderer.render(window.__scene, window.__camera);
+  if (window.__pipeline) window.__pipeline.render(); else window.__renderer.render(window.__scene, window.__camera);
   return window.__ctx.logoModel.visible;
 });
 assert(restored === true, 'logo model visible again after calibration');

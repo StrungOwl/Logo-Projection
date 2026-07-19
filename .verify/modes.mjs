@@ -98,6 +98,12 @@ await page.waitForFunction(
 // Park the live loop; from here the probe owns time.
 await page.evaluate(() => { window.__ctx.paused = true; });
 
+// POST_OFF=1 forces the legacy direct-render pipeline (composer bypass) —
+// used to prove the bypass is exactly the pre-composer look.
+if (process.env.POST_OFF === '1') {
+  await page.evaluate(() => { if (window.ANIM.post) window.ANIM.post.enabled = false; });
+}
+
 // step(seconds): advance the simulated clock without rendering each tick
 // (tick mutates state; only the final frame needs a render).
 async function stepAndShot(fromT, seconds, shotPath) {
@@ -105,7 +111,9 @@ async function stepAndShot(fromT, seconds, shotPath) {
     let t = fromT;
     const steps = Math.round(seconds / dt);
     for (let i = 0; i < steps; i++) { t += dt; window.__tick(t, dt); }
-    window.__renderer.render(window.__scene, window.__camera);
+    // Render through the pipeline (composer-aware); fall back for old builds.
+    if (window.__pipeline) window.__pipeline.render();
+    else window.__renderer.render(window.__scene, window.__camera);
     return t;
   }, { fromT, seconds, dt: DT, shot: shotPath });
 }

@@ -2375,7 +2375,7 @@ export const ANIM = {
   // -----------------------------------------------------------------------
   post: {
     enabled: true,
-    bloom: { enabled: true, strength: 0.35, radius: 0.5, threshold: 1.0 },
+    bloom: { enabled: true, strength: 0.3, radius: 0.4, threshold: 1.6 },
   },
 
   // -----------------------------------------------------------------------
