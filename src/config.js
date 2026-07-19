@@ -2536,6 +2536,12 @@ export const ANIM = {
   // DAT in server mode) — usually supplied per-session via ?ws= instead.
   control: { wsUrl: null },
 
+  // Built-in corner-pin warp (pipeline B — projector geometry without
+  // TouchDesigner). 'W' opens the drag/nudge editor; corners persist in
+  // localStorage per output resolution. Requires post.enabled (the warp
+  // is the composer's final pass). Remote: {"type":"warp", ...}.
+  warp: { enabled: false, corners: null },
+
   // -----------------------------------------------------------------------
   // DEPTH PORTAL (mode 5 rework) — the recede stack on an infinite
   // conveyor toward the viewer, per-copy oscillating twist, overbright

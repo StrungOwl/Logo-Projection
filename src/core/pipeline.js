@@ -130,6 +130,12 @@ export function createPipeline({ renderer, scene, camera, ctx }) {
   // Transition manager hook — bloom strength rides the dip envelope so
   // glow can't ghost through a fade-to-black (set via setEnvelopeSource).
   let envelopeFn = null;
+  // Corner-pin warp (pipeline B) — a ShaderPass appended AFTER OutputPass
+  // so it warps finished display-referred pixels. Registered before the
+  // lazy composer build via setWarpPass. Note: the warp only applies on
+  // the composer path (ANIM.post.enabled) — documented limitation.
+  let warpPass = null;
+  let warpWasEnabled = false;
 
   function buildComposer() {
     disposeComposer();
@@ -151,6 +157,7 @@ export function createPipeline({ renderer, scene, camera, ctx }) {
     bloomPass = new UnrealBloomPass(size.clone(), b.strength ?? 0.35, b.radius ?? 0.5, b.threshold ?? 1.0);
     composer.addPass(bloomPass);
     composer.addPass(new OutputPass());
+    if (warpPass) composer.addPass(warpPass);
     builtSamples = samples;
     applyBloomScale();
   }
@@ -211,6 +218,11 @@ export function createPipeline({ renderer, scene, camera, ctx }) {
 
     setEnvelopeSource(fn) { envelopeFn = fn; },
 
+    setWarpPass(pass) {
+      warpPass = pass;
+      if (composer) composer.addPass(pass);
+    },
+
     enterProjection(w, h) {
       if (state.mode === 'export') return;   // export owns the canvas right now
       if (w) state.projW = w;
@@ -229,6 +241,9 @@ export function createPipeline({ renderer, scene, camera, ctx }) {
     enterExport(w, h) {
       state.preExportMode = state.mode;
       state.mode = 'export';
+      // Exports are always unwarped — the warp is projector geometry, not
+      // content. Restored on exit.
+      if (warpPass) { warpWasEnabled = warpPass.enabled; warpPass.enabled = false; }
       renderer.setPixelRatio(1);
       renderer.setSize(w, h, false);   // CSS untouched: live canvas doubles as preview
       camera.aspect = w / h;
@@ -239,6 +254,7 @@ export function createPipeline({ renderer, scene, camera, ctx }) {
 
     exitExport() {
       if (state.mode !== 'export') return;
+      if (warpPass) warpPass.enabled = warpWasEnabled;
       restoreSpriteScale();
       state.mode = state.preExportMode || 'window';
       state.preExportMode = null;

@@ -10,6 +10,7 @@ import { createLights, updateLights } from './core/lights.js';
 import { createPipeline } from './core/pipeline.js';
 import { createProjectionMode } from './core/projection.js';
 import { createCalibration } from './core/calibration.js';
+import { createWarp } from './core/warp.js';
 import { loadLogo } from './core/logo.js';
 import { addEffects } from './effects/effects.js';
 import { addOverlay } from './effects/flowers/starFans.js';
@@ -97,6 +98,12 @@ const pipeline   = createPipeline({ renderer, scene, camera, ctx });
 const projection = createProjectionMode({ camera, controls, pipeline });
 let calibration  = null;   // built once the logo (and its silhouette) loads
 
+// Built-in corner-pin warp (pipeline B — no TouchDesigner). Final pass
+// after OutputPass; 'W' opens the drag/nudge editor; persists per
+// output-resolution in localStorage; remote via {"type":"warp",...}.
+const warp = createWarp({ renderer });
+pipeline.setWarpPass(warp.pass);
+
 // Show system: transition manager owns viewMode flips (dip/wipe/edgeFlash
 // envelopes); the sequencer walks ANIM.show.playlist through it; the
 // control dispatcher feeds both from TouchDesigner (WebSocket), the
@@ -106,7 +113,7 @@ pipeline.setEnvelopeSource(transitions.envelope);
 const sequencer = createSequencer({ transitions, getTime: () => clock.elapsedTime });
 const controlDeps = {
   getTime: () => clock.elapsedTime,
-  transitions, sequencer, projection,
+  transitions, sequencer, projection, warp,
   calibration: null,          // filled in after the logo loads
   setQuality: (name) => setQuality(name, pipeline),
 };
@@ -895,6 +902,12 @@ if (typeof window !== 'undefined') {
       console.log(`[dominoes] ${dominoesOn ? 'on' : 'off'}`);
       return;
     }
+    // 'w' — toggle the corner-pin warp calibration editor.
+    if (e.code === 'KeyW' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      console.log(`[warp] editor ${warp.toggleEditor() ? 'on' : 'off'}`);
+      return;
+    }
     // 's' — play/pause the auto-show. 'n' — skip to the next playlist step.
     if (e.code === 'KeyS' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
       e.preventDefault();
@@ -963,7 +976,10 @@ if (typeof window !== 'undefined') {
     if (!e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.key === 'E') runExport();
     else if (e.key === 'D') runExport({ width: 1920, height: 1080 });
-    else if (e.key === 'P') projection.toggle();   // Shift+P — projection mode
+    else if (e.key === 'P') {                      // Shift+P — projection mode
+      projection.toggle();
+      warp.refresh();   // corners are stored per output resolution
+    }
     else if (e.key === 'B') {                      // Shift+B — composer on/off A-B
       ANIM.post.enabled = !ANIM.post.enabled;
       console.log(`[post] composer ${ANIM.post.enabled ? 'on' : 'off (legacy pipeline)'}`);
