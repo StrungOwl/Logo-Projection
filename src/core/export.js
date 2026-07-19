@@ -142,20 +142,7 @@ export async function startExport(bridge, opts = {}) {
     console.log(`[export] crossfade ${CROSSFADE_SEC}s (${CROSSFADE_FRAMES} frames, ~${mb} MB buffered)`);
   }
 
-  const { ctx, scene, camera, controls, tick, renderer } = bridge;
-
-  // Point-sprite materials bake `uPixelRatio` from the live canvas DPR, so
-  // rendering to a higher-res target keeps `gl_PointSize` in live-canvas
-  // pixels — particles end up covering a smaller fraction of the frame,
-  // which collapses the honey halo into the hot white core and reads as
-  // desaturation. Scale the uniform so sprites keep the same frame-relative
-  // size (and honey tone) at any export resolution.
-  const pointSpriteMats = [
-    ctx.particleMats?.emberMat,
-    ctx.particleMats?.whiteMat,
-    ...(ctx.sparkSystems ?? []).map(s => s?.points?.material),
-  ].filter(m => m?.uniforms?.uPixelRatio);
-  const savedPixelRatios = pointSpriteMats.map(m => m.uniforms.uPixelRatio.value);
+  const { ctx, scene, camera, controls, tick, renderer, pipeline } = bridge;
 
   // 1. Directory picker + nested folders (resolution-tagged so runs coexist).
   let rootHandle;
@@ -192,11 +179,12 @@ export async function startExport(bridge, opts = {}) {
   //    was set at create time); creating a new context with
   //    preserveDrawingBuffer is what silently dropped MSAA on the old
   //    path — we're not doing that here.
-  const prevPixelRatio   = renderer.getPixelRatio();
-  const prevInnerWidth   = window.innerWidth;
-  const prevInnerHeight  = window.innerHeight;
-  renderer.setPixelRatio(1);
-  renderer.setSize(WIDTH, HEIGHT, false);   // false = don't touch CSS, canvas keeps filling the screen
+  // The pipeline owns all sizing: enterExport resizes the live canvas
+  // (CSS untouched — it keeps acting as the on-screen preview), sets the
+  // camera aspect, and rescales the point-sprite uPixelRatio uniforms so
+  // particles keep their frame-relative size at export resolution.
+  // exitExport restores whichever mode (window / projection) was active.
+  pipeline.enterExport(WIDTH, HEIGHT);
 
   // 2D canvas used as encoder source (toBlob / VideoFrame). Not shown on
   // screen — the live WebGL canvas itself is the preview now.
@@ -208,18 +196,6 @@ export async function startExport(bridge, opts = {}) {
   const imageData     = captureCtx.createImageData(WIDTH, HEIGHT);
   const rowBytes      = WIDTH * 4;
   const gl = renderer.getContext();
-
-  // 4. Camera aspect for export dimensions.
-  const prevAspect = camera.aspect;
-  camera.aspect = WIDTH / HEIGHT;
-  camera.updateProjectionMatrix();
-
-  // Scale point-sprite sizes to match the live frame-relative size at
-  // export resolution. Using `innerHeight` (CSS px) rather than DPR keeps
-  // the ratio independent of the user's monitor: on any screen, particles
-  // occupy the same fraction of frame height as they do live.
-  const exportPixelRatio = HEIGHT / Math.max(window.innerHeight, 1);
-  pointSpriteMats.forEach(m => { m.uniforms.uPixelRatio.value = exportPixelRatio; });
 
   // 5. MP4 encoder + muxer (best-effort; PNG sequence still runs if this fails).
   let muxer = null, encoder = null;
@@ -385,11 +361,7 @@ export async function startExport(bridge, opts = {}) {
     setOverlayText(overlay, `Export failed: ${e.message}. See console.`);
   } finally {
     // 9. Restore.
-    renderer.setPixelRatio(prevPixelRatio);
-    renderer.setSize(prevInnerWidth, prevInnerHeight);
-    camera.aspect = prevAspect;
-    camera.updateProjectionMatrix();
-    pointSpriteMats.forEach((m, i) => { m.uniforms.uPixelRatio.value = savedPixelRatios[i]; });
+    pipeline.exitExport();
     controls.enabled = true;
     ctx.paused = false;
     ANIM.viewMode = prevViewMode;

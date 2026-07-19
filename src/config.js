@@ -2365,6 +2365,85 @@ export const ANIM = {
     angle:    Math.PI * 2,
     axis:     [1, 0, 0],
   },
+
+  // -----------------------------------------------------------------------
+  // POST-PROCESSING — EffectComposer chain (RenderPass → UnrealBloom →
+  // OutputPass). `enabled:false` is a hard bypass back to the legacy
+  // direct-render pipeline (Shift+B toggles live). Bloom threshold is in
+  // LINEAR pre-tonemap space: 1.0 means only genuinely HDR pixels
+  // (additive stacks, flame cores, overbright emitters) glow.
+  // -----------------------------------------------------------------------
+  post: {
+    enabled: true,
+    bloom: { enabled: true, strength: 0.35, radius: 0.5, threshold: 1.0 },
+  },
+
+  // -----------------------------------------------------------------------
+  // PROJECTION MODE — fixed-resolution head-on output for TouchDesigner /
+  // the built-in warp. Enable via ?proj=1&w=1920&h=1080 or Shift+P.
+  //   fov     — locked camera FOV in degrees. 20 ≈ near-ortho silhouette
+  //             stability while keeping depth parallax. Raise toward 45
+  //             for more dimensional drama (silhouette edges shift more).
+  //   margin  — fraction of empty frame around the silhouette (0.06 = 6%).
+  //   zoom    — >1 crops in, <1 pulls back. offsetX/Y shift the framing
+  //             in world units.
+  // -----------------------------------------------------------------------
+  projection: { fov: 20, margin: 0.06, zoom: 1.0, offsetX: 0, offsetY: 0 },
+
+  // Calibration pattern shown in viewMode 'calibration' (key 9, 'C' cycles):
+  // 'off' | 'fill' | 'outline' | 'grid' | 'checker' | 'corners'.
+  calibration: { pattern: 'off' },
+
+  // -----------------------------------------------------------------------
+  // MODE TRANSITIONS — how ANIM.viewMode changes are staged visually.
+  // Styles: 'cut' (hard), 'dip' (exposure to black and back), 'wipe'
+  // (silhouette-shaped disc from the pattern center), 'edgeFlash' (dip +
+  // edge.burst at the swap frame).
+  // -----------------------------------------------------------------------
+  transitions: {
+    defaultStyle: 'dip',
+    outDur: 0.35,     // seconds fading out (dip/edgeFlash)
+    inDur:  0.6,      // seconds fading back in
+    wipeDur: 0.9,     // total wipe cover+reveal time
+    feather: 1.5,     // wipe edge softness in world units
+  },
+
+  // -----------------------------------------------------------------------
+  // AUTO-SHOW — unattended playlist for installation duty. Keys: S
+  // play/pause, N next. Remote: {"type":"show","action":...}. Cue `at`
+  // counts seconds from the end of the step's transition-in; `every`
+  // re-fires that trigger on a period for the rest of the dwell.
+  // autoStartInProjection makes ?proj=1 boots start the show by
+  // themselves; manual mode keys pause it (pauseOnManualInput).
+  // -----------------------------------------------------------------------
+  show: {
+    autoStart: false,
+    autoStartInProjection: true,
+    defaultTransition: 'dip',
+    pauseOnManualInput: true,
+    playlist: [
+      { mode: 'visualSequence', dwell: 50,
+        cues: [ { at: 6,  trigger: 'cascade.now' },
+                { at: 28, trigger: 'arch.cascade' } ] },
+      { mode: 'fractalPattern', dwell: 45,
+        cues: [ { at: 5, trigger: 'fractal.zoom', every: 18 } ] },
+      { mode: 'hexagons',       dwell: 40,
+        cues: [ { at: 8,  trigger: 'domino.on' },
+                { at: 34, trigger: 'domino.off' } ] },
+      { mode: 'flowers',        dwell: 35 },
+      { mode: 'fireplaceOne',   dwell: 60,
+        cues: [ { at: 4,  trigger: 'arch.cascade' },
+                { at: 25, trigger: 'domino.on' },
+                { at: 45, trigger: 'domino.off' } ] },
+      { mode: 'fireplaceTwo',   dwell: 45 },
+      { mode: 'flameOnly',      dwell: 60,
+        cues: [ { at: 15, trigger: 'stellar.pulse', every: 25 } ] },
+    ],
+  },
+
+  // Remote control. wsUrl e.g. '127.0.0.1:9980' (TouchDesigner WebSocket
+  // DAT in server mode) — usually supplied per-session via ?ws= instead.
+  control: { wsUrl: null },
 };
 
 // -----------------------------------------------------------------------

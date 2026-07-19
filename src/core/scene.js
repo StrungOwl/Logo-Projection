@@ -36,11 +36,8 @@ export function createScene() {
   controls.dampingFactor = 0.05;
   controls.target.set(0, 0, 0);
 
-  window.addEventListener('resize', () => {
-    camera.aspect = window.innerWidth / window.innerHeight;
-    camera.updateProjectionMatrix();
-    renderer.setSize(window.innerWidth, window.innerHeight);
-  });
+  // NOTE: no resize listener here — src/core/pipeline.js is the single
+  // render/size authority and owns the window resize handling.
 
   // Double-click recenters the camera on the logo's default framing.
   renderer.domElement.addEventListener('dblclick', () => {

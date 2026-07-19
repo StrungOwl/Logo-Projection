@@ -7,6 +7,9 @@ import * as THREE from 'three';
 import { ANIM, COLORS } from './config.js';
 import { createScene, frameLogo } from './core/scene.js';
 import { createLights, updateLights } from './core/lights.js';
+import { createPipeline } from './core/pipeline.js';
+import { createProjectionMode } from './core/projection.js';
+import { createCalibration } from './core/calibration.js';
 import { loadLogo } from './core/logo.js';
 import { addEffects } from './effects/effects.js';
 import { addOverlay } from './effects/flowers/starFans.js';
@@ -78,7 +81,16 @@ const ctx = {
   // own brightness motion reads as flicker). When the fractal settles
   // back to rest, this clock resumes from where it paused — no snap.
   brightnessTime:     0,
+  // Whole loaded model (all effects are parented under it) — calibration
+  // mode hides it wholesale so only the alignment patterns render.
+  logoModel:          null,
 };
+
+// Render/size authority + fixed-resolution projection mode. The pipeline
+// is the ONLY caller of renderer.setSize/setPixelRatio from here on.
+const pipeline   = createPipeline({ renderer, scene, camera, ctx });
+const projection = createProjectionMode({ camera, controls, pipeline });
+let calibration  = null;   // built once the logo (and its silhouette) loads
 
 // Low-passed flame brightness 0..1 — driven by the live PointLight stack
 // in src/effects/fireplaceOne/flame.js. Read by the galaxy uBrightness
@@ -211,6 +223,7 @@ loadLogo().then((logo) => {
   ctx.overlayMaskMesh    = overlayResult.sharedMask  || null;
 
   scene.add(logo.model);
+  ctx.logoModel = logo.model;
 
   // World matrices must be finalised before pattern fade shaders compute
   // their inverse-world matrices (so world-Y gradient conversions land in
@@ -221,7 +234,14 @@ loadLogo().then((logo) => {
 
   ctx.particleMats = addParticles(logo.logoMesh, renderer);
 
+  // Calibration patterns + projection framing both need the finalised
+  // logo world transform (they copy matrixWorld / fit the world bbox).
+  calibration = createCalibration({ scene, logoMesh: logo.logoMesh, meta: logo.meta });
+  projection.setLogo(logo.logoMesh);
+
   frameLogo(camera, controls);
+  // ?proj=1 boots straight into fixed-resolution projection framing.
+  if (projection.bootRequested) projection.enable();
 }).catch(err => console.error('Failed to load logo:', err));
 
 // Single per-frame update — called by both the live animate loop and the
@@ -365,6 +385,11 @@ export function tick(t, dt) {
   if (ctx.overlayMaskMesh) {
     ctx.overlayMaskMesh.visible = showFlowers || showHexBrick;
   }
+
+  // Calibration mode (key 9): the whole model — every effect is parented
+  // under it — disappears and only the alignment patterns render.
+  if (ctx.logoModel) ctx.logoModel.visible = mode !== 'calibration';
+  if (calibration)   calibration.update(renderer, mode === 'calibration');
 
   // Brightness clock — pauses while the fractal zoom is animating
   // (clones visible OR displacement non-zero). The dive's own brightness
@@ -689,11 +714,11 @@ function animate() {
     clock.oldTime = performance.now();
     return;
   }
-  controls.update();
+  if (!projection.isActive()) controls.update();   // camera is locked in projection mode
   const dt = Math.min(clock.getDelta(), 0.05);   // cap stepping after tab-unhide
   const t = clock.elapsedTime;
   tick(t, dt);
-  renderer.render(scene, camera);
+  pipeline.render();
 }
 animate();
 
@@ -702,7 +727,7 @@ animate();
 //   Shift+E  →  4K  (3840×2160)
 //   Shift+D  →  1080p (1920×1080)
 // or call `startExport({ width, height })` from devtools for custom sizes.
-export const __exportCtx = { ctx, scene, camera, renderer, controls, tick };
+export const __exportCtx = { ctx, scene, camera, renderer, controls, tick, pipeline };
 
 async function runExport(opts) {
   const { startExport } = await import('./core/export.js');
@@ -766,15 +791,23 @@ if (typeof window !== 'undefined') {
     // budget so the scene runs smoother on weaker hardware.
     if (e.code === 'KeyQ' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
       e.preventDefault();
-      cycleQuality(renderer);
+      cycleQuality(pipeline);
       return;
     }
-    // Digit keys 0–5 (no modifiers) switch ANIM.viewMode.
+    // 'c' (no modifiers) — cycle the calibration pattern (and jump into
+    // calibration mode if not already there, so alignment is one key).
+    if (e.code === 'KeyC' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      if (ANIM.viewMode !== 'calibration') ANIM.viewMode = 'calibration';
+      if (calibration) console.log(`[calibration] pattern: ${calibration.cyclePattern()}`);
+      return;
+    }
+    // Digit keys (no modifiers) switch ANIM.viewMode. 9 = calibration.
     if (!e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
       const modeByKey = {
         Digit0: 'visualSequence', Digit1: 'fractalPattern', Digit2: 'hexagons',
         Digit3: 'flowers',         Digit4: 'fireplaceOne',   Digit5: 'fireplaceTwo',
-        Digit6: 'flameOnly',
+        Digit6: 'flameOnly',       Digit9: 'calibration',
       };
       const next = modeByKey[e.code];
       if (next) {
@@ -786,5 +819,6 @@ if (typeof window !== 'undefined') {
     if (!e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.key === 'E') runExport();
     else if (e.key === 'D') runExport({ width: 1920, height: 1080 });
+    else if (e.key === 'P') projection.toggle();   // Shift+P — projection mode
   });
 }
