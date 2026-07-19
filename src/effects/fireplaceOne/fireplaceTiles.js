@@ -24,6 +24,7 @@ import { ANIM } from '../../config.js';
 import { insetPolygon, samplePolyline, clipArcAboveY, samplePerimeter, pointInPolygon } from '../../util/polygon.js';
 import { hash01, makeBrickGeometry, basisQuat } from '../../util/geometry.js';
 import { applyGoldShimmer } from '../../shaders/gold-shimmer.js';
+import { applyAmberStone } from '../../shaders/amber-stone.js';
 
 // One pass of tangent averaging: smooths out jitter from the RDP-
 // simplified silhouette so neighbouring brick rotations don't visibly
@@ -1385,6 +1386,7 @@ function placeStarRail({ railPolygon, brickLength, brickHeight, brickThick,
     metalness: 0.10,
     roughness: 0.85,
   });
+  applyAmberStone(material);
 
   const brickCfg = {
     width:       brickLength,   // local-X (along tangent)
@@ -1539,6 +1541,7 @@ function placeOuterBrickArch({
     metalness: 0.10,
     roughness: 0.85,
   });
+  applyAmberStone(material);
 
   const brickCfg = {
     width:       brickLength,   // local-X — along the tangent
@@ -1639,6 +1642,10 @@ export function createArch({ silhouette, maxZ, frameDepth = 0.5,
     metalness: 0.15,
     roughness: 0.75,
   });
+  // Amber-stone conversion — world-space mottle + veins + flame-driven
+  // internal glow (see src/shaders/amber-stone.js). Bricks only; hex
+  // tiles keep their tuned look.
+  applyAmberStone(archMat);
 
   // Dark / light gradient anchors. The floor (deepest, farthest from
   // camera) uses `gradientDark`; each top-layer staircase step then
@@ -1662,6 +1669,7 @@ export function createArch({ silhouette, maxZ, frameDepth = 0.5,
     metalness: matMetalness,
     roughness: matRoughness,
   });
+  applyAmberStone(floorMat);
 
   // Outline curve — full closed perimeter of the gate-frame inner aperture
   // (so bricks wrap continuously around top + sides + bottom). Both arch
@@ -1968,6 +1976,9 @@ export function createArch({ silhouette, maxZ, frameDepth = 0.5,
       if (cfg.shimmer && cfg.shimmer.enabled !== false && s !== 0) {
         applyGoldShimmer(stepMat);
       }
+      // Amber-stone conversion — chained AFTER gold-shimmer (which
+      // overwrites onBeforeCompile) so both patches stack.
+      applyAmberStone(stepMat);
       stepMats.push(stepMat);
     }
     // Hex tier material — only create a shared one when topCfg.hexColor

@@ -16,6 +16,7 @@ import { addOverlay } from './effects/flowers/starFans.js';
 import { addParticles, updateParticles } from './effects/_shared/streams.js';
 import { toggleDominoes, updateDominoes } from './effects/fireplaceTwo/dominoAnim.js';
 import { tickShimmer } from './shaders/gold-shimmer.js';
+import { setAmberFlameEnv } from './shaders/amber-stone.js';
 import { applyLogoStarry, tickLogoStarry } from './shaders/logo-starry.js';
 import { cycleQuality, setQuality } from './quality.js';
 import { registerTrigger, fireTrigger, listTriggers } from './show/triggers.js';
@@ -560,6 +561,8 @@ export function tick(t, dt) {
     const k = 1 - Math.exp(-dt / 1.0);
     smoothedFlameEnv += (instant - smoothedFlameEnv) * k;
   }
+  // Drive the amber-stone bricks' internal glow with the same envelope.
+  setAmberFlameEnv(smoothedFlameEnv);
 
   // In flameOnly mode (key 6), pulse the gate-frame's emissive intensity
   // with the smoothed flame envelope so the fiery silhouette breathes

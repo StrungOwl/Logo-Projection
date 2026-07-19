@@ -40,6 +40,10 @@ function buildRegistry(scene) {
       const isBox  = child.geometry.type === 'BoxGeometry';
       const tagged = child.userData && child.userData.dominoFlippable === true;
       if (!isBox && !tagged) return;
+      // Opt-out for decorative child meshes (e.g. the corona voussoirs'
+      // gilded tip caps) that inherit their parent brick's flip and must
+      // not register as independent dominoes.
+      if (child.userData && child.userData.dominoExclude === true) return;
       const wp = new THREE.Vector3();
       child.getWorldPosition(wp);
       bricks.push({
@@ -53,15 +57,49 @@ function buildRegistry(scene) {
   return bricks;
 }
 
-// At trigger time, rank every brick by 2D Euclidean distance to the
-// brick mass's CENTROID. Sorted DESCENDING — bricks farthest from the
-// centroid (outermost circular ring) fire first, innermost last. The
-// wave reads as concentric circles collapsing inward, regardless of
-// the underlying silhouette shape (arch, square, irregular — the
-// circular ring shape is enforced by the radial distance metric).
+// At trigger time, assign each brick its dominoIndex. Two schemes:
+//
+// RING-QUANTIZED MULTI-EPICENTER (cfg.epicenters > 0, default): pick N
+// random registry bricks as epicenters. Each brick's index is
+//   floor(min-distance-to-any-epicenter / ringWidth)
+// so every brick in a distance band shares an index and flips
+// SIMULTANEOUSLY (like the small hexagons banding together), and the
+// waves expand OUTWARD from each tap point. updateDominoes spaces
+// adjacent rings by cfg.ringStagger seconds.
+//
+// LEGACY (cfg.epicenters === 0): rank every brick by 2D Euclidean
+// distance to the brick mass's CENTROID, sorted DESCENDING — bricks
+// farthest from the centroid (outermost circular ring) fire first,
+// innermost last, one per-brick cfg.stagger apart. The wave reads as
+// concentric circles collapsing inward.
 function reorderForTrigger(bricks) {
   const n = bricks.length;
   if (!n) return;
+  const cfg = ANIM.dominoFlip || {};
+  const epicenters = cfg.epicenters ?? 3;
+
+  if (epicenters > 0) {
+    // --- Ring-quantized multi-epicenter waves ---
+    const ringWidth = Math.max(1e-3, cfg.ringWidth ?? 3.0);
+    const centers = [];
+    for (let e = 0; e < epicenters; e++) {
+      centers.push(bricks[Math.floor(Math.random() * n)].worldPos);
+    }
+    for (const b of bricks) {
+      let dMin = Infinity;
+      for (const c of centers) {
+        const dx = b.worldPos.x - c.x, dy = b.worldPos.y - c.y;
+        const d = Math.sqrt(dx * dx + dy * dy);
+        if (d < dMin) dMin = d;
+      }
+      // Every brick in the same ring band shares this index — they all
+      // start flipping at the SAME instant (see updateDominoes).
+      b.dominoIndex = Math.floor(dMin / ringWidth);
+    }
+    return;
+  }
+
+  // --- Legacy centroid-descending ordering (epicenters: 0) ---
   let cx = 0, cy = 0;
   for (const b of bricks) { cx += b.worldPos.x; cy += b.worldPos.y; }
   cx /= n; cy /= n;
@@ -104,7 +142,12 @@ export function updateDominoes(t) {
   if (!registry || !playing) return;
 
   const cfg      = ANIM.dominoFlip || {};
-  const stagger  = cfg.stagger  ?? 0.04;
+  // Ring mode: dominoIndex is a RING index (small ints) → space rings
+  // by ringStagger. Legacy mode: dominoIndex is a per-brick rank →
+  // space bricks by the (much smaller) per-brick stagger.
+  const ringMode = (cfg.epicenters ?? 3) > 0;
+  const stagger  = ringMode ? (cfg.ringStagger ?? 0.35)
+                            : (cfg.stagger     ?? 0.04);
   const duration = cfg.duration ?? 1.5;
   const angle    = cfg.angle    ?? Math.PI * 2;
   const axis     = cfg.axis     || [1, 0, 0];

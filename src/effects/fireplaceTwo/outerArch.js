@@ -1,21 +1,30 @@
-// Fireplace frame — a self-contained brick arch + muqarnas petal frame
-// that wraps the OUTSIDE of the logo's bounding box. Built from scratch
-// (does NOT share silhouette[0] curves, knobs, or helpers with the
-// existing arch.js) so tweaks to arch never affect this and vice versa.
+// Fireplace frame — the outer treatment shown in MODE 4 (fireplaceOne),
+// despite living in the fireplaceTwo folder. Self-contained: does NOT
+// share silhouette[0] curves, knobs, or helpers with fireplaceTiles.js,
+// so tweaks to one never affect the other.
 //
-// Geometry: Roman horseshoe — two vertical brick legs flanking the
-// logo's bbox on the left and right, joined by a half-ellipse dome
-// across the top. Open at the bottom (the hearth). Petals (muqarnas-
-// style pointed-arch cells) line the INNER face of that horseshoe
-// with their tips pointing toward the logo centre.
+// The centerline is a Roman horseshoe traced directly on silhouette[0]
+// (buildSilhouetteArc below): two legs flanking the logo joined over
+// the dome, open at the bottom (the hearth).
+//
+// Two outer treatments, switched by ANIM.fireplace.legacy:
+//   legacy: false (default) — "radiant voussoir corona": chunky amber
+//     stones laid PERPENDICULAR to the centerline (long axis pointing
+//     radially outward — a sunburst arch), alternating two amber tones
+//     with per-voussoir length jitter; every Nth stone's tip carries an
+//     emissive gilded cap that blooms into a dotted halo crown.
+//   legacy: true — the original tangent-laid brick row + muqarnas petal
+//     cells + inner hex band (each gated by its own enabled flag).
 //
 // All knobs live under ANIM.fireplace — see src/config.js. Sparks are
 // owned by patterns/flame.js as before; this module only emits static
-// brick + petal meshes into its own group.
+// meshes into its own group (the domino system flips them via its own
+// registry — see dominoAnim.js).
 
 import * as THREE from 'three';
 import { ANIM } from '../../config.js';
 import { hash01, makeBrickGeometry, basisQuat } from '../../util/geometry.js';
+import { applyAmberStone } from '../../shaders/amber-stone.js';
 
 // Pointed-arch petal — extruded 2D shape used as the muqarnas cell.
 // local-X = radial axis (tip at +X), local-Y = tangential width.
@@ -204,6 +213,107 @@ function placeFireplaceBricks({ samples, logoCx, logoCy, brickCfg, zCenter,
     mesh.position.set(s.x - nx * halfH, s.y - ny * halfH, zCenter);
     mesh.quaternion.copy(basisQuat(localX, localY, localZ));
     group.add(mesh);
+  }
+}
+
+// =======================================================================
+// Radiant voussoir corona — the DEFAULT outer treatment (legacy: false).
+// Chunky amber-stone voussoirs laid PERPENDICULAR to the centerline:
+// long axis pointing radially OUTWARD so the arch reads as a sunburst
+// of hand-laid wedge stones crowning the logo. Voussoir local axes:
+//   local-X → world-Z       (stone thickness points at the camera)
+//   local-Y → outward       (radial — the LONG axis, tip at +Y)
+//   local-Z → curve tangent (stone width along the horseshoe path)
+// Each stone's outward TIP kisses the centerline (silhouette − archInset)
+// and the body extends `len` units inward, so nothing pokes outside the
+// silhouette. Two alternating amber tones + per-voussoir length jitter
+// give the primal, hand-laid feel; every `tipGildEvery`-th voussoir
+// carries a small emissive gilded cap on its tip face whose luminance
+// crosses the bloom threshold — the composer's bloom then renders a
+// dotted halo crown around the logo.
+//
+// Voussoirs are BoxGeometry meshes inside the 'fireplace' group, so the
+// domino system's registry picks them up automatically (same as the old
+// brick lay). Tip caps are tagged dominoExclude and parented to their
+// voussoir so they inherit the flip instead of registering separately.
+// =======================================================================
+function placeVoussoirCorona({ samples, logoCx, logoCy, coronaCfg, brickCfg,
+                               baseColor, zCenter, group, seedOffset }) {
+  const vLen        = coronaCfg.voussoirLength ?? 5.5;
+  const vWidth      = coronaCfg.width          ?? 2.1;
+  const jitter      = coronaCfg.lengthJitter   ?? 0.2;
+  const gildEvery   = Math.max(0, Math.round(coronaCfg.tipGildEvery ?? 2));
+  const tipEmissive = coronaCfg.tipEmissive    ?? 3.0;
+  const zThick      = brickCfg.width ?? 4.2;   // world-Z extent (chunk)
+
+  // Two alternating amber tones — tone A is the configured brickColor,
+  // tone B a darker sibling, so adjacent voussoirs read as individually
+  // quarried stones even before the amber mottle lands on top.
+  const toneA = new THREE.Color(baseColor || '#C99940');
+  const toneB = toneA.clone().multiplyScalar(0.55);
+  const matA = new THREE.MeshStandardMaterial({
+    color: toneA, metalness: 0.15, roughness: 0.78,
+  });
+  const matB = new THREE.MeshStandardMaterial({
+    color: toneB, metalness: 0.15, roughness: 0.82,
+  });
+  applyAmberStone(matA);
+  applyAmberStone(matB);
+
+  // Gilded tip caps — emissive gold hot enough to cross the bloom
+  // threshold (1.6 linear) so the caps glow as a dotted halo crown.
+  const tipMat = gildEvery > 0 ? new THREE.MeshStandardMaterial({
+    color:             new THREE.Color('#FFC968'),
+    emissive:          new THREE.Color('#FFC968'),
+    emissiveIntensity: tipEmissive,
+    metalness:         0.35,
+    roughness:         0.40,
+  }) : null;
+
+  const localX = new THREE.Vector3(0, 0, 1);
+  const localY = new THREE.Vector3();
+  const localZ = new THREE.Vector3();
+  for (let i = 0; i < samples.length; i++) {
+    const s = samples[i];
+    // Outward = away from logo centre, projected onto the line normal.
+    let nx =  s.ty, ny = -s.tx;
+    if (nx * (logoCx - s.x) + ny * (logoCy - s.y) > 0) { nx = -nx; ny = -ny; }
+    localY.set(nx, ny, 0).normalize();
+    localZ.set(s.tx, s.ty, 0).normalize();
+
+    // Per-voussoir length jitter — deterministic (hash-seeded) so the
+    // corona lays identically across reloads.
+    const len = vLen * (1 + (hash01(i, 7, 3, seedOffset) - 0.5) * 2 * jitter);
+    const geo = makeBrickGeometry(seedOffset + i, {
+      width:       zThick,     // local-X → world-Z
+      height:      len,        // local-Y → radial (the long axis)
+      depth:       vWidth,     // local-Z → tangent
+      mortarGap:   brickCfg.mortarGap   ?? 0.06,
+      faultAmount: brickCfg.faultAmount ?? 0.05,
+    });
+    const mesh = new THREE.Mesh(geo, (i % 2 === 0) ? matA : matB);
+    // Outward tip face kisses the centerline; body extends len inward.
+    mesh.position.set(s.x - nx * len * 0.5, s.y - ny * len * 0.5, zCenter);
+    mesh.quaternion.copy(basisQuat(localX, localY, localZ));
+    group.add(mesh);
+
+    if (tipMat && i % gildEvery === 0) {
+      const capT = Math.min(len * 0.20, 1.2);
+      // Slightly PROUD of the stone on every axis (1.06×) so the gilded
+      // band is visible from the front instead of being occluded by the
+      // voussoir body — it reads as a ferrule wrapped over the tip.
+      const cap = new THREE.Mesh(
+        new THREE.BoxGeometry(zThick * 1.06, capT, vWidth * 1.06),
+        tipMat,
+      );
+      // Local coords: +Y is the radial tip. Centre the band just past
+      // the tip face so ~2/3 of it caps the stone and ~1/3 crowns it.
+      cap.position.set(0, len * 0.5 - capT * 0.15, 0);
+      // Child of the voussoir → inherits the domino flip; excluded from
+      // registering as an independent domino (see dominoAnim.js).
+      cap.userData.dominoExclude = true;
+      mesh.add(cap);
+    }
   }
 }
 
@@ -504,12 +614,38 @@ export function createFireplace({ silhouette, maxZ, frameDepth = 0.5 }) {
     metalness: 0.15,
     roughness: 0.78,
   });
+  applyAmberStone(brickMat);
 
   // Z anchor — bricks sit just in front of the gate frame's front face.
   const gateFrontZ = maxZ + 0.45 + frameDepth;
   const brickZ     = gateFrontZ + brickDims.width * 0.5 + (cfg.brickZLift ?? 0.0);
 
-  if (cfg.bricks?.enabled !== false) {
+  // legacy: true → the original tangent-laid brick row + petals + inner
+  // hex band below. false (default) → the radiant voussoir corona:
+  // radially-laid amber sunburst stones with gilded blooming tips.
+  const legacy = cfg.legacy === true;
+
+  if (!legacy) {
+    const coronaCfg = cfg.corona || {};
+    // Corona sampling pitch is `spacing` (> width leaves visible gaps
+    // between rays), independent of the legacy brick.depth pitch.
+    const spacing = coronaCfg.spacing ?? 2.7;
+    const vCount  = Math.max(8, Math.round(totalLen / spacing));
+    let vSamples  = samplePolylineEven(arc.points, vCount);
+    vSamples      = smoothTangents(vSamples);
+    placeVoussoirCorona({
+      samples:    vSamples,
+      logoCx, logoCy,
+      coronaCfg,
+      brickCfg:   brickDims,
+      baseColor:  cfg.brickColor,
+      zCenter:    brickZ,
+      group,
+      seedOffset: 4600,
+    });
+  }
+
+  if (legacy && cfg.bricks?.enabled !== false) {
     placeFireplaceBricks({
       samples:    brickSamples,
       logoCx, logoCy,
@@ -521,9 +657,9 @@ export function createFireplace({ silhouette, maxZ, frameDepth = 0.5 }) {
     });
   }
 
-  // Petals ----------------------------------------------------------------
+  // Petals (legacy treatment only) -----------------------------------------
   const pCfg = cfg.petals || {};
-  if (pCfg.enabled !== false) {
+  if (legacy && pCfg.enabled !== false) {
     const petalLength = pCfg.length    ?? 4.0;
     const petalWidth  = pCfg.width     ?? 2.4;
     const petalThick  = pCfg.thickness ?? 0.4;
@@ -567,7 +703,7 @@ export function createFireplace({ silhouette, maxZ, frameDepth = 0.5 }) {
   // pitch. Z is co-planar with the brick centre by default so the band
   // reads as a continuous inner skin of the brick rim.
   const hCfg = cfg.innerHexes || {};
-  if (hCfg.enabled !== false) {
+  if (legacy && hCfg.enabled !== false) {
     const hexRadius   = hCfg.radius        ?? 1.4;
     const hexDepth    = hCfg.depth         ?? 0.5;
     const rowCount    = Math.max(1, hCfg.rowCount ?? 3);

@@ -1532,6 +1532,38 @@ export const ANIM = {
       shadowStrength: 0.55,
       shadowFalloff:  1.6,
     },
+
+    // Amber stone — world-space FBM albedo mottle (lightColor ↔
+    // darkColor) + ridged-noise dark veins + roughness breakup + a
+    // faint internal warm glow driven by the live flame envelope, so
+    // every brick reads as translucent amber lit from within by the
+    // fire. Patched into the brick materials (arch rows, floor fill,
+    // topLayer steps, outer frame stones, fireplace voussoirs) via
+    // src/shaders/amber-stone.js — chained after gold-shimmer so both
+    // patches stack. Hex tiles are intentionally NOT patched (that
+    // look is tuned); bricks only.
+    //   enabled       false → skip the patch entirely (raw materials)
+    //   mottleScale   world-space noise frequency; higher = smaller
+    //                 mottle blobs (0.35 ≈ blobs a couple bricks wide)
+    //   veinStrength  0..1 darkening of the ridge-noise veins
+    //   roughnessVar  ± roughness modulation from the breakup octave
+    //   lightColor /  the two albedo endpoints of the mottle blend
+    //   darkColor
+    //   glowColor     internal-glow emissive hue (warm fire orange)
+    //   glowStrength  emissive multiplier at flame-envelope peak. Kept
+    //                 so the glow stays BELOW the bloom threshold
+    //                 (post.bloom.threshold = 1.6 linear) at rest and
+    //                 only kisses it at flame peaks.
+    amber: {
+      enabled:      true,
+      mottleScale:  0.35,
+      veinStrength: 0.6,
+      roughnessVar: 0.15,
+      lightColor:   '#C8862F',
+      darkColor:    '#6E4416',
+      glowColor:    '#FF7A1E',
+      glowStrength: 2.0,
+    },
   },
 
   // -----------------------------------------------------------------------
@@ -2237,6 +2269,39 @@ export const ANIM = {
     // 3.0 = brick back face at gateFrontZ + 3.0, fully clearing the step.
     brickZLift:  3.0,
     bricks: { enabled: true },
+    // legacy: true → the ORIGINAL outer treatment (tangent-laid brick
+    // row + muqarnas petal cells + inner hex band, gated by their own
+    // enabled flags below). false (default) → the "radiant voussoir
+    // corona": chunky amber-stone voussoirs laid PERPENDICULAR to the
+    // centerline (long axis pointing radially outward — a sunburst
+    // arch), alternating two amber tones with per-voussoir length
+    // jitter, and every Nth voussoir tipped with an emissive gilded
+    // cap that blooms into a dotted halo crown around the logo.
+    legacy: false,
+    // Corona knobs (used when legacy is false):
+    //   voussoirLength — radial extent of each stone, units. The outer
+    //                    tip kisses the centerline (silhouette −
+    //                    archInset); the body extends inward.
+    //   width          — tangential width of each stone along the curve.
+    //   spacing        — along-curve pitch between voussoirs. > width
+    //                    leaves visible gaps so the rays read as
+    //                    individual sunburst stones.
+    //   tipGildEvery   — every Nth voussoir gets an emissive gilded
+    //                    cap on its outward tip. 0 disables caps.
+    //   tipEmissive    — emissiveIntensity of the gilded caps. 3.0
+    //                    puts the cap luminance past the bloom
+    //                    threshold (1.6 linear) so the caps glow as a
+    //                    dotted halo. Lower to ~1 to kill the bloom.
+    //   lengthJitter   — ± fraction of voussoirLength each stone's
+    //                    length may vary by (hand-laid, primal feel).
+    corona: {
+      voussoirLength: 5.5,
+      width:          2.1,
+      spacing:        2.7,
+      tipGildEvery:   2,
+      tipEmissive:    3.0,
+      lengthJitter:   0.2,
+    },
     // Ember-flicker emissive tint on the brick rim — same domain-warped
     // fbm the central flame uses, grafted onto the brick's StandardMaterial
     // via onBeforeCompile. PBR shading is preserved (bricks still read as
@@ -2336,36 +2401,51 @@ export const ANIM = {
   },
 
   // -----------------------------------------------------------------------
-  // DOMINO-FLIP — looping radial wave across every brick in the scene
+  // DOMINO-FLIP — looping ring wave across every brick in the scene
   // (arch.floor + topLayer + fireplace rim). Press 'd' to TOGGLE the
   // loop on/off, or call window.__triggerDominoes() in devtools.
-  // Implementation: src/dominoes.js. At each cycle start we rank every
-  // brick by 2D Euclidean distance to the brick mass's CENTROID
-  // (DESCENDING) — outermost circular ring fires first, next ring
-  // inward fires next, and so on, so the wave reads as concentric
-  // circles collapsing toward the centre regardless of the underlying
-  // silhouette shape.
+  // Implementation: src/effects/fireplaceTwo/dominoAnim.js.
   //
-  // Concurrent flippers ≈ duration / stagger. Bigger ratio = thicker
-  // wavefront (more bricks in flight at once); smaller ratio = sharp
-  // single-brick-deep ripple.
+  // RING-QUANTIZED MULTI-EPICENTER scheme (epicenters > 0, the default):
+  // each cycle picks `epicenters` random bricks as tap points. Every
+  // brick measures its distance to the CLOSEST epicenter and gets
+  //   dominoIndex = floor(distance / ringWidth)
+  // — so all bricks in the same distance band share an index and flip
+  // SIMULTANEOUSLY (the way the small hexagons band together), and the
+  // waves expand OUTWARD from each tap point like ripples on water.
+  // Rings start `ringStagger` seconds apart; with ringStagger <
+  // duration several rings are airborne at once.
   //
-  //   stagger  — seconds between adjacent bricks' start times. Smaller =
-  //              denser wavefront.
-  //   duration — seconds for a single brick's full rotation. Bigger =
-  //              wavefront stays alive longer; more overlap with
-  //              neighbours' flips.
-  //   angle    — radians to rotate. Math.PI * 2 = full 360° spin that
-  //              returns to rest. Math.PI = half-flip that settles in
-  //              the upside-down pose.
-  //   axis     — WORLD-frame rotation axis [x,y,z]. [1,0,0] = every
-  //              brick tips around the world horizontal axis (the
-  //              classic forward "domino fall"); [0,1,0] = world-Y
-  //              spin (bricks rotate like a wheel on a pole);
-  //              [0,0,1] = world-Z spin (in-screen pinwheel).
+  // LEGACY scheme (epicenters: 0): rank every brick by 2D distance to
+  // the brick mass's centroid, DESCENDING — outermost ring fires first
+  // and the wave collapses inward, one brick's `stagger` at a time
+  // (thin single wavefront).
+  //
+  //   epicenters  — number of random tap points per cycle. 0 = exact
+  //                 legacy centroid-descending behaviour.
+  //   ringWidth   — world units per ring band. Smaller = more, thinner
+  //                 rings; larger = chunkier bands flipping together.
+  //   ringStagger — seconds between adjacent rings' start times
+  //                 (< duration keeps several rings mid-flip at once).
+  //   stagger     — LEGACY ONLY: seconds between adjacent bricks' start
+  //                 times when epicenters is 0.
+  //   duration    — seconds for a single brick's full rotation. Bigger =
+  //                 wavefront stays alive longer; more overlap with
+  //                 neighbours' flips.
+  //   angle       — radians to rotate. Math.PI * 2 = full 360° spin that
+  //                 returns to rest. Math.PI = half-flip that settles in
+  //                 the upside-down pose.
+  //   axis        — WORLD-frame rotation axis [x,y,z]. [1,0,0] = every
+  //                 brick tips around the world horizontal axis (the
+  //                 classic forward "domino fall"); [0,1,0] = world-Y
+  //                 spin (bricks rotate like a wheel on a pole);
+  //                 [0,0,1] = world-Z spin (in-screen pinwheel).
   // -----------------------------------------------------------------------
   dominoFlip: {
-    stagger:  0.01,         // ~350 bricks flipping at once with duration 3.5
+    epicenters:  3,
+    ringWidth:   3.0,
+    ringStagger: 0.35,
+    stagger:  0.01,         // legacy path only (epicenters: 0)
     duration: 3.5,
     angle:    Math.PI * 2,
     axis:     [1, 0, 0],
