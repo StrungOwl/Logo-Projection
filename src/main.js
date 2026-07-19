@@ -679,7 +679,11 @@ export function tick(t, dt) {
 const clock = new THREE.Clock();
 function animate() {
   requestAnimationFrame(animate);
-  if (ctx.paused) {
+  // __PROBE_PAUSED is set by the .verify probes via addInitScript so the
+  // live loop never ticks before the probe takes control — otherwise the
+  // variable number of real frames before page.evaluate runs consumes the
+  // seeded RNG differently per run and breaks screenshot determinism.
+  if (ctx.paused || window.__PROBE_PAUSED) {
     // Keep the clock baseline fresh so elapsedTime freezes during pause
     // and the first frame after resume reports a normal ~16ms delta.
     clock.oldTime = performance.now();

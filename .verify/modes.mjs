@@ -50,14 +50,25 @@ const browser = await chromium.launch({
   executablePath: 'C:/Users/root/AppData/Local/ms-playwright/chromium-1208/chrome-win64/chrome.exe',
 });
 const ctxBr = await browser.newContext({ viewport: { width: 1024, height: 1024 } });
+// BLOCK_EXTERNAL=1 simulates an offline venue: any request that isn't
+// 127.0.0.1/localhost is aborted. With vendored deps the app must still boot.
+const blockExternal = process.env.BLOCK_EXTERNAL === '1';
 await ctxBr.route('**/*', (route) => {
+  const url = route.request().url();
+  if (blockExternal && !/^https?:\/\/(127\.0\.0\.1|localhost)[:/]/.test(url)) {
+    console.log('BLOCKED external request:', url);
+    return route.abort();
+  }
   const headers = { ...route.request().headers(), 'cache-control': 'no-cache' };
   route.continue({ headers });
 });
 const page = await ctxBr.newPage();
 
-// Seeded PRNG (mulberry32) installed before any app code runs.
+// Seeded PRNG (mulberry32) installed before any app code runs, and the
+// live loop parked from frame zero (main.js checks __PROBE_PAUSED) so no
+// real-time frames consume the RNG before the probe takes over.
 await page.addInitScript(() => {
+  window.__PROBE_PAUSED = true;
   let s = 0x1234abcd;
   Math.random = function () {
     s |= 0; s = (s + 0x6D2B79F5) | 0;

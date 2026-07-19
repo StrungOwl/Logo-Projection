@@ -11,12 +11,23 @@
   </style>
 </head>
 <body>
-  <script type="importmap">
+  <!-- Dependencies are vendored under ./vendor so the app runs with no
+       internet (projection venues can't rely on wifi). To fall back to the
+       CDN, swap the importmap below for this one:
     {
       "imports": {
         "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
         "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/",
         "mp4-muxer": "https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.1/+esm"
+      }
+    }
+  -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "./vendor/three/three.module.js",
+        "three/addons/": "./vendor/three/addons/",
+        "mp4-muxer": "./vendor/mp4-muxer/mp4-muxer.mjs"
       }
     }
   </script>
