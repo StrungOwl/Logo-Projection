@@ -1278,11 +1278,14 @@ export const ANIM = {
       // 1 = pure random per-frame noise. 0.5 mixes both for rapid
       // micro-flutter on top of slower breathing — reads as a real
       // candle's restless flame.
-      intensityMin:   10.0,
-      intensityMax:   35.0,
-      flickerSpeedA:  7.0,
-      flickerSpeedB:  13.0,
-      flickerJitter:  0.5,
+      // Calmed: narrower band, slower sines, jitter mostly off — the
+      // lanterns glow steadily with a soft candle sway instead of
+      // fluttering (was 10–35 @ speeds 7/13, jitter 0.5).
+      intensityMin:   16.0,
+      intensityMax:   26.0,
+      flickerSpeedA:  4.0,
+      flickerSpeedB:  7.0,
+      flickerJitter:  0.2,
       // Flame mesh size — radius of the source sphere; geometry is
       // pre-stretched (0.7×, 1.5×, 0.7×) into a teardrop. Bigger
       // flameSize → bigger candle flame mesh.
@@ -1828,12 +1831,22 @@ export const ANIM = {
     //
     // Set min === 1.0 (or all four times to 0) to lock — no breathing.
     envDim: {
-      min:        0.15,   // floor multiplier during the dark hold
-      darkHold:   60.0,   // seconds at `min` (fire dominates)
-      rampUp:     30.0,   // seconds easing dark → bright
-      brightHold: 60.0,   // seconds at full (current look)
-      rampDown:   30.0,   // seconds easing bright → dark
+      // Calmed: floor raised 0.15 → 0.50 and the ramps stretched so the
+      // room reads as one slow breath (never a lights-out plunge). The
+      // scene still visibly dims/brightens across a ~3 min cycle.
+      min:        0.50,   // floor multiplier during the dark hold
+      darkHold:   50.0,   // seconds at `min` (fire dominates)
+      rampUp:     40.0,   // seconds easing dark → bright
+      brightHold: 50.0,   // seconds at full (current look)
+      rampDown:   40.0,   // seconds easing bright → dark
     },
+
+    // Fireplace-mode damper on the ~6 s warm key/innerGlow scene pulse
+    // (src/core/lights.js). 0..1 multiplier on the pulse's swing around
+    // its midpoint: 1 = full legacy throb, 0 = rock steady. 0.25 keeps a
+    // barely-perceptible sway so the hearth room feels alive but never
+    // pulses. Other modes are unaffected.
+    scenePulseFlatten: 0.25,
 
     // Multiplier on logo material's `envMapIntensity` in flame mode.
     // Default 1.0 lets the metallic logo reflect the neutral-grey env
@@ -1891,21 +1904,24 @@ export const ANIM = {
     rim: {
       enabled:   true,
       thickness: 3.0,            // load-only; reload after editing
+      // Calmed: rates cut so the gate-tracing events are occasional
+      // accents (~every 15–30 s) instead of a rolling light show, and
+      // peaks softened so they glow rather than flash.
       pulse: {
         enabled:   true,
-        rate:      0.18,         // ~once every 5–6s (was 0.05)
+        rate:      0.06,         // ~once every 15–17s (was 0.18)
         duration:  6.0,          // longer dwell (was 4.5)
         width:     0.10,         // wider tongue, easier to spot (was 0.05)
         color:     '#FFE8B0',    // hot warm-white — contrasts the body
-        intensity: 3.5,          // hard peak (was 1.6)
+        intensity: 2.2,          // soft peak (was 3.5)
       },
       ignite: {
         enabled:   true,
-        rate:      0.08,         // ~once every 12s (was 0.025)
+        rate:      0.03,         // ~once every 30s (was 0.08)
         duration:  5.0,          // longer fade (was 3.5)
         maxSpread: 0.55,
         color:     '#FF8830',    // saturated orange — pops vs. amber body
-        intensity: 2.6,          // hard peak (was 1.3)
+        intensity: 1.6,          // soft peak (was 2.6)
       },
     },
 
@@ -1975,9 +1991,12 @@ export const ANIM = {
     // surrounding glow shifts cool with the flame.
     flares: {
       enabled:   true,
-      rate:      0.35,   // average flares per second (Bernoulli)
-      duration:  1.6,    // each flare's life, seconds (envelope)
-      intensity: 0.85,   // peak amount the flare colour overrides base
+      // Calmed: was rate 0.35 (a colour flash every ~3 s — a major part
+      // of the "flashing way too much" read). Now a rare, longer, softer
+      // accent roughly every ~15 s.
+      rate:      0.06,   // average flares per second (Bernoulli)
+      duration:  2.4,    // each flare's life, seconds (envelope)
+      intensity: 0.55,   // peak amount the flare colour overrides base
       yMax:      0.50,   // flares only show below this height fraction
       palette: ['#3DB7FF', '#41E0B8', '#A668FF', '#5BFF7E', '#7AC0FF'],
     },
@@ -2055,11 +2074,16 @@ export const ANIM = {
       // illuminates the camera-facing side, not the back, so the front
       // face's outer surface is unaffected by lights placed behind it).
       zOffsetFromFront: -2.0,
-      intensityMin: 55,
-      intensityMax: 190,
-      flareIntensityBoost: 220,
-      flickerSpeed:  2.4,
-      flickerJitter: 0.55,
+      // Calmed (user: "flashing wayyyy too much"): narrow band around a
+      // warm steady glow instead of the old 55–190 strobe, slower sine,
+      // and jitter nearly off so the per-frame stochastic noise reads as
+      // a faint shimmer rather than a flicker. Flare boost trimmed from
+      // 220 so chromatic flares warm the room instead of blowing it out.
+      intensityMin: 95,
+      intensityMax: 150,
+      flareIntensityBoost: 55,
+      flickerSpeed:  1.1,
+      flickerJitter: 0.12,
       color:        '#FF7A22',   // fallback for stack entries that omit color
       coolColor:    '#5DAEFF',
       decay:        1.4,         // dropped from 1.6 → 1.4 so the upper stack
@@ -2233,7 +2257,9 @@ export const ANIM = {
       // where smoothedFlameEnv is a 1-sec low-passed average of the flame
       // PointLight stack's instantaneous intensities. 0 = static; 0.5 =
       // backdrop dims to 50% of base when flame is at its dimmest.
-      pulseAmount: 0.5,
+      // Calmed 0.5 → 0.15 so the stars barely sway with the fire instead
+      // of visibly pumping.
+      pulseAmount: 0.15,
     },
   },
 
@@ -2502,6 +2528,32 @@ export const ANIM = {
   },
 
   // -----------------------------------------------------------------------
+  // FIREPLACE CHOREOGRAPHER (mode 5) — self-animating hearth. On entering
+  // fireplaceOne the scene holds still (only the calm flame/light breath)
+  // for a random startDelay, then soft domino ring waves and occasional
+  // "cascade" pinwheel ripples fire on their own at random intervals.
+  // Overall activity sin-eases in over rampDuration seconds: early events
+  // are single-epicenter gentle rocks; later ones fuller and quicker.
+  // Every delay/choice is re-rolled at schedule time so no two visits
+  // play the same. Manual keys still work — the choreographer defers to
+  // externally-started waves and pushes its own schedule out past them.
+  // Driven per-frame from src/effects/fireplaceOne/choreographer.js.
+  //   startDelay    — [min,max] seconds of stillness after mode entry
+  //   interval      — [min,max] seconds between scheduled events
+  //   rampDuration  — seconds for activity to ease from gentle → full
+  //   cascadeChance — probability an event is the pinwheel "cascade"
+  //                   (also fires the 'arch.cascade' trigger) instead of
+  //                   a forward domino ring wave
+  // -----------------------------------------------------------------------
+  fireplaceChoreo: {
+    enabled:       true,
+    startDelay:    [8, 16],
+    interval:      [15, 35],
+    rampDuration:  40,
+    cascadeChance: 0.35,
+  },
+
+  // -----------------------------------------------------------------------
   // AUTO-SHOW — unattended playlist for installation duty. Keys: S
   // play/pause, N next. Remote: {"type":"show","action":...}. Cue `at`
   // counts seconds from the end of the step's transition-in; `every`
@@ -2524,10 +2576,9 @@ export const ANIM = {
         cues: [ { at: 8,  trigger: 'domino.on' },
                 { at: 34, trigger: 'domino.off' } ] },
       { mode: 'flowers',        dwell: 35 },
-      { mode: 'fireplaceOne',   dwell: 60,
-        cues: [ { at: 4,  trigger: 'arch.cascade' },
-                { at: 25, trigger: 'domino.on' },
-                { at: 45, trigger: 'domino.off' } ] },
+      // fireplaceOne: no cues — the mode-5 choreographer
+      // (ANIM.fireplaceChoreo) owns all motion in this step.
+      { mode: 'fireplaceOne',   dwell: 60 },
       { mode: 'fireplaceTwo',   dwell: 45,
         cues: [ { at: 18, trigger: 'portal.rush', every: 20 } ] },
       { mode: 'flameOnly',      dwell: 60,

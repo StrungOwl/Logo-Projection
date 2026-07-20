@@ -18,6 +18,7 @@ import { createGateFrame }       from './_shared/logoFrame.js';
 import { makeSparks }            from './_shared/sparkFactory.js';
 import { createArch }            from './fireplaceOne/fireplaceTiles.js';
 import { createFlame, createHearthFlame } from './fireplaceOne/flame.js';
+import { updateFireplaceChoreo } from './fireplaceOne/choreographer.js';
 import { createGateRim }         from './_shared/gateRim.js';
 import { clipPolygonBelowY, clipPolygonLeftOfX, clipPolygonRightOfX } from '../util/polygon.js';
 import { createFireplace }       from './fireplaceTwo/outerArch.js';
@@ -652,7 +653,9 @@ export function addEffects(logoMesh, meta, renderer) {
            updateFlame:  flame.update,
            flameLights:  flame.lights,
            fireplaceGroup:  fireplace.group,
-           updateFireplace: fireplace.update,
+           // updateFireplace runs every frame in main.js — piggyback the
+           // mode-5 choreographer here (it self-gates on ANIM.viewMode).
+           updateFireplace: (t, dt) => { fireplace.update(t, dt); updateFireplaceChoreo(t, dt); },
            hearthFlameGroup:  hearthFlame.group,
            updateHearthFlame: hearthFlame.update,
            hearthFlameLights: hearthFlame.lights || [],

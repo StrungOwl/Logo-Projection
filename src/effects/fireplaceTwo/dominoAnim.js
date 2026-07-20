@@ -25,6 +25,26 @@ const _flipQuat = new THREE.Quaternion();
 let registry = null;     // [{ mesh, restQuat, worldPos, dominoIndex }]
 let playing = false;     // toggle state (key 'd' flips this)
 let triggerTime = 0;     // absolute t at the start of the current loop cycle
+let softHold = false;    // one-shot soft wave finished; holding at rest
+                         // (still `playing`) until toggled off
+
+// Soft-wave overrides — ANIM.dominoFlip.soft is written at fire-time by
+// the fireplaceOne choreographer (src/effects/fireplaceOne/
+// choreographer.js) and cleared when its wave ends. While `active`, any
+// field present here shadows the matching ANIM.dominoFlip value:
+//   epicenters / ringWidth       — sampled at trigger (reorderForTrigger)
+//   ringStagger / duration / axis — read live each frame
+//   rockAngle — radians. When set, bricks do a gentle there-and-back
+//               rock (sin π·t profile — peaks at rockAngle mid-flip and
+//               settles back to rest, so no end-of-flip snap) instead of
+//               the classic full easeInOut spin through `angle`.
+//   oneShot   — when the wave completes, hold every brick at rest and
+//               stop retriggering (wave state reads as "settled"; the
+//               choreographer then fires domino.off for a clean stop).
+function softCfg() {
+  const s = ANIM.dominoFlip && ANIM.dominoFlip.soft;
+  return (s && s.active) ? s : null;
+}
 
 const BRICK_HOST_NAMES = ['arch', 'fireplace'];
 
@@ -75,12 +95,13 @@ function buildRegistry(scene) {
 function reorderForTrigger(bricks) {
   const n = bricks.length;
   if (!n) return;
-  const cfg = ANIM.dominoFlip || {};
-  const epicenters = cfg.epicenters ?? 3;
+  const cfg  = ANIM.dominoFlip || {};
+  const soft = softCfg();
+  const epicenters = soft?.epicenters ?? cfg.epicenters ?? 3;
 
   if (epicenters > 0) {
     // --- Ring-quantized multi-epicenter waves ---
-    const ringWidth = Math.max(1e-3, cfg.ringWidth ?? 3.0);
+    const ringWidth = Math.max(1e-3, soft?.ringWidth ?? cfg.ringWidth ?? 3.0);
     const centers = [];
     for (let e = 0; e < epicenters; e++) {
       centers.push(bricks[Math.floor(Math.random() * n)].worldPos);
@@ -130,27 +151,40 @@ export function toggleDominoes(scene, t) {
     // static again.
     for (const b of registry) b.mesh.quaternion.copy(b.restQuat);
     playing = false;
+    softHold = false;
     return false;
   }
   reorderForTrigger(registry);
   triggerTime = t;
   playing = true;
+  softHold = false;
   return true;
 }
 
+// Wave-state getters for the fireplaceOne choreographer.
+//   isDominoWaveActive  — a wave is running (or holding settled).
+//   isDominoWaveSettled — a one-shot soft wave finished and every brick
+//                         is back at rest; safe to fire 'domino.off'
+//                         without any visible snap.
+export function isDominoWaveActive()  { return playing; }
+export function isDominoWaveSettled() { return playing && softHold; }
+
 export function updateDominoes(t) {
   if (!registry || !playing) return;
+  if (softHold) return;   // one-shot wave settled — bricks already at rest
 
   const cfg      = ANIM.dominoFlip || {};
+  const soft     = softCfg();
   // Ring mode: dominoIndex is a RING index (small ints) → space rings
   // by ringStagger. Legacy mode: dominoIndex is a per-brick rank →
   // space bricks by the (much smaller) per-brick stagger.
-  const ringMode = (cfg.epicenters ?? 3) > 0;
-  const stagger  = ringMode ? (cfg.ringStagger ?? 0.35)
+  const ringMode = (soft?.epicenters ?? cfg.epicenters ?? 3) > 0;
+  const stagger  = ringMode ? (soft?.ringStagger ?? cfg.ringStagger ?? 0.35)
                             : (cfg.stagger     ?? 0.04);
-  const duration = cfg.duration ?? 1.5;
+  const duration = soft?.duration ?? cfg.duration ?? 1.5;
   const angle    = cfg.angle    ?? Math.PI * 2;
-  const axis     = cfg.axis     || [1, 0, 0];
+  const rockAngle = soft?.rockAngle ?? 0;   // >0 → gentle rock profile
+  const axis     = soft?.axis ?? cfg.axis ?? [1, 0, 0];
   _flipAxis.set(axis[0], axis[1], axis[2]).normalize();
 
   let allDone = true;
@@ -166,8 +200,14 @@ export function updateDominoes(t) {
       continue;
     }
     allDone = false;
-    const ease = easeInOut(localT);
-    _flipQuat.setFromAxisAngle(_flipAxis, ease * angle);
+    // Soft rock profile: sin(π·t) swings out to rockAngle at mid-flip
+    // and returns to 0 at the end — always lands back at rest, so a
+    // partial angle never snaps. Classic profile: easeInOut through the
+    // full `angle` (2π returns to rest by construction).
+    const theta = rockAngle > 0
+      ? Math.sin(Math.PI * localT) * rockAngle
+      : easeInOut(localT) * angle;
+    _flipQuat.setFromAxisAngle(_flipAxis, theta);
     // PRE-multiply the flip quaternion so the rotation axis is in WORLD
     // space, not the brick's local frame. This way every brick — fireplace
     // rim (long axis pointing at camera), floor wall (lying flat),
@@ -178,8 +218,13 @@ export function updateDominoes(t) {
   // While playing, auto-retrigger as soon as the previous cycle completes
   // so the wave keeps coming. Reorder is intentional: it's deterministic
   // (centroid-based), but the call is cheap and lets a future per-cycle
-  // randomiser plug in here.
+  // randomiser plug in here. One-shot soft waves instead settle at rest
+  // and wait for the choreographer's 'domino.off'.
   if (allDone) {
+    if (soft && soft.oneShot) {
+      softHold = true;
+      return;
+    }
     reorderForTrigger(registry);
     triggerTime = t;
   }

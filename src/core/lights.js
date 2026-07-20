@@ -70,11 +70,19 @@ export function createLights(scene) {
 // steady bright anchor in the centre while everything else breathes
 // around it.
 export function updateLights(lights, t, scene) {
+  const fireplaceMode = ANIM.viewMode === 'fireplaceOne' || ANIM.viewMode === 'fireplaceTwo';
+
+  // In fireplace mode, compress the ~6 s warm key/glow throb toward its
+  // midpoint (ANIM.flame.scenePulseFlatten, 0..1; 1 = full legacy swing)
+  // so the hearth reads as a steady warm room with a faint sway instead
+  // of a pulsing one. Other modes keep the full-amplitude pulse.
+  const pulseFlat = fireplaceMode
+    ? ((ANIM.flame && ANIM.flame.scenePulseFlatten) ?? 0.25)
+    : 1.0;
   const pulse   = Math.sin(t * ANIM.pulseSpeed);
-  const pulse01 = 0.5 + 0.5 * pulse;
+  const pulse01 = 0.5 + 0.5 * pulse * pulseFlat;
   const warm    = 1.0 - pulse01;
 
-  const fireplaceMode = ANIM.viewMode === 'fireplaceOne' || ANIM.viewMode === 'fireplaceTwo';
   const pointDim = fireplaceMode
     ? ((ANIM.flame && ANIM.flame.baseLightDim) ?? 0.06)
     : 1.0;
@@ -124,7 +132,7 @@ export function updateLights(lights, t, scene) {
   lights.frontPatternLight.color.set(fp.color);
 
   const rl = ANIM.rimLight;
-  const rimPulse01 = 0.5 + 0.5 * Math.sin(t * ANIM.pulseSpeed + rl.phaseOffset);
+  const rimPulse01 = 0.5 + 0.5 * Math.sin(t * ANIM.pulseSpeed + rl.phaseOffset) * pulseFlat;
   lights.rimLight.intensity = (rl.intensityMin + (rl.intensityMax - rl.intensityMin) * rimPulse01) * envDim;
   lights.rimLight.color.set(rl.color);
 
