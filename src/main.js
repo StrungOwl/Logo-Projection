@@ -11,6 +11,7 @@ import { createPipeline } from './core/pipeline.js';
 import { createProjectionMode } from './core/projection.js';
 import { createCalibration } from './core/calibration.js';
 import { createWarp } from './core/warp.js';
+import { toggleInfoOverlay } from './core/infoOverlay.js';
 import { loadLogo } from './core/logo.js';
 import { addEffects } from './effects/effects.js';
 import { addOverlay } from './effects/flowers/starFans.js';
@@ -347,7 +348,12 @@ export function tick(t, dt) {
     // the back-loaded half. Without this stagger both layers were dim
     // at the same moment, leaving a visible flicker-of-nothing.
     const galaxyFadeOut = Math.min(logoStarryBlend / 0.5, 1.0);
-    const galaxyMul = 1 - galaxyFadeOut;
+    let galaxyMul = 1 - galaxyFadeOut;
+    // Portal mode: pure black void — the galaxy (both nebula and starry
+    // variants) goes fully dark so only the corridor outlines exist.
+    if (ANIM.viewMode === 'fireplaceTwo' && !(ANIM.recede?.conveyor?.enabled === false)) {
+      galaxyMul = 0;
+    }
     ctx.galaxyMat.uniforms.uBrightness.value = targetBright * pulseMul * galaxyMul;
   }
 
@@ -389,7 +395,9 @@ export function tick(t, dt) {
   // (galaxy fades first, then logo stars come up) — see the galaxy
   // uBrightness block above for the front-half curve.
   {
-    const target = (showFlameOnly || showRecede || showMolten) ? 1 : 0;
+    // NOTE: portal (showRecede+conveyor) deliberately excluded — that
+    // mode wants a pure black void (no starfield, no body twinkle).
+    const target = (showFlameOnly || (showRecede && ANIM.recede?.conveyor?.enabled === false) || showMolten) ? 1 : 0;
     const fadeSpeed = 0.15;
     const k = 1 - Math.exp(-fadeSpeed * dt);
     logoStarryBlend += (target - logoStarryBlend) * k;
@@ -431,7 +439,10 @@ export function tick(t, dt) {
   // drop the procedural frame so only the brick layers read. Recede mode
   // keeps the gate frame visible — it caps the receding silhouette nicely.
   if (ctx.gateFrameGroup) {
-    ctx.gateFrameGroup.visible = !(showFireplace && ANIM.arch && ANIM.arch.hideGateFrame);
+    // Portal mode drops the frame entirely — the corridor's own receding
+    // outlines ARE the structure, and the static gilded ring fought them.
+    ctx.gateFrameGroup.visible = !portalActive
+      && !(showFireplace && ANIM.arch && ANIM.arch.hideGateFrame);
   }
   // Three.js checks light.visible directly when collecting scene lights —
   // hiding the parent group does NOT remove the light from the shader's
@@ -650,13 +661,10 @@ export function tick(t, dt) {
     if (visible && ctx.updateConstellation) ctx.updateConstellation(t, dt);
   }
 
-  // Hearth flame (key 6 only) — single wide flame masked to the gate-
-  // frame interior. While iterating on the look, force always-visible
-  // in flameOnly mode (bypass the constellation cycle's flame-phase
-  // gating). To restore cycle gating swap the line below back to:
-  //   const hearthVisible = showFlameOnly &&
-  //     (ctx.getHearthFlameOpacity ? ctx.getHearthFlameOpacity() : 0) > 0.05;
-  const hearthVisible = showFlameOnly;
+  // Hearth flame — retired from the constellation mode by user request
+  // ("just keep the constellations"): the wide fire beams competed with
+  // the star figures. Re-enable via ANIM.hearthFlame.enabled = true.
+  const hearthVisible = showFlameOnly && ANIM.hearthFlame?.enabled === true;
   if (ctx.hearthFlameGroup) ctx.hearthFlameGroup.visible = hearthVisible;
   if (ctx.hearthFlameLights) {
     for (let i = 0; i < ctx.hearthFlameLights.length; i++) {
@@ -905,6 +913,12 @@ if (typeof window !== 'undefined') {
       console.log(`[dominoes] ${dominoesOn ? 'on' : 'off'}`);
       return;
     }
+    // 'i' — toggle the on-screen controls card.
+    if (e.code === 'KeyI' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      toggleInfoOverlay();
+      return;
+    }
     // 'w' — toggle the corner-pin warp calibration editor.
     if (e.code === 'KeyW' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
       e.preventDefault();
@@ -960,10 +974,12 @@ if (typeof window !== 'undefined') {
     }
     // Digit keys (no modifiers) switch ANIM.viewMode. 9 = calibration.
     if (!e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      // Key order is the show order: molten gold leads at 1, everything
+      // else shifted up one (user request 2026-07-19).
       const modeByKey = {
-        Digit0: 'visualSequence', Digit1: 'fractalPattern', Digit2: 'hexagons',
-        Digit3: 'flowers',         Digit4: 'fireplaceOne',   Digit5: 'fireplaceTwo',
-        Digit6: 'flameOnly',       Digit7: 'moltenGold',     Digit9: 'calibration',
+        Digit0: 'visualSequence', Digit1: 'moltenGold',     Digit2: 'fractalPattern',
+        Digit3: 'hexagons',        Digit4: 'flowers',        Digit5: 'fireplaceOne',
+        Digit6: 'fireplaceTwo',    Digit7: 'flameOnly',      Digit9: 'calibration',
       };
       const next = modeByKey[e.code];
       if (next) {

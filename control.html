@@ -102,9 +102,9 @@
     const bc = new BroadcastChannel('logo-projection-control');
     const $ = (id) => document.getElementById(id);
     const MODES = [
-      ['0', 'visualSequence'], ['1', 'fractalPattern'], ['2', 'hexagons'],
-      ['3', 'flowers'], ['4', 'fireplaceOne'], ['5', 'fireplaceTwo'],
-      ['6', 'flameOnly'], ['7', 'moltenGold'], ['9', 'calibration'],
+      ['0', 'visualSequence'], ['1', 'moltenGold'], ['2', 'fractalPattern'],
+      ['3', 'hexagons'], ['4', 'flowers'], ['5', 'fireplaceOne'],
+      ['6', 'fireplaceTwo'], ['7', 'flameOnly'], ['9', 'calibration'],
     ];
     const CAL = ['off', 'fill', 'outline', 'grid', 'checker', 'corners'];
     // Seed list — replaced by the live registry from the first state msg.

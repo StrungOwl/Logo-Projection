@@ -9,13 +9,13 @@ Switch with the digit keys (each goes through a dip-to-black transition).
 | Key | Internal name | Display name | What you see |
 |---|---|---|---|
 | `0` | `visualSequence` | Visual Sequence | The "default show" — rosette pattern + hex lattice + flower overlay running on a synchronized cascade. |
-| `1` | `fractalPattern` | Fractal Pattern | Rosette panel + hex lattice with the fractal "telescope" lens zooming infinitely into the center. |
-| `2` | `hexagons` | Hexagons | The pulsing hex-brick wall; the sky auto-cycles between warm nebula and dense starfield. |
-| `3` | `flowers` | Flowers | Hex bricks morph into rose petals and back. |
-| `4` | `fireplaceOne` | Fireplace | Cascading amber-stone brick arch + voussoir corona + volumetric flame + starry sky. |
-| `5` | `fireplaceTwo` | Depth Portal | Infinite conveyor of glowing receding A-outlines spiraling to a vanishing point. |
-| `6` | `flameOnly` | Primal Ember | Black body, gilded frame, edge-light comets, constellation figures, hearth flame. |
-| `7` | `moltenGold` | Molten Gold | Liquid gold filling the silhouette — convecting body, blooming surface line, sparks. |
+| `1` | `moltenGold` | Molten Gold | Liquid gold cycle: rises to the top, holds, drains to reveal the starry sky. |
+| `2` | `fractalPattern` | Fractal Pattern | Rosette panel + hex lattice with the fractal "telescope" lens zooming infinitely into the center. |
+| `3` | `hexagons` | Hexagons | The pulsing hex-brick wall; the sky auto-cycles between warm nebula and dense starfield. |
+| `4` | `flowers` | Flowers | Hex bricks morph into rose petals and back. |
+| `5` | `fireplaceOne` | Fireplace | Cascading amber-stone brick arch + voussoir corona + volumetric flame + starry sky. |
+| `6` | `fireplaceTwo` | Depth Portal | Infinite conveyor of glowing receding A-outlines in a pure black void. |
+| `7` | `flameOnly` | Constellations | Star figures, gilded frame, edge-light comets — no fire. |
 | `9` | `calibration` | Calibration | Mapping alignment patterns (cycle with `C`). |
 
 ## Effects (what's in the `src/effects/` folders)

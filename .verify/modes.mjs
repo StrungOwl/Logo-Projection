@@ -27,14 +27,14 @@ mkdirSync(OUT, { recursive: true });
 // key → mode name (must mirror the modeByKey map in src/main.js).
 const ALL_MODES = {
   0: 'visualSequence',
-  1: 'fractalPattern',
-  2: 'hexagons',
-  3: 'flowers',
-  4: 'fireplaceOne',
-  5: 'fireplaceTwo',
-  6: 'flameOnly',
-  // 7: 'moltenGold'   — added in the revamp
-  // 9: 'calibration'  — added in the revamp
+  1: 'moltenGold',
+  2: 'fractalPattern',
+  3: 'hexagons',
+  4: 'flowers',
+  5: 'fireplaceOne',
+  6: 'fireplaceTwo',   // depth portal
+  7: 'flameOnly',      // constellations
+  // 9: 'calibration'
 };
 const modeKeys = (process.argv[3] || Object.keys(ALL_MODES).join(','))
   .split(',').map(s => s.trim()).filter(Boolean);
@@ -125,8 +125,8 @@ for (const key of modeKeys) {
     // Prefer the real keyboard path once transitions exist; direct write is
     // the deterministic route (transition manager adopts external writes).
     const byKey = {
-      0: 'visualSequence', 1: 'fractalPattern', 2: 'hexagons', 3: 'flowers',
-      4: 'fireplaceOne', 5: 'fireplaceTwo', 6: 'flameOnly', 7: 'moltenGold',
+      0: 'visualSequence', 1: 'moltenGold', 2: 'fractalPattern', 3: 'hexagons',
+      4: 'flowers', 5: 'fireplaceOne', 6: 'fireplaceTwo', 7: 'flameOnly',
       9: 'calibration',
     };
     const m = byKey[k];

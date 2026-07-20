@@ -23,13 +23,13 @@ Useful URLs:
 | Key | Mode | What you see |
 |---|---|---|
 | `0` | Visual Sequence | Synchronized rosette + hex lattice + flower overlay cascade |
-| `1` | Fractal Pattern | Rosette + lattice with the infinite fractal lens zoom |
-| `2` | Hexagons | Pulsing hex-brick wall; sky auto-cycles nebula ↔ dense starfield |
-| `3` | Flowers | Hex bricks morph → rose petals → back |
-| `4` | Fireplace | Amber-stone brick arch + radiant voussoir corona + flame + starry sky |
-| `5` | Depth Portal | Infinite conveyor of glowing receding A-outlines |
-| `6` | Primal Ember | Black body, gilded frame, edge-light comets, constellations, hearth flame |
-| `7` | Molten Gold | Liquid gold fills the silhouette; blooming meniscus + surface sparks |
+| `1` | Molten Gold | Liquid gold rises to the top, holds, drains to reveal the starry sky |
+| `2` | Fractal Pattern | Rosette + lattice with the infinite fractal lens zoom |
+| `3` | Hexagons | Pulsing hex-brick wall; sky auto-cycles nebula ↔ dense starfield |
+| `4` | Flowers | Hex bricks morph → rose petals → back |
+| `5` | Fireplace | Amber-stone brick arch + radiant voussoir corona + flame + starry sky |
+| `6` | Depth Portal | Infinite conveyor of glowing receding A-outlines in a black void |
+| `7` | Constellations | Star figures + gilded frame + edge-light comets |
 | `9` | Calibration | Alignment patterns for mapping (cycle with `C`) |
 
 ## Keyboard
@@ -37,6 +37,7 @@ Useful URLs:
 | Key | Action |
 |---|---|
 | `0`–`7`, `9` | Switch view mode (through a dip-to-black transition) |
+| `I` | On-screen controls card (this table, in-app) |
 | `Space` | Fire the cascade / fractal zoom now |
 | `D` | Toggle the domino flip waves (fireplace bricks, concentric rings) |
 | `P` | Fire a constellation stellar pulse (mode 6) |

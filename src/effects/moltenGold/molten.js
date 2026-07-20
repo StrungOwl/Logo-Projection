@@ -21,7 +21,7 @@ import { ANIM } from '../../config.js';
 import { buildSilhouetteShape } from '../../util/geometry.js';
 import { pointInPolygon } from '../../util/polygon.js';
 
-export function createMolten({ logoMesh, meta }) {
+export function createMolten({ logoMesh, meta, renderer }) {
   const cfg = () => ANIM.molten || {};
 
   const group = new THREE.Group();
@@ -129,27 +129,58 @@ export function createMolten({ logoMesh, meta }) {
   group.add(liquid);
 
   // ---- meniscus spark emitter -----------------------------------------
-  const SPARKS = 60;
-  const sparkPos  = new Float32Array(SPARKS * 3);
-  const sparkSeed = new Float32Array(SPARKS);   // 0..1 phase offset
-  for (let i = 0; i < SPARKS; i++) sparkSeed[i] = Math.random();
+  // Tiny organic embers: per-particle size, alpha envelope (fade in →
+  // fade out over its life), and horizontal wander — a custom shader
+  // Points because PointsMaterial can't do per-particle size/alpha.
+  const sparkCfg = () => (ANIM.molten?.sparks) || {};
+  const SPARKS = Math.max(8, sparkCfg().count ?? 90);
+  const sparkPos   = new Float32Array(SPARKS * 3);
+  const sparkSize  = new Float32Array(SPARKS);
+  const sparkAlpha = new Float32Array(SPARKS);
   const sparkGeo = new THREE.BufferGeometry();
   sparkGeo.setAttribute('position', new THREE.BufferAttribute(sparkPos, 3));
-  const sparkMat = new THREE.PointsMaterial({
-    color: new THREE.Color('#FFD870').multiplyScalar(2.2),
-    size: 0.16,
+  sparkGeo.setAttribute('aSize',    new THREE.BufferAttribute(sparkSize, 1));
+  sparkGeo.setAttribute('aAlpha',   new THREE.BufferAttribute(sparkAlpha, 1));
+  const sparkMat = new THREE.ShaderMaterial({
     transparent: true,
-    opacity: 0.9,
     depthWrite: false,
     depthTest: false,
     blending: THREE.AdditiveBlending,
-    sizeAttenuation: true,
+    uniforms: {
+      uColor: { value: new THREE.Color('#FFD870').multiplyScalar(2.2) },
+      // Half the drawing-buffer height — synced per frame so sprites keep
+      // their world size across window/projection/export resolutions.
+      uScale: { value: 400 },
+    },
+    vertexShader: /* glsl */`
+      attribute float aSize;
+      attribute float aAlpha;
+      uniform float uScale;
+      varying float vAlpha;
+      void main() {
+        vAlpha = aAlpha;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = aSize * uScale / -mv.z;
+        gl_Position = projectionMatrix * mv;
+      }
+    `,
+    fragmentShader: /* glsl */`
+      uniform vec3 uColor;
+      varying float vAlpha;
+      void main() {
+        vec2 d = gl_PointCoord - 0.5;
+        float a = smoothstep(0.25, 0.02, dot(d, d)) * vAlpha;
+        if (a < 0.01) discard;
+        gl_FragColor = vec4(uColor, a);
+      }
+    `,
   });
   const sparks = new THREE.Points(sparkGeo, sparkMat);
   sparks.position.z = zFront + 0.05;
   sparks.renderOrder = 7;
   sparks.frustumCulled = false;
   group.add(sparks);
+  const drawSize = new THREE.Vector2();
 
   // Spark spawn columns: x positions inside the silhouette near a given
   // y — resampled lazily as the fill level moves. Outer loop only; holes
@@ -166,16 +197,27 @@ export function createMolten({ logoMesh, meta }) {
   }
 
   const sparkState = [];
-  for (let i = 0; i < SPARKS; i++) sparkState.push({ x: 0, y: minY - 100, vy: 0, life: 0 });
+  for (let i = 0; i < SPARKS; i++) {
+    sparkState.push({
+      baseX: 0, y: minY - 100, vy: 0, life: 0, maxLife: 1,
+      size: 0.05, wanderFreq: 1, seed: Math.random() * Math.PI * 2,
+    });
+  }
 
   function respawnSpark(s, surfaceLevel) {
+    const sc = sparkCfg();
     for (let tries = 0; tries < 12; tries++) {
       const x = xMin + Math.random() * (xMax - xMin);
       if (insideAt(x, surfaceLevel)) {
-        s.x = x;
-        s.y = surfaceLevel + (Math.random() - 0.5) * 0.5;
-        s.vy = 0.6 + Math.random() * 1.2;
-        s.life = 0.7 + Math.random() * 1.4;
+        s.baseX = x;
+        s.y = surfaceLevel + (Math.random() - 0.5) * 0.4;
+        s.vy = 0.35 + Math.random() * 1.1;
+        s.maxLife = 0.8 + Math.random() * 1.8;
+        s.life = s.maxLife;
+        const jitter = 1 + (Math.random() * 2 - 1) * (sc.sizeJitter ?? 0.6);
+        s.size = (sc.size ?? 0.055) * jitter;
+        s.wanderFreq = 1.2 + Math.random() * 2.6;
+        s.seed = Math.random() * Math.PI * 2;
         return;
       }
     }
@@ -183,13 +225,19 @@ export function createMolten({ logoMesh, meta }) {
   }
 
   // ---- fill state machine ---------------------------------------------
+  // Default life is the autonomous CYCLE: rise all the way to the top →
+  // hold there a beat → drain away to reveal the starry sky → rest →
+  // repeat, sin-eased throughout. Manual triggers switch to 'anim' and
+  // the cycle re-seats itself at the matching phase afterward.
   const st = {
-    fill: 0.45,          // current
-    mode: 'idle',        // 'idle' | 'anim'
-    animFrom: 0.45,
-    animTo: 0.45,
+    fill: 0.1,
+    mode: 'idle',        // 'idle' (cycle or breathing) | 'anim'
+    animFrom: 0.1,
+    animTo: 0.1,
     animT: 0,
     animDur: 1,
+    cyclePhase: 'rise',  // 'rise' | 'holdTop' | 'drain' | 'holdBottom'
+    cycleT: 0,
     idleCenter: 0.45,
     idlePhase: 0,
     surgeUntil: -1,
@@ -204,8 +252,8 @@ export function createMolten({ logoMesh, meta }) {
   }
 
   const triggers = {
-    fill:     () => animTo(1.0, cfg().fillDuration ?? 12),
-    drain:    () => animTo(cfg().drainTo ?? 0.06, cfg().drainDuration ?? 8),
+    fill:     () => animTo(cfg().fillTop ?? 1.0, cfg().fillDuration ?? 12),
+    drain:    () => animTo(cfg().drainTo ?? 0.02, cfg().drainDuration ?? 8),
     surge:    (t, args) => { st.surgeUntil = st.now + ((args && args.duration) || cfg().surge?.duration || 4); },
     setLevel: (t, args) => animTo((args && args.level) ?? 0.5, (args && args.duration) ?? 3),
   };
@@ -224,6 +272,8 @@ export function createMolten({ logoMesh, meta }) {
     uniforms.uSurge.value += (sTarget - uniforms.uSurge.value) * sBlend;
 
     // Fill level.
+    const top = c.fillTop ?? 1.0;
+    const bot = c.drainTo ?? 0.02;
     if (st.mode === 'anim') {
       st.animT += dt;
       const k = Math.min(1, st.animT / st.animDur);
@@ -231,9 +281,39 @@ export function createMolten({ logoMesh, meta }) {
       st.fill = st.animFrom + (st.animTo - st.animFrom) * e;
       if (k >= 1) {
         st.mode = 'idle';
+        // Re-seat the cycle at whatever phase matches where we landed.
+        if      (st.fill >= top - 0.03) { st.cyclePhase = 'holdTop';    st.cycleT = 0; }
+        else if (st.fill <= bot + 0.03) { st.cyclePhase = 'holdBottom'; st.cycleT = 0; }
+        else {
+          st.cyclePhase = 'rise';
+          st.cycleT = ((c.cycle?.rise ?? 20)) * ((st.fill - bot) / Math.max(top - bot, 1e-3));
+        }
         st.idleCenter = st.fill;
         st.idlePhase = 0;
       }
+    } else if (c.cycle?.enabled !== false) {
+      // Autonomous rise → holdTop → drain → holdBottom loop, sin-eased.
+      const cy = c.cycle || {};
+      const durs = {
+        rise:       cy.rise       ?? 20,
+        holdTop:    cy.holdTop    ?? 6,
+        drain:      cy.drain      ?? 12,
+        holdBottom: cy.holdBottom ?? 9,
+      };
+      const seq = ['rise', 'holdTop', 'drain', 'holdBottom'];
+      st.cycleT += dt;
+      let dur = Math.max(0.1, durs[st.cyclePhase]);
+      while (st.cycleT >= dur) {
+        st.cycleT -= dur;
+        st.cyclePhase = seq[(seq.indexOf(st.cyclePhase) + 1) % seq.length];
+        dur = Math.max(0.1, durs[st.cyclePhase]);
+      }
+      const k = Math.min(1, st.cycleT / dur);
+      const e = k * k * (3 - 2 * k);
+      if      (st.cyclePhase === 'rise')  st.fill = bot + (top - bot) * e;
+      else if (st.cyclePhase === 'drain') st.fill = top - (top - bot) * e;
+      else if (st.cyclePhase === 'holdTop') st.fill = top;
+      else st.fill = bot;
     } else {
       const idle = c.idle || {};
       const lo = idle.min ?? 0.35, hi = idle.max ?? 0.75, period = idle.period ?? 40;
@@ -247,23 +327,36 @@ export function createMolten({ logoMesh, meta }) {
     st.fill = Math.min(1, Math.max(0, st.fill));
     uniforms.uFill.value = st.fill;
 
-    // Sparks ride the (unwaved) surface line.
+    // Sparks ride the (unwaved) surface line. Organic motion: each ember
+    // rises at its own speed, wanders sideways on its own frequency, and
+    // fades in/out over its life (sin envelope) at its own size.
+    if (renderer) {
+      renderer.getDrawingBufferSize(drawSize);
+      sparkMat.uniforms.uScale.value = drawSize.y * 0.5;
+    }
+    const sc = sparkCfg();
     const surfaceLevel = minY + (maxY - minY) * st.fill;
-    const rate = surging ? 3 : 1;
+    const rate = (sc.rate ?? 1) * (surging ? 3 : 1);
+    const wander = sc.wander ?? 0.35;
     for (let i = 0; i < SPARKS; i++) {
       const s = sparkState[i];
       s.life -= dt * rate;
       if (s.life <= 0) {
-        // Stagger respawns by seed so the emitter never pulses in sync.
+        // Stagger respawns so the emitter never pulses in sync.
         if (Math.random() < 0.25 * rate) respawnSpark(s, surfaceLevel);
-        else { sparkPos[i * 3 + 1] = minY - 100; continue; }
+        else { sparkAlpha[i] = 0; sparkPos[i * 3 + 1] = minY - 100; continue; }
       }
       s.y += s.vy * dt * (surging ? 1.8 : 1);
-      sparkPos[i * 3]     = s.x;
+      const frac = Math.max(0, Math.min(1, s.life / s.maxLife));
+      sparkAlpha[i] = Math.sin(Math.PI * frac) * 0.9;
+      sparkSize[i]  = s.size;
+      sparkPos[i * 3]     = s.baseX + Math.sin(t * s.wanderFreq + s.seed) * wander * (1 - frac * 0.5);
       sparkPos[i * 3 + 1] = s.y;
       sparkPos[i * 3 + 2] = 0;
     }
     sparkGeo.attributes.position.needsUpdate = true;
+    sparkGeo.attributes.aSize.needsUpdate = true;
+    sparkGeo.attributes.aAlpha.needsUpdate = true;
   }
 
   return {

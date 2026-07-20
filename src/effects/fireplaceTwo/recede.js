@@ -76,14 +76,32 @@ export function createRecede({
   const gradDark   = hexToRgb(COLORS.logo.gradientDark);
   const gradBright = hexToRgb(COLORS.logo.gradientBright);
 
-  // Rim lines: one per silhouette loop so both the outer A outline and
-  // the star cutout glow. Overbright color → crosses the bloom threshold.
+  // Rim lines: one per silhouette loop. The OUTER A outline runs at full
+  // intensity; the star-cutout loops get their own dimmer material
+  // (rim.innerRimScale) so the center never overpowers the corridor.
   const rimCfg = c0.rim || {};
-  const rimColor = new THREE.Color(rimCfg.color || '#FFD070')
-    .multiplyScalar(rimCfg.intensity ?? 2.2);
+  const rimBaseColor = new THREE.Color(rimCfg.color || '#FFD070');
+  const rimIntensity = rimCfg.intensity ?? 4.5;
+  const innerScale   = rimCfg.innerRimScale ?? 0.35;
   const rimGeos = silhouettePolygons.map(loop =>
     new THREE.BufferGeometry().setFromPoints(
       loop.map(p => new THREE.Vector3(p.x, p.y, 0.02))));
+
+  // Autonomous evolution: the rim color wanders across a palette on two
+  // incommensurate sine clocks (never visibly repeats), and conveyor
+  // speed / twist breathe the same way. All knobs under ANIM.recede.evolve.
+  const evolveColors = (c0.evolve?.palettes || []).map(h => new THREE.Color(h));
+  const evoScratch = new THREE.Color();
+  function evolvedColor(t, c) {
+    const ev = c.evolve || {};
+    if (ev.enabled === false || evolveColors.length < 2) return null;
+    const P = ev.colorPeriod ?? 150;
+    const w = 0.5 + 0.5 * (0.62 * Math.sin(t * (2 * Math.PI / P))
+                         + 0.38 * Math.sin(t * (2 * Math.PI / (P * 0.37)) + 1.7));
+    const pos = Math.min(0.9999, Math.max(0, w)) * (evolveColors.length - 1);
+    const i = Math.floor(pos);
+    return evoScratch.copy(evolveColors[i]).lerp(evolveColors[i + 1], pos - i);
+  }
 
   const copies = [];
   for (let k = 0; k < N; k++) {
@@ -110,16 +128,19 @@ export function createRecede({
     const mesh = new THREE.Mesh(sharedGeometry, mat);
     group.add(mesh);
 
-    const rimMat = new THREE.LineBasicMaterial({
-      color: rimColor.clone(),
-      transparent: true,
-      opacity: 1,
-      depthWrite: false,
+    const rimMatOuter = new THREE.LineBasicMaterial({
+      color: rimBaseColor.clone().multiplyScalar(rimIntensity),
+      transparent: true, opacity: 1, depthWrite: false,
     });
-    const rims = rimGeos.map(g => new THREE.LineLoop(g, rimMat));
+    const rimMatInner = new THREE.LineBasicMaterial({
+      color: rimBaseColor.clone().multiplyScalar(rimIntensity * innerScale),
+      transparent: true, opacity: 1, depthWrite: false,
+    });
+    const rims = rimGeos.map((g, li) =>
+      new THREE.LineLoop(g, li === 0 ? rimMatOuter : rimMatInner));
     rims.forEach(r => mesh.add(r));
 
-    copies.push({ mesh, mat, rimMat, offset: k * zStep });
+    copies.push({ mesh, mat, rimMatOuter, rimMatInner, offset: k * zStep });
   }
 
   // Conveyor phase — copies move toward the viewer (depth decreases).
@@ -144,7 +165,9 @@ export function createRecede({
       c.mesh.rotation.z = 0;
       c.mat.opacity = opacityHead + (opacityTail - opacityHead) * u;
       c.mesh.renderOrder = -0.3 - 0.1 * (N - 1 - k);
-      c.rimMat.opacity = (cfg().rim?.enabled === false) ? 0 : c.mat.opacity;
+      const rimO = (cfg().rim?.enabled === false) ? 0 : c.mat.opacity;
+      c.rimMatOuter.opacity = rimO;
+      c.rimMatInner.opacity = rimO;
       for (const r of c.mesh.children) r.renderOrder = c.mesh.renderOrder + 0.005;
     }
   }
@@ -157,15 +180,31 @@ export function createRecede({
     const rush = c.rush || {};
     const rushing = t < rushUntil;
     rushEnv += ((rushing ? 1 : 0) - rushEnv) * (1 - Math.exp(-dt / (rushing ? 0.4 : 1.2)));
-    const speed = (c.conveyor.speed ?? 0.35) * (1 + rushEnv * ((rush.speedMul ?? 6) - 1));
+    // Evolution wander — conveyor speed and twist breathe on slow
+    // incommensurate sines so the corridor's motion never feels looped.
+    const ev = c.evolve || {};
+    const wanderOn = ev.enabled !== false;
+    const speedWobble = wanderOn
+      ? 1 + (ev.speedWander ?? 0) * 0.5 * (Math.sin(t * 0.041) + Math.sin(t * 0.013 + 2.3))
+      : 1;
+    const speed = (c.conveyor.speed ?? 0.35) * speedWobble
+                * (1 + rushEnv * ((rush.speedMul ?? 6) - 1));
     phase = (phase + speed * dt) % maxD;
 
-    const twist  = THREE.MathUtils.degToRad(c.twistDeg ?? 4);
+    const twistExtra = wanderOn
+      ? THREE.MathUtils.degToRad(ev.twistWander ?? 0)
+        * 0.5 * (Math.sin(t * 0.029 + 0.7) + Math.sin(t * 0.0093))
+      : 0;
+    const twist  = THREE.MathUtils.degToRad(c.twistDeg ?? 4) + twistExtra;
     const wob    = c.wobble || {};
     const wobble = THREE.MathUtils.degToRad(wob.ampDeg ?? 3)
                  * Math.sin(t * (2 * Math.PI / (wob.period ?? 16)));
     const brightMul = 1 + rushEnv * ((rush.brightMul ?? 1.8) - 1);
     const rimOn = c.rim?.enabled !== false;
+    // Palette wander (null = static config color).
+    const evoCol = evolvedColor(t, c);
+    const liveIntensity = c.rim?.intensity ?? rimIntensity;
+    const liveInner = c.rim?.innerRimScale ?? innerScale;
     // Conveyor mode runs FULL-SIZE — the logo body goes black in portal
     // mode (main.js) so nothing occludes the corridor; the head copy
     // nearly fills the gate frame and the whole recession reads as an
@@ -192,7 +231,13 @@ export function createRecede({
       cp.mat.opacity = (convHead + (convTail - convHead) * u) * env;
       // Rims fade with depth too — nearest outline brightest, vanishing
       // point dimmest — and swell during a rush.
-      cp.rimMat.opacity = rimOn ? Math.min(1, env * (1 - u * 0.75) * brightMul) : 0;
+      const rimO = rimOn ? Math.min(1, env * (1 - u * 0.75) * brightMul) : 0;
+      cp.rimMatOuter.opacity = rimO;
+      cp.rimMatInner.opacity = rimO;
+      if (evoCol) {
+        cp.rimMatOuter.color.copy(evoCol).multiplyScalar(liveIntensity);
+        cp.rimMatInner.color.copy(evoCol).multiplyScalar(liveIntensity * liveInner);
+      }
       // Deeper draws first (more negative) within the (-1, 0) band; each
       // copy's rim draws immediately after its own fill so outlines
       // interleave with the haze layers instead of all stacking on top.

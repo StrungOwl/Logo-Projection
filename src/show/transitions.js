@@ -92,9 +92,21 @@ export function createTransitionManager({ renderer }) {
   function requestMode(mode, style) {
     if (mode === ANIM.viewMode && st.phase === 'idle') return;
     const s = style || ANIM.transitions?.defaultStyle || 'dip';
-    if (s === 'cut' || st.phase !== 'idle') {
-      // Mid-transition re-requests just retarget the flip.
-      if (st.phase !== 'idle') { st.target = mode; return; }
+    // Mid-transition re-requests: during fade-OUT just retarget the
+    // pending flip; during fade-IN reverse back out toward the new mode
+    // from the current envelope level (dropping the request here was the
+    // "I have to press the key a couple times" bug).
+    if (st.phase === 'out') { st.target = mode; return; }
+    if (st.phase === 'in') {
+      st.target = mode;
+      st.phase = 'out';
+      // env == p during fade-in; fade-out computes env = 1 - p, so
+      // continuing from the same brightness means p_out = 1 - p_in.
+      st.p = 1 - st.p;
+      if (st.style === 'wipe' && wipe) wipe.mesh.visible = true;
+      return;
+    }
+    if (s === 'cut') {
       ANIM.viewMode = mode;
       st.lastApplied = mode;
       return;

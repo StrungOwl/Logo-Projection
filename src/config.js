@@ -42,12 +42,20 @@ export const ANIM = {
   // layer on its own clock; the base scene (logo, gate frame, particles,
   // lights) stays on underneath.
   //   0 → 'visualSequence'  (Visual Sequence)
-  //   1 → 'fractalPattern'  (Fractal Pattern)
-  //   2 → 'hexagons'        (Hexagons)
-  //   3 → 'flowers'         (Flowers)
-  //   4 → 'fireplaceOne'    (Fireplace One — cascading bricks + flame)
-  //   5 → 'fireplaceTwo'    (Fireplace Two — nested receding logo silhouettes + flame)
-  viewMode: 'flameOnly',
+  //   1 → 'moltenGold'      (Molten Gold — liquid fill cycle)
+  //   2 → 'fractalPattern'  (Fractal Pattern)
+  //   3 → 'hexagons'        (Hexagons)
+  //   4 → 'flowers'         (Flowers)
+  //   5 → 'fireplaceOne'    (Fireplace — bricks + flame + corona)
+  //   6 → 'fireplaceTwo'    (Depth Portal — infinite outline corridor)
+  //   7 → 'flameOnly'       (Constellations)
+  //   9 → 'calibration'
+  viewMode: 'visualSequence',
+
+  // Wide hearth flame in the constellation mode — retired by user request
+  // (the fire beams fought the star figures). Flip to true to bring the
+  // old mode-6 hearth look back.
+  hearthFlame: { enabled: false },
 
   keyLight:          { intensityMin: 0.0,  intensityMax: 4.6,
                        colorAtMin: '#FF1400', colorAtMax: '#FFCC2E' },
@@ -2557,14 +2565,30 @@ export const ANIM = {
     // Conveyor corridor runs full-size (fraction of the true silhouette);
     // the body goes black + the flame yields in portal mode so nothing
     // occludes it. flameEnabled:true restores the old flame-in-cutout.
-    headScale: 0.86,
+    headScale: 1.0,
     flameEnabled: false,
     twistDeg: 4,
     wobble: { ampDeg: 3, period: 16 },
     // Corridor fills are translucent depth-haze; rims carry the shape.
+    // innerRimScale dims the star-cutout outlines relative to the outer
+    // A outline (user: "make the inner star less bright").
     opacity: { head: 0.45, tail: 0.12 },
-    rim: { enabled: true, color: '#FFD070', intensity: 4.5 },
+    rim: { enabled: true, color: '#FFD070', intensity: 4.5, innerRimScale: 0.35 },
     rush: { duration: 4, speedMul: 6, brightMul: 1.8 },
+    // Slow autonomous evolution — the corridor drifts between color
+    // moods and its motion breathes, on layered incommensurate sine
+    // clocks so the combination never visibly repeats.
+    //   palettes    — rim color moods it wanders between
+    //   colorPeriod — seconds for one full palette wander
+    //   speedWander — ±fraction of conveyor speed
+    //   twistWander — ±degrees added to twistDeg
+    evolve: {
+      enabled: true,
+      palettes: ['#FFD070', '#FF9440', '#FFF3D8', '#E8C4FF'],
+      colorPeriod: 150,
+      speedWander: 0.45,
+      twistWander: 5,
+    },
   },
 
   // -----------------------------------------------------------------------
@@ -2597,13 +2621,22 @@ export const ANIM = {
   // emitter; the body below stays under threshold.
   // -----------------------------------------------------------------------
   molten: {
-    idle: { min: 0.35, max: 0.75, period: 40 },
+    // Default behavior is a full autonomous cycle: rise to the very top,
+    // hold there a beat, drain away to reveal the starry sky, rest, and
+    // repeat — all sin-eased. Manual triggers (molten.fill/drain/
+    // setLevel) interrupt the cycle; it resumes after.
+    cycle: { enabled: true, rise: 20, holdTop: 6, drain: 12, holdBottom: 9 },
+    fillTop: 1.0,
+    drainTo: 0.02,
+    idle: { min: 0.35, max: 0.75, period: 40 },   // used when cycle.enabled=false
     fillDuration: 12,
     drainDuration: 8,
-    drainTo: 0.06,
     waveAmp: 0.45,
     meniscusBoost: 3.0,
     surge: { duration: 4 },
+    // Meniscus spark emitter — tiny, organic: per-particle size/alpha,
+    // lifetimes and horizontal wander are all individually randomized.
+    sparks: { count: 90, size: 0.055, sizeJitter: 0.6, wander: 0.35, rate: 1.0 },
   },
 };
 

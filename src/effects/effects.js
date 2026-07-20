@@ -288,7 +288,7 @@ export function addEffects(logoMesh, meta, renderer) {
   // parents straight onto the logo mesh with no centroid offset (same
   // convention as the calibration patterns). Gated in src/main.js.
   // ---------------------------------------------------------------------
-  const molten = createMolten({ logoMesh, meta });
+  const molten = createMolten({ logoMesh, meta, renderer });
   molten.group.visible = false;
   logoMesh.add(molten.group);
 
