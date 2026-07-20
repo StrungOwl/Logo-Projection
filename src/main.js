@@ -439,9 +439,10 @@ export function tick(t, dt) {
   // drop the procedural frame so only the brick layers read. Recede mode
   // keeps the gate frame visible — it caps the receding silhouette nicely.
   if (ctx.gateFrameGroup) {
-    // Portal mode drops the frame entirely — the corridor's own receding
-    // outlines ARE the structure, and the static gilded ring fought them.
-    ctx.gateFrameGroup.visible = !portalActive
+    // Portal and molten modes drop the frame entirely — the corridor's
+    // receding outlines / the liquid surface ARE the structure there,
+    // and the static gilded ring fought them.
+    ctx.gateFrameGroup.visible = !portalActive && !showMolten
       && !(showFireplace && ANIM.arch && ANIM.arch.hideGateFrame);
   }
   // Three.js checks light.visible directly when collecting scene lights —

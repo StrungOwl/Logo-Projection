@@ -2712,18 +2712,18 @@ export const ANIM = {
   },
 
   // -----------------------------------------------------------------------
-  // MOLTEN GOLD (mode 7, key 7) — liquid-gold fill inside the silhouette.
-  // Idle: fill breathes between idle.min/max. Triggers: molten.fill /
-  // molten.drain / molten.surge / molten.setLevel {level, duration}.
-  // meniscusBoost is overbright (×3) — the surface band is the bloom
-  // emitter; the body below stays under threshold.
+  // MOLTEN GOLD (key 1) — liquid-gold fill inside the silhouette.
+  // Triggers: molten.fill / molten.drain / molten.surge /
+  // molten.setLevel {level, duration}. meniscusBoost is overbright (×3)
+  // — the surface band is the bloom emitter; the body stays under
+  // threshold.
   // -----------------------------------------------------------------------
   molten: {
-    // Default behavior is a full autonomous cycle: rise to the very top,
-    // hold there a beat, drain away to reveal the starry sky, rest, and
-    // repeat — all sin-eased. Manual triggers (molten.fill/drain/
-    // setLevel) interrupt the cycle; it resumes after.
-    cycle: { enabled: true, rise: 20, holdTop: 6, drain: 12, holdBottom: 9 },
+    // Autonomous cycle, ENTERING AT THE TOP: every visit opens as the
+    // fully golden logo, holds, then the surface particlizes downward
+    // to reveal the starry sky, rests, refills. All sin-eased. Manual
+    // triggers interrupt; the cycle re-seats itself after.
+    cycle: { enabled: true, rise: 20, holdTop: 7, drain: 15, holdBottom: 9 },
     fillTop: 1.0,
     drainTo: 0.02,
     idle: { min: 0.35, max: 0.75, period: 40 },   // used when cycle.enabled=false
@@ -2734,7 +2734,9 @@ export const ANIM = {
     surge: { duration: 4 },
     // Meniscus spark emitter — tiny, organic: per-particle size/alpha,
     // lifetimes and horizontal wander are all individually randomized.
-    sparks: { count: 90, size: 0.055, sizeJitter: 0.6, wander: 0.35, rate: 1.0 },
+    // drainBurst multiplies emission while the surface descends — the
+    // "particlize" dissolve that reveals the sky.
+    sparks: { count: 90, size: 0.055, sizeJitter: 0.6, wander: 0.35, rate: 1.0, drainBurst: 2.5 },
   },
 };
 

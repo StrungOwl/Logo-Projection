@@ -229,18 +229,22 @@ export function createMolten({ logoMesh, meta, renderer }) {
   // hold there a beat → drain away to reveal the starry sky → rest →
   // repeat, sin-eased throughout. Manual triggers switch to 'anim' and
   // the cycle re-seats itself at the matching phase afterward.
+  // The cycle ENTERS at the top: the piece opens as the fully golden
+  // logo, holds, then the surface particlizes downward to reveal the
+  // starry sky. Re-entering the mode resets here too (wasVisible edge).
   const st = {
-    fill: 0.1,
+    fill: 1.0,
     mode: 'idle',        // 'idle' (cycle or breathing) | 'anim'
-    animFrom: 0.1,
-    animTo: 0.1,
+    animFrom: 1.0,
+    animTo: 1.0,
     animT: 0,
     animDur: 1,
-    cyclePhase: 'rise',  // 'rise' | 'holdTop' | 'drain' | 'holdBottom'
+    cyclePhase: 'holdTop',  // 'rise' | 'holdTop' | 'drain' | 'holdBottom'
     cycleT: 0,
     idleCenter: 0.45,
     idlePhase: 0,
     surgeUntil: -1,
+    wasVisible: false,
   };
 
   function animTo(target, dur) {
@@ -261,6 +265,14 @@ export function createMolten({ logoMesh, meta, renderer }) {
   function update(t, dt) {
     st.now = t;
     const c = cfg();
+    // Mode-entry reset: every visit opens on the full gold logo.
+    if (group.visible && !st.wasVisible) {
+      st.mode = 'idle';
+      st.cyclePhase = 'holdTop';
+      st.cycleT = 0;
+      st.fill = c.fillTop ?? 1.0;
+    }
+    st.wasVisible = group.visible;
     uniforms.uTime.value = t;
     uniforms.uWaveAmp.value = c.waveAmp ?? 0.45;
     uniforms.uMeniscusBoost.value = c.meniscusBoost ?? 3.0;
@@ -336,8 +348,12 @@ export function createMolten({ logoMesh, meta, renderer }) {
     }
     const sc = sparkCfg();
     const surfaceLevel = minY + (maxY - minY) * st.fill;
-    const rate = (sc.rate ?? 1) * (surging ? 3 : 1);
-    const wander = sc.wander ?? 0.35;
+    // "Particlize": while the surface descends, the emitter runs hot so
+    // the gold visibly dissolves into embers as it recedes.
+    const draining = (st.mode === 'idle' && st.cyclePhase === 'drain')
+                  || (st.mode === 'anim' && st.animTo < st.animFrom - 0.05);
+    const rate = (sc.rate ?? 1) * (surging ? 3 : 1) * (draining ? (sc.drainBurst ?? 2.5) : 1);
+    const wander = (sc.wander ?? 0.35) * (draining ? 1.5 : 1);
     for (let i = 0; i < SPARKS; i++) {
       const s = sparkState[i];
       s.life -= dt * rate;
