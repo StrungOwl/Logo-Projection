@@ -672,7 +672,7 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
   let morphGroup     = null;
   let brickHexWall      = null;        // outer parent group toggled by main.js
   let brickHexCanonical = null;        // instanced wall record for canonical
-  let brickHexPool      = [];          // [{ wall, rec, radius, trigger }, ...]
+  let brickHexMorph     = null;        // hex-mode size/shape-morph wall record
   const ghosts = [];
 
   if (brickEnabled && silhouette && silhouette[0] && silhouette[0].length >= 3) {
@@ -725,24 +725,18 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
     const speedJitter   = brickCfg.flipSpeedJitter ?? 0.55;   // ±fraction
     const stepJitterRaw = brickCfg.flipStepJitter  ?? 18;     // ± steps
 
-    // Hex-wall pool — one canonical wall at `largeRadiusFactor` (used
-    // by the brick↔rose ghost morph in 'all' mode) plus N additional
-    // walls at random radii spanning [minRadiusFactor, maxRadiusFactor].
-    // In hex mode the size-switch state machine picks a random pool
-    // wall as the target on every transition, so each swap reveals a
-    // new size rather than alternating between two fixed sizes.
+    // Two walls are built:
+    //   * CANONICAL wall at `largeRadiusFactor` — used by the brick↔rose
+    //     ghost morph in 'all'/'flowers' modes (ghost slot positions
+    //     depend on it, so it stays exactly as it always was).
+    //   * MORPH wall at `gridRadiusFactor` — the only wall solo hex mode
+    //     renders. One fixed grid whose tiles size-morph and shape-morph
+    //     in place; per-tile radius is clamped to the grid pitch so
+    //     tiles can never overlap (replaces the old 8-wall crossfade
+    //     pool, which drew two different-size honeycombs at once).
     const largeFactor = brickCfg.largeRadiusFactor ?? 0.25;
-    const smallFactor = brickCfg.smallRadiusFactor ?? (0.25 / 3);
     const largeHexR = brickCfg.hexRadius ?? starSize * largeFactor;
-    const smallHexR = starSize * smallFactor;
-    // Random-size pool config — defaults bracket the legacy [small, large]
-    // range with a little headroom on both ends.
-    const sizePoolCfg = brickCfg.sizePool || {};
-    const minFactor   = sizePoolCfg.minRadiusFactor ?? 0.06;
-    const maxFactor   = sizePoolCfg.maxRadiusFactor ?? 0.30;
-    const poolCount   = Math.max(2, Math.floor(sizePoolCfg.count ?? 8));
-    const triggerMin  = sizePoolCfg.triggerMin ?? 0.04;
-    const triggerMax  = sizePoolCfg.triggerMax ?? 0.20;
+    const gridHexR  = starSize * (brickCfg.gridRadiusFactor ?? 0.16);
 
     morphGroup = new THREE.Group();
     morphGroup.name = 'overlay-morph';
@@ -771,6 +765,53 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
     const backCfg      = brickCfg.backFace || {};
     const backEnabled  = backCfg.enabled !== false;
     const altZOff      = backCfg.zOffset ?? 0.02;
+
+    // Per-tile flipStep — sorted along an Archimedean spiral so the
+    // domino wave starts at the outer ring of tiles, winds around the
+    // logo, and converges inward toward the fade center. For each
+    // tile we compute an "alpha along the spiral arm" by finding the
+    // arm's expected angle at the tile's radius (alphaTarget) and
+    // wrapping the tile's actual atan2 angle to the nearest revolution
+    // of that target. Sorting by that scalar gives a clean spiral.
+    // Per-hex jitter is still applied afterward so the wave-front
+    // reads ragged rather than mathematically perfect. Shared by the
+    // canonical wall and the morph wall.
+    function computeSpiralFlipSteps(homeX, homeY, n) {
+      const spiralTurns = Math.max(0.1, brickCfg.spiralTurns ?? 2);
+      const _twoPi = Math.PI * 2;
+      const spiralRange = spiralTurns * _twoPi;
+      let _wallMaxR = 0;
+      for (let i = 0; i < n; i++) {
+        const r = Math.hypot(homeX[i] - fadeCX, homeY[i] - fadeCY);
+        if (r > _wallMaxR) _wallMaxR = r;
+      }
+      if (_wallMaxR < 1e-6) _wallMaxR = 1;
+      const spiralPhase = new Float32Array(n);
+      for (let i = 0; i < n; i++) {
+        const dx = homeX[i] - fadeCX;
+        const dy = homeY[i] - fadeCY;
+        const r = Math.hypot(dx, dy);
+        const uR = r / _wallMaxR;            // 0 at center, 1 at outer
+        // Outermost tile → alphaTarget = 0 (fires first); center → spiralRange.
+        const alphaTarget = spiralRange * (1 - uR);
+        let alpha = Math.atan2(dy, dx);
+        // Bring alpha into [alphaTarget - π, alphaTarget + π] so tiles
+        // at the same angle on different rings get sequential alphas
+        // along the spiral arm rather than colliding modulo 2π.
+        alpha += _twoPi * Math.round((alphaTarget - alpha) / _twoPi);
+        spiralPhase[i] = alpha;
+      }
+      const order = Array.from({ length: n }, (_, i) => i)
+        .sort((a, b) => spiralPhase[a] - spiralPhase[b]);
+      const stepJitter = Math.max(0, stepJitterRaw);
+      const maxStepIdx = Math.max(0, n - 1);
+      const flipStep = new Float32Array(n);
+      for (let i = 0; i < order.length; i++) {
+        const jittered = i + (Math.random() - 0.5) * 2 * stepJitter;
+        flipStep[order[i]] = Math.max(0, Math.min(maxStepIdx, jittered));
+      }
+      return flipStep;
+    }
 
     // Builder: produce one self-contained hex wall set as TWO InstancedMeshes
     // (front prisms + back discs) instead of hundreds of individual meshes.
@@ -897,48 +938,8 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
         }
       }
 
-      // Per-tile flipStep — sorted along an Archimedean spiral so the
-      // domino wave starts at the outer ring of tiles, winds around the
-      // logo, and converges inward toward the fade center. For each
-      // tile we compute an "alpha along the spiral arm" by finding the
-      // arm's expected angle at the tile's radius (alphaTarget) and
-      // wrapping the tile's actual atan2 angle to the nearest revolution
-      // of that target. Sorting by that scalar gives a clean spiral.
-      // Per-hex jitter is still applied afterward so the wave-front
-      // reads ragged rather than mathematically perfect.
-      const spiralTurns = Math.max(0.1, brickCfg.spiralTurns ?? 2);
-      const _twoPi = Math.PI * 2;
-      const spiralRange = spiralTurns * _twoPi;
-      let _wallMaxR = 0;
-      for (let i = 0; i < n; i++) {
-        const r = Math.hypot(homeX[i] - fadeCX, homeY[i] - fadeCY);
-        if (r > _wallMaxR) _wallMaxR = r;
-      }
-      if (_wallMaxR < 1e-6) _wallMaxR = 1;
-      const spiralPhase = new Float32Array(n);
-      for (let i = 0; i < n; i++) {
-        const dx = homeX[i] - fadeCX;
-        const dy = homeY[i] - fadeCY;
-        const r = Math.hypot(dx, dy);
-        const uR = r / _wallMaxR;            // 0 at center, 1 at outer
-        // Outermost tile → alphaTarget = 0 (fires first); center → spiralRange.
-        const alphaTarget = spiralRange * (1 - uR);
-        let alpha = Math.atan2(dy, dx);
-        // Bring alpha into [alphaTarget - π, alphaTarget + π] so tiles
-        // at the same angle on different rings get sequential alphas
-        // along the spiral arm rather than colliding modulo 2π.
-        alpha += _twoPi * Math.round((alphaTarget - alpha) / _twoPi);
-        spiralPhase[i] = alpha;
-      }
-      const order = Array.from({ length: n }, (_, i) => i)
-        .sort((a, b) => spiralPhase[a] - spiralPhase[b]);
-      const stepJitter = Math.max(0, stepJitterRaw);
-      const maxStepIdx = Math.max(0, n - 1);
-      const flipStep = new Float32Array(n);
-      for (let i = 0; i < order.length; i++) {
-        const jittered = i + (Math.random() - 0.5) * 2 * stepJitter;
-        flipStep[order[i]] = Math.max(0, Math.min(maxStepIdx, jittered));
-      }
+      // Per-tile flipStep — spiral firing order (see helper above).
+      const flipStep = computeSpiralFlipSteps(homeX, homeY, n);
 
       // Per-tile drift vector for the brick→rose transit. Drift base
       // scales with this wall's hex radius so smaller hexes drift
@@ -966,47 +967,174 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
                driftX, driftY, driftDist };
     }
 
+    // ---- Morph wall builder (solo hex mode) --------------------------
+    // ONE wall, FOUR shape slots. Each tile owns one grid cell and is
+    // rendered by exactly one of the four InstancedMeshes (hexagon /
+    // triangle / square / circle-ish); the other three hold a zeroed
+    // matrix at that index. Size evolution + shape morphing recompose
+    // the matrices every visible frame. Non-hex shapes are built at
+    // 0.86 × the grid radius (≈ the hex cell's inradius) so even two
+    // adjacent tiles at full size can only kiss, never overlap.
+    function buildMorphWall(hexR_) {
+      const slots_ = buildHexSlots(inner, hexR_);
+      const n = slots_.length;
+      const hexDepth_ = hexDepth * (hexR_ / largeHexR);
+      const altR = hexR_ * 0.86;
+      const shapeDefs = [
+        { sides: 6,  radius: hexR_, rz: Math.PI / 6 },  // 0 — hexagon
+        { sides: 3,  radius: altR,  rz: Math.PI / 6 },  // 1 — triangle
+        { sides: 4,  radius: altR,  rz: Math.PI / 4 },  // 2 — square
+        { sides: 24, radius: altR,  rz: 0 },            // 3 — circle-ish
+      ];
+
+      const wall_ = new THREE.Group();
+      wall_.visible = false;
+      hexWall.add(wall_);
+
+      // One shared front material + one shared back material across all
+      // four shape meshes — wall-wide colour/opacity writes stay O(1).
+      const fMat = starMats[0].clone();
+      fMat.color = hexColor.clone();
+      fMat.emissive = hexColor.clone();
+      fMat.emissiveIntensity = 0;
+      fMat.transparent = true;
+      fMat.onBeforeCompile = patchInstancedHexAlpha;
+
+      let bMat = null;
+      const backOff = hexDepth_ * 0.5 + altZOff;
+      if (backEnabled) {
+        const backMatOpts = {
+          color:       hexColor.clone(),
+          transparent: true,
+          opacity:     1.0,
+          depthWrite:  false,
+          toneMapped:  false,
+          side:        THREE.DoubleSide,
+        };
+        if (maskClip) {
+          backMatOpts.stencilWrite = true;
+          backMatOpts.stencilRef   = 1;
+          backMatOpts.stencilFunc  = THREE.EqualStencilFunc;
+          backMatOpts.stencilFail  = THREE.KeepStencilOp;
+          backMatOpts.stencilZFail = THREE.KeepStencilOp;
+          backMatOpts.stencilZPass = THREE.KeepStencilOp;
+        }
+        bMat = new THREE.MeshBasicMaterial(backMatOpts);
+        bMat.onBeforeCompile = patchInstancedHexAlpha;
+      }
+
+      const shapes = [];
+      for (const def of shapeDefs) {
+        const geo = new THREE.CylinderGeometry(
+          def.radius, def.radius, hexDepth_, def.sides, 1);
+        geo.rotateX(Math.PI / 2);
+        if (def.rz) geo.rotateZ(def.rz);
+        const alphaAttr = new THREE.InstancedBufferAttribute(
+          new Float32Array(n).fill(1), 1);
+        alphaAttr.setUsage(THREE.DynamicDrawUsage);
+        geo.setAttribute('aHexAlpha', alphaAttr);
+        const front = new THREE.InstancedMesh(geo, fMat, n);
+        front.frustumCulled = false;
+        front.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        front.instanceMatrix.array.fill(0);   // nothing drawn until composed
+        front.instanceColor = new THREE.InstancedBufferAttribute(
+          new Float32Array(n * 3).fill(1), 3);
+        front.instanceColor.setUsage(THREE.DynamicDrawUsage);
+        front.position.z = wallZ;
+        wall_.add(front);
+
+        let back = null, backAlphaAttr = null;
+        if (bMat) {
+          const shp = new THREE.Shape();
+          for (let k = 0; k < def.sides; k++) {
+            const a = def.rz + (k / def.sides) * Math.PI * 2;
+            const x = Math.cos(a) * def.radius, y = Math.sin(a) * def.radius;
+            if (k === 0) shp.moveTo(x, y); else shp.lineTo(x, y);
+          }
+          shp.closePath();
+          const bGeo = new THREE.ShapeGeometry(shp);
+          backAlphaAttr = new THREE.InstancedBufferAttribute(new Float32Array(n), 1);
+          backAlphaAttr.setUsage(THREE.DynamicDrawUsage);
+          bGeo.setAttribute('aHexAlpha', backAlphaAttr);
+          back = new THREE.InstancedMesh(bGeo, bMat, n);
+          back.frustumCulled = false;
+          back.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+          back.instanceMatrix.array.fill(0);
+          back.renderOrder = 7;
+          back.position.z = wallZ;
+          wall_.add(back);
+        }
+        shapes.push({ front, back, alphaAttr, backAlphaAttr });
+      }
+
+      // Per-tile data. evoSeed/evoFactor/flipSpeed mirror the canonical
+      // wall; sizeSeed/sizeFreq drive the per-tile size wander.
+      const homeX     = new Float32Array(n);
+      const homeY     = new Float32Array(n);
+      const evoSeed   = new Float32Array(n);
+      const evoFactor = new Float32Array(n);
+      const flipSpeed = new Float32Array(n);
+      const sizeSeed  = new Float32Array(n);
+      const sizeFreq  = new Float32Array(n);
+      for (let i = 0; i < n; i++) {
+        homeX[i] = slots_[i].x;
+        homeY[i] = slots_[i].y;
+        evoSeed[i]   = Math.random() * Math.PI * 2;
+        evoFactor[i] = 1 + (Math.random() - 0.5) * 0.8;
+        flipSpeed[i] = 1 + (Math.random() - 0.5) * 2 * speedJitter;
+        sizeSeed[i]  = Math.random() * Math.PI * 2;
+        sizeFreq[i]  = 0.6 + Math.random() * 0.8;
+      }
+
+      const flipStep = computeSpiralFlipSteps(homeX, homeY, n);
+
+      // Per-tile drift vector for the entry/exit glide (same shape as
+      // the canonical wall's).
+      const driftDistBase = brickCfg.hexDriftDist   ?? hexR_ * 4.0;
+      const driftJitter   = brickCfg.hexDriftJitter ?? 0.5;
+      const driftX    = new Float32Array(n);
+      const driftY    = new Float32Array(n);
+      const driftDist = new Float32Array(n);
+      for (let i = 0; i < n; i++) {
+        const sx = homeX[i] - cx;
+        const sy = homeY[i] - cy;
+        const len = Math.hypot(sx, sy) || 1;
+        const baseX = sx / len, baseY = sy / len;
+        const ja = (Math.random() - 0.5) * driftJitter * 2;
+        const ca = Math.cos(ja), sa = Math.sin(ja);
+        driftX[i] = baseX * ca - baseY * sa;
+        driftY[i] = baseX * sa + baseY * ca;
+        driftDist[i] = driftDistBase * (0.7 + Math.random() * 0.6);
+      }
+
+      // Shape-morph state. shapeIdx = settled shape (0..3); while a
+      // morph is in flight morphFrom/morphTo/morphStart describe the
+      // shrink→regrow; lastShape tracks which mesh's buffer holds the
+      // tile's live matrix so it can be zeroed on hand-off.
+      const shapeIdx   = new Uint8Array(n);       // all start as hexagons
+      const lastShape  = new Uint8Array(n);
+      const morphFrom  = new Uint8Array(n);
+      const morphTo    = new Uint8Array(n);
+      const morphStart = new Float32Array(n).fill(-1);
+
+      return { wall: wall_, shapes, frontMat: fMat, backMat: bMat, backOff,
+               count: n, gridR: hexR_,
+               trigger: brickCfg.gridDominoTrigger ?? 0.10,
+               homeX, homeY, evoSeed, evoFactor, flipSpeed, flipStep,
+               driftX, driftY, driftDist,
+               sizeSeed, sizeFreq,
+               shapeIdx, lastShape, morphFrom, morphTo, morphStart };
+    }
+
     // Canonical wall (used by the brick↔rose ghost pairing in 'all'
     // mode). Built first at the legacy `largeRadiusFactor` so the
     // existing ghost slot positions are unchanged.
     const canonicalRes = buildOneHexWall(largeHexR);
     canonicalRes.wall.name = 'brick-hex-wall-canonical';
 
-    // Random-size pool — N additional walls at varied radii. Each pool
-    // wall gets its own trigger interpolated from `triggerMin..triggerMax`
-    // based on where its radius falls in [minRadiusFactor..maxRadiusFactor].
-    // Radii are evenly spaced across the range then jittered so they
-    // never land at the exact same value across builds.
-    const poolWalls = [];
-    const radRange  = Math.max(0, maxFactor - minFactor);
-    const triggerForR = (R) => {
-      const u = radRange > 1e-6
-        ? Math.max(0, Math.min(1, (R / starSize - minFactor) / radRange))
-        : 0;
-      return triggerMin + (triggerMax - triggerMin) * u;
-    };
-    for (let i = 0; i < poolCount; i++) {
-      // Even spacing + per-slot jitter inside its own bucket so adjacent
-      // walls don't all sit exactly at the bucket boundaries.
-      const bucket = radRange / poolCount;
-      const u0 = minFactor + bucket * i;
-      const u1 = minFactor + bucket * (i + 1);
-      const f  = u0 + Math.random() * (u1 - u0);
-      const r  = starSize * f;
-      const res = buildOneHexWall(r);
-      res.wall.name = `brick-hex-pool-${i}`;
-      // Per-pool-wall Z offset so two pool walls visible during a
-      // cross-fade can never z-fight at the front face. The step is
-      // small enough to be invisible (well under hexDepth) but enough
-      // to give each wall a distinct depth slice in the z-buffer.
-      res.wall.position.z = i * 0.003;
-      poolWalls.push({
-        wall:     res.wall,
-        rec:      res,
-        radius:   r,
-        trigger:  triggerForR(r),
-      });
-    }
+    // Morph wall — the only wall solo hex mode renders.
+    const morphRes = buildMorphWall(gridHexR);
+    morphRes.wall.name = 'brick-hex-wall-morph';
 
     // Legacy ghost pairing slots come from the canonical wall.
     const slots = canonicalRes.slots;
@@ -1070,15 +1198,136 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
       });
     }
 
+    // ---- Five-pattern flower layouts (solo 'flowers' mode) -----------
+    // Per-ghost target parameters for the pattern cycle. All layouts
+    // are centred on the particle vanishing point and sized in maxR
+    // units; the stencil mask clips anything that pokes past the
+    // silhouette. Poses are evaluated per-frame (some layouts spin), so
+    // only compact parameters are stored here.
+    {
+      const fpB = cfg0.flowerPatterns || {};
+      const M = ghosts.length;
+
+      // Petal length per ghost (local +x extent of its geometry) —
+      // used to centre petals on their layout anchor and to auto-fit
+      // the hex-lattice mosaic tile size.
+      for (let i = 0; i < M; i++) {
+        const g = ghosts[i];
+        const geo = g.mesh.geometry;
+        if (!geo.boundingBox) geo.computeBoundingBox();
+        g.petalLen = Math.max(geo.boundingBox.max.x, 1e-3);
+        g.layoutZ  = wallZ + (i % 24) * 0.05;
+      }
+
+      // Shared shuffled index so consecutive petals (same rosette /
+      // cascade layer) scatter across each layout instead of clumping.
+      const perm = Array.from({ length: M }, (_, i) => i);
+      for (let i = M - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        const tmp = perm[i]; perm[i] = perm[j]; perm[j] = tmp;
+      }
+
+      // Phyllotaxis swirl — golden-angle spiral, r ∝ √index.
+      const phCfg = fpB.phyllotaxis || {};
+      const phR   = maxR * (phCfg.radiusFactor ?? 0.70);
+      const phSc  = phCfg.petalScale ?? 0.5;
+      const golden = Math.PI * (3 - Math.sqrt(5));
+
+      // Mandala — concentric rings, per-ring count ∝ radius.
+      const maCfg   = fpB.mandala || {};
+      const maRings = Math.max(2, Math.floor(maCfg.rings ?? 5));
+      const maR0    = maxR * (maCfg.innerFactor ?? 0.16);
+      const maR1    = maxR * (maCfg.outerFactor ?? 0.72);
+      const maSc    = maCfg.petalScale ?? 0.42;
+      const ringR = [];
+      let ringWeightSum = 0;
+      for (let k = 0; k < maRings; k++) {
+        const r = maR0 + (maR1 - maR0) * (k / (maRings - 1));
+        ringR.push(r);
+        ringWeightSum += r;
+      }
+      const ringCount = ringR.map(r =>
+        Math.max(1, Math.round(M * r / ringWeightSum)));
+      {
+        let sum = 0;
+        for (const c of ringCount) sum += c;
+        ringCount[maRings - 1] = Math.max(1, ringCount[maRings - 1] + (M - sum));
+      }
+
+      // Starburst — feathered fans radiating from the centre.
+      const sbCfg    = fpB.starburst || {};
+      const sbSpokes = Math.max(4, Math.floor(sbCfg.spokes ?? 18));
+      const sbR0     = maxR * (sbCfg.innerFactor ?? 0.10);
+      const sbR1     = maxR * (sbCfg.outerFactor ?? 0.78);
+      const sbSc     = sbCfg.petalScale ?? 0.55;
+      const sbPerSpoke = Math.ceil(M / sbSpokes);
+
+      // Hex-lattice mosaic — flat petals on a honeycomb grid. Pitch is
+      // auto-derived so the grid has ≈M slots inside the inset
+      // silhouette (hex cell area = (3√3/2)·R²).
+      const hxCfg = fpB.hexLattice || {};
+      let area = 0;
+      for (let i2 = 0, j2 = inner.length - 1; i2 < inner.length; j2 = i2++) {
+        area += (inner[j2].x + inner[i2].x) * (inner[j2].y - inner[i2].y);
+      }
+      area = Math.abs(area) * 0.5;
+      const latR = Math.max(Math.sqrt(area / (2.598 * Math.max(M, 1))), 0.3);
+      const latSlots = buildHexSlots(inner, latR);
+      const nLat = Math.max(1, latSlots.length);
+
+      let maRing = 0, maIdx = 0;   // walkers for the mandala ring fill
+      for (let q = 0; q < M; q++) {
+        const g = ghosts[perm[q]];
+
+        // Phyllotaxis: angle q·golden, radius ∝ √(q/M).
+        g.ph = { th: q * golden, r: phR * Math.sqrt((q + 0.5) / M), sc: phSc };
+
+        // Mandala: fill ring by ring; alternate rings point inward and
+        // are offset by half a step.
+        if (maIdx >= ringCount[maRing] && maRing < maRings - 1) {
+          maRing++; maIdx = 0;
+        }
+        {
+          const cnt = Math.max(1, ringCount[maRing]);
+          const ang = (maIdx / cnt) * Math.PI * 2
+                    + (maRing % 2 ? Math.PI / cnt : 0);
+          g.ma = { ring: maRing, r: ringR[maRing], ang,
+                   out: maRing % 2 === 0, sc: maSc };
+          maIdx++;
+        }
+
+        // Starburst: spoke index + feathered angular offset; petals
+        // shrink slightly toward the rim so tips stay legible.
+        {
+          const s2   = q % sbSpokes;
+          const j2   = Math.floor(q / sbSpokes);
+          const frac = (j2 + 0.5) / sbPerSpoke;
+          const ang  = (s2 / sbSpokes) * Math.PI * 2 + ((j2 % 5) - 2) * 0.03;
+          g.sb = { ang, r: sbR0 + (sbR1 - sbR0) * frac,
+                   sc: sbSc * (1.05 - 0.35 * frac) };
+        }
+
+        // Hex lattice: one petal per slot (wrapping if M > slots), each
+        // rotated to one of the six hex directions and scaled to fit
+        // its cell.
+        {
+          const slot = latSlots[q % nLat];
+          const rot  = (q % 6) * (Math.PI / 3);
+          const sc   = Math.min(hxCfg.petalScaleCap ?? 1,
+                                (latR * 1.9) / g.petalLen) * 0.95;
+          g.hx = { x: slot.x, y: slot.y, rot, sc };
+        }
+      }
+    }
+
     // Stash on the closure so updateOverlay can drive everything.
     //   brickHexWall      — outer parent group toggled by main.js
     //   brickHexCanonical — the LARGE canonical wall record (ghost pairing
     //                       in 'all' mode; hidden in hex mode).
-    //   brickHexPool      — array of {wall, rec, radius, trigger}
-    //                       the hex-mode state machine cycles through.
+    //   brickHexMorph     — the hex-mode size/shape-morph wall record.
     brickHexWall        = hexWall;
     brickHexCanonical   = canonicalRes;
-    brickHexPool        = poolWalls;
+    brickHexMorph       = morphRes;
   }
 
   // Large 3D hexagon — a neutral canvas for future "looks". Held in its
@@ -1180,6 +1429,71 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
   const _rQuat    = new THREE.Quaternion();
   const _rScale   = new THREE.Vector3();
 
+  // Scratch for the five-pattern flower cycle (pose A / pose B blend).
+  const _fpPosA  = new THREE.Vector3();
+  const _fpPosB  = new THREE.Vector3();
+  const _fpQuatA = new THREE.Quaternion();
+  const _fpQuatB = new THREE.Quaternion();
+  const _zAxis   = new THREE.Vector3(0, 0, 1);
+
+  // Layout pose evaluator for the flower-pattern cycle. Writes the
+  // ghost's target position/orientation for `state` into pos/quat and
+  // returns the target scale. 'rose' is handled inline by the caller
+  // (live petal pose); unknown states park the ghost in its hex slot
+  // at scale 0.
+  function evalFlowerLayout(state, g, t, fpCfg, pos, quat) {
+    switch (state) {
+      case 'phyllotaxis': {
+        const c    = fpCfg.phyllotaxis || {};
+        const ang  = g.ph.th + (c.spinSpeed ?? 0.06) * t;
+        const rot  = ang + (c.tilt ?? 0.55);
+        const half = g.petalLen * g.ph.sc * 0.5;
+        pos.set(fadeCX + Math.cos(ang) * g.ph.r - Math.cos(rot) * half,
+                fadeCY + Math.sin(ang) * g.ph.r - Math.sin(rot) * half,
+                g.layoutZ);
+        quat.setFromAxisAngle(_zAxis, rot);
+        return g.ph.sc;
+      }
+      case 'mandala': {
+        const c    = fpCfg.mandala || {};
+        const dir  = g.ma.ring % 2 === 0 ? 1 : -1;
+        const ang  = g.ma.ang + dir * (c.spinSpeed ?? 0.12) * t;
+        const rot  = g.ma.out ? ang : ang + Math.PI;
+        const half = g.petalLen * g.ma.sc * 0.5;
+        pos.set(fadeCX + Math.cos(ang) * g.ma.r - Math.cos(rot) * half,
+                fadeCY + Math.sin(ang) * g.ma.r - Math.sin(rot) * half,
+                g.layoutZ);
+        quat.setFromAxisAngle(_zAxis, rot);
+        return g.ma.sc;
+      }
+      case 'starburst': {
+        const c    = fpCfg.starburst || {};
+        const ang  = g.sb.ang + (c.spinSpeed ?? -0.03) * t;
+        const half = g.petalLen * g.sb.sc * 0.5;
+        pos.set(fadeCX + Math.cos(ang) * g.sb.r - Math.cos(ang) * half,
+                fadeCY + Math.sin(ang) * g.sb.r - Math.sin(ang) * half,
+                g.layoutZ);
+        quat.setFromAxisAngle(_zAxis, ang);
+        return g.sb.sc;
+      }
+      case 'hexLattice': {
+        const half = g.petalLen * g.hx.sc * 0.5;
+        pos.set(g.hx.x - Math.cos(g.hx.rot) * half,
+                g.hx.y - Math.sin(g.hx.rot) * half,
+                g.layoutZ);
+        quat.setFromAxisAngle(_zAxis, g.hx.rot);
+        return g.hx.sc;
+      }
+      default: {
+        // 'hexWall' (or unknown) — ghosts sink into their hex slot at
+        // scale 0; there is no instanced wall in flowers mode.
+        pos.copy(g.brickPos);
+        quat.copy(g.brickQuat);
+        return 0;
+      }
+    }
+  }
+
   // Scratch + cached colours for the hex-wall colour drift. Recompute the
   // base / deep endpoints only when their config strings change so we
   // don't re-parse hex on every frame.
@@ -1189,19 +1503,15 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
   let _hexDriftBaseStr = null;
   let _hexDriftDeepStr = null;
 
-  // Size-switch state machine — only ticks in 'hex' viewMode. Picks a
-  // random pool-wall index as the next target on every transition, so
-  // each swap reveals a new size rather than alternating between two
-  // fixed sizes.
-  let _hexActiveIdx   = -1;     // active pool index (-1 = uninitialised)
-  let _hexTargetIdx   = -1;     // destination pool index during transition
-  let _hexNextSwitchT = -1;     // absolute t when the next swap fires
-  let _hexTransStart  = -1;     // -1 = stable; else t at which fade began
-  // Per-pool-wall wave-clock offsets. When a transition starts, the
-  // active and target walls' clocks are anchored to their own
-  // inter-wave pause so neither flips a tile during the cross-fade.
-  // (Sized at first use — pool count is set inside the build closure.)
-  let _hexWaveOffsets = null;
+  // Morph-wall state — only ticks in 'hex' viewMode.
+  //   Size evolution: a wall-wide "global size" glides between random
+  //   targets in [sizeEvolve.min, sizeEvolve.max]; the per-tile wander
+  //   and regional swells are layered on top in the compose loop.
+  let _szFrom = -1, _szTo = -1, _szStart = -1, _szNextRoll = -1;
+  //   Shape morphing: scheduler clock + live count of non-hexagon tiles
+  //   (enforces shapeMorph.maxAltFraction).
+  let _shapeLastT  = -1;
+  let _nonHexCount = 0;
 
   // --- Brick-wall evolution state (effect-2 long-form variation) -------
   // Pre-allocated flash pool so the per-frame scheduler has zero
@@ -1297,6 +1607,36 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
     // Mode 'hexagons' override: force inMorph true whenever the hex wall
     // exists so the per-hex position update keeps writing every frame.
     if (ANIM.viewMode === 'hexagons' && brickHexWall) inMorph = true;
+
+    // ---- Five-pattern flower cycle (solo 'flowers' mode) -------------
+    // Replaces the legacy 2-state brick↔rose loop with a cycle over
+    // `flowerPatterns.sequence`: each pattern holds `dwell` seconds,
+    // then the petals fly to the next arrangement over `transit`
+    // seconds with the same eased, bobbing ghost-flight as the original
+    // transit. The live rosettes (wrappers) only render while settled
+    // in the 'rose' hold; the ghost petals render everything else.
+    const fpCfg = cfg.flowerPatterns || {};
+    const fpOn  = ANIM.viewMode === 'flowers' && !!morphGroup
+               && ghosts.length > 0 && fpCfg.enabled !== false;
+    let fpA = null, fpB = null, fpE = 0;
+    if (fpOn) {
+      const fpSeq = Array.isArray(fpCfg.sequence) && fpCfg.sequence.length >= 2
+        ? fpCfg.sequence
+        : ['rose', 'phyllotaxis', 'mandala', 'starburst', 'hexLattice'];
+      const dwell   = Math.max(fpCfg.dwell ?? 9, 0.1);
+      const transit = Math.max(fpCfg.transit ?? 4.5, 0.1);
+      const per     = dwell + transit;
+      const total   = fpSeq.length * per;
+      const cycF    = ((t % total) + total) % total;
+      const idx     = Math.min(fpSeq.length - 1, Math.floor(cycF / per));
+      const local   = cycF - idx * per;
+      fpA = fpSeq[idx];
+      fpB = fpSeq[(idx + 1) % fpSeq.length];
+      const holding = local < dwell;
+      const u = holding ? 0 : (local - dwell) / transit;
+      fpE = 0.5 - 0.5 * Math.cos(Math.min(u, 1) * Math.PI);
+      inMorph = !(holding && fpA === 'rose');
+    }
 
     // Per-hex stagger params — entry wave at window open, exit wave at
     // window close. Each hex's start time is keyed off `flipStep` so the
@@ -1400,6 +1740,66 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
       }
     }
 
+    // ---- Five-pattern flower branch: pose-blend the ghosts and skip
+    // the legacy brick/rose machinery entirely (no wall renders in
+    // flowers mode — main.js force-hides hexRoots there anyway).
+    if (fpOn) {
+      morphGroup.visible = inMorph;
+      if (brickHexWall) brickHexWall.visible = false;
+      if (hexWrapper)   hexWrapper.visible   = false;
+      if (inMorph) {
+        // Force world-matrix updates on hidden wrappers so ghosts can
+        // read the live rose pose during rose-involved transits.
+        for (const w of wrappers) w.updateMatrixWorld(true);
+        logoMesh.updateMatrixWorld(true);
+        _logoInv.copy(logoMesh.matrixWorld).invert();
+
+        // Live rosette pose reader (matches the legacy ghost hand-off).
+        const roseInto = (g, pos, quat) => {
+          if (g.sourcePetal) {
+            _localMat.multiplyMatrices(_logoInv, g.sourcePetal.matrixWorld);
+            _localMat.decompose(pos, quat, _rScale);
+            return _rScale.x;
+          }
+          pos.copy(g.rosePos);
+          quat.copy(g.roseQuat);
+          return g.roseScale;
+        };
+
+        const blending = fpE > 0 && fpB !== fpA;
+        for (const g of ghosts) {
+          const sA = fpA === 'rose'
+            ? roseInto(g, _fpPosA, _fpQuatA)
+            : evalFlowerLayout(fpA, g, t, fpCfg, _fpPosA, _fpQuatA);
+          if (!blending) {
+            g.mesh.position.copy(_fpPosA);
+            g.mesh.quaternion.copy(_fpQuatA);
+            g.mesh.scale.setScalar(sA);
+            continue;
+          }
+          const sB = fpB === 'rose'
+            ? roseInto(g, _fpPosB, _fpQuatB)
+            : evalFlowerLayout(fpB, g, t, fpCfg, _fpPosB, _fpQuatB);
+
+          g.mesh.position.lerpVectors(_fpPosA, _fpPosB, fpE);
+          // Perpendicular bob — same organic curved transit as the
+          // original brick↔rose flight.
+          const pdx = _fpPosB.x - _fpPosA.x;
+          const pdy = _fpPosB.y - _fpPosA.y;
+          const pLen = Math.hypot(pdx, pdy);
+          if (pLen > 1e-4) {
+            const bob = Math.sin(fpE * Math.PI) * pLen * g.bobMagFrac * g.bobSign;
+            g.mesh.position.x += (-pdy / pLen) * bob;
+            g.mesh.position.y += ( pdx / pLen) * bob;
+          }
+          g.mesh.scale.setScalar(sA + (sB - sA) * fpE);
+          _qBase.copy(_fpQuatA).slerp(_fpQuatB, fpE);
+          g.mesh.quaternion.copy(_qBase);
+        }
+      }
+      return;
+    }
+
     if (morphGroup)   morphGroup.visible   = inMorph;
     if (brickHexWall) brickHexWall.visible = inMorph;
 
@@ -1415,13 +1815,12 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
       const e      = 0.5 - 0.5 * Math.cos(ta * Math.PI);
       const brickW = 1 - e;            // 1 at brick hold, 0 at rose hold
 
-      // Hex walls: STATIC size. Tiles do a domino flip around their
-      // local +X axis, with trigger times staggered by flipStep so a
-      // left-to-right wave rolls across the wall. brickW drives the
-      // material opacity so hexes fade (not shrink) across transits.
-      // Two parallel walls (LARGE + SMALL) live behind the visible one;
-      // the size-switch state machine alternates between them at random
-      // moments while in 'hex' mode.
+      // Hex walls. Tiles do a domino flip around their local +X axis,
+      // with trigger times staggered by flipStep so a spiral wave rolls
+      // across the wall. brickW drives the material opacity so hexes
+      // fade (not shrink) across transits. Non-hex modes draw the
+      // CANONICAL wall (static size, ghost pairing); solo hex mode
+      // draws the MORPH wall (per-tile size evolution + shape morphs).
       const hexFall    = brickCfg.hexDominoFall    ?? 2.2;
       const hexPause   = brickCfg.hexDominoPause   ?? 2.5;
       // Per-hex flip speed jitter — drives the slowest-tile fall length so
@@ -1431,26 +1830,15 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
       const slowestFall = hexFall / Math.max(1 - flipSpeedJitter, 0.1);
       const exitTailEnd = morphTotal - hexExitGlide;
 
-      // Hex-mode gate — drives breathing, colour drift, alt-back overlay,
-      // and opacity ramps. Hoisted above the breathing block because the
-      // breathing block reads it (otherwise TDZ throws).
+      // Hex-mode gate — drives colour drift, alt-back overlay, size
+      // evolution, shape morphs, and opacity ramps.
       const isHexMode = ANIM.viewMode === 'hexagons';
 
-      // Wall-wide breathing lerp: every tile gets the same scale this
-      // frame, so the honeycomb tessellates perfectly while the whole
-      // wall slowly grows + shrinks on a sine cycle. Hex mode only —
-      // 'all' / fireplace keep the wall at native scale so the brick↔rose
-      // morph lines up. Sine maps [-1,1] → [0,1] and lerps between
-      // (1 - amount) and (1 + amount), giving a symmetric breath.
-      const brCfg     = brickCfg.breathing || {};
-      const brEnabled = isHexMode && brCfg.enabled !== false;
-      const brAmount  = brCfg.amount  ?? 0.18;
-      const brPeriod  = Math.max(brCfg.period ?? 14, 0.001);
-      let breathScale = 1;
-      if (brEnabled) {
-        const k = 0.5 + 0.5 * Math.sin(t * Math.PI * 2 / brPeriod);
-        breathScale = (1 - brAmount) + (2 * brAmount) * k;
-      }
+      // (The old wall-wide "breathing" scale is gone — scaling an
+      // exactly-tessellating honeycomb past 1.0 made every tile overlap
+      // its neighbours. The morph wall's per-tile size evolution
+      // provides the organic size motion instead, hard-clamped to the
+      // grid pitch so overlap is impossible.)
 
       // Compute the target hex colour for this frame: drifted while in
       // solo 'hex' mode (effect 2), otherwise the static base hue.
@@ -1487,13 +1875,7 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
       //     a bell-curve brightness boost over ~1s. Pool is pre-allocated
       //     so the scheduler does zero per-frame allocations.
       const evoCfg = brickCfg.evolution || {};
-      // Evolution randomness is fully suppressed while a size-switch
-      // cross-fade is in flight. No flashes, no wiggle, no macro LFO
-      // touching the wall during the transition window — every visual
-      // change in that period must come from the deterministic alpha
-      // tween and the wave-clock-pinned per-tile state.
-      const evoOn  = isHexMode && evoCfg.enabled !== false
-                              && _hexTransStart < 0;
+      const evoOn  = isHexMode && evoCfg.enabled !== false;
       if (evoOn) {
         const mAmp = evoCfg.macroAmp ?? 0.10;
         const mP   = Math.max(evoCfg.macroPeriod ?? 70, 0.001);
@@ -1508,8 +1890,9 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
             if (_evoFlashes[i].rec === null) { free = i; break; }
           }
           if (free >= 0) {
-            const activeRec = (_hexActiveIdx >= 0 && _hexActiveIdx < brickHexPool.length)
-              ? brickHexPool[_hexActiveIdx].rec : brickHexCanonical;
+            // evoOn implies hex mode, where the morph wall is the one
+            // drawing — flashes land on it.
+            const activeRec = brickHexMorph || brickHexCanonical;
             if (activeRec && activeRec.count) {
               const slot = _evoFlashes[free];
               slot.rec   = activeRec;
@@ -1543,150 +1926,19 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
         ? (backCfgFrame.altOpacity ?? 1)
         : 0;
 
-      // Size-switch state machine. Outside hex mode the CANONICAL wall
-      // is the only visible brick layer (used by the brick↔rose ghost
-      // morph). Inside hex mode the canonical is hidden and the state
-      // machine cycles through `brickHexPool` — each transition picks
-      // a random NEW target index, so the user sees a different hex
-      // size on every swap rather than just alternating between two.
-      //
-      // The cross-fade itself is purely deterministic: alpha lerp +
-      // wave clocks anchored to each wall's inter-wave pause. All random
-      // rolls (target pick, dwell sample) happen exactly once per
-      // transition, at the moment `_hexTransStart` is set — never during
-      // the cross-fade itself. Evolution flashes / wiggle are also
-      // gated off while `_hexTransStart >= 0` (see the evoOn check above).
-      const ssCfg     = brickCfg.sizeSwitch || {};
-      const ssEnabled = isHexMode && ssCfg.enabled !== false
-                                  && brickHexPool.length >= 2;
-      const ssMinDwell = ssCfg.minDwell ?? 8;
-      const ssMaxDwell = Math.max(ssMinDwell, ssCfg.maxDwell ?? 25);
-      const ssTransRaw = Math.max(ssCfg.transitionDuration ?? 1.6, 0.001);
-      // Hard clamp: the cross-fade MUST fit entirely inside both walls'
-      // inter-wave pause window (hexPause), otherwise a tile from the
-      // source or target wall would start flipping mid-swap and look
-      // like a glitch. Leave 0.5s of headroom on the pause side.
-      const ssTransDur = Math.min(ssTransRaw, Math.max(hexPause - 0.5, 0.1));
-      const sampleDwell = () =>
-        ssMinDwell + Math.random() * (ssMaxDwell - ssMinDwell);
-
-      // Lazy-allocate the per-pool wave-offset table. Reset whenever
-      // the pool size changes (shouldn't, but defensive).
-      if (!_hexWaveOffsets || _hexWaveOffsets.length !== brickHexPool.length) {
-        _hexWaveOffsets = new Array(brickHexPool.length).fill(0);
-      }
-
-      const computeWavePhase = (tileCount, trigger, waveOffset = 0) => {
-        const maxStep = Math.max(0, tileCount - 1);
-        const cycleLen = maxStep * trigger + slowestFall;
-        const fullCyc = cycleLen + hexPause;
-        if (fullCyc <= 0) return { elapsed: 0, cycleLen, fullCyc };
-        const tt = t - waveOffset;
-        const elapsed = ((tt % fullCyc) + fullCyc) % fullCyc;
-        return { elapsed, cycleLen, fullCyc };
-      };
-
-      if (ssEnabled) {
-        // Seed the active index on first hex-mode frame. Pick a random
-        // starting pool wall so each session opens at a different size.
-        if (_hexActiveIdx < 0) {
-          _hexActiveIdx = Math.floor(Math.random() * brickHexPool.length);
-          _hexTargetIdx = -1;
-          _hexNextSwitchT = t + sampleDwell();
-        }
-        if (_hexTransStart < 0 && t >= _hexNextSwitchT) {
-          // Wait for the active wall's current wave to finish — only
-          // start the cross-fade during the inter-wave pause.
-          const active = brickHexPool[_hexActiveIdx];
-          const activeOffset = _hexWaveOffsets[_hexActiveIdx] || 0;
-          const wave = computeWavePhase(active.rec.count, active.trigger, activeOffset);
-          if (wave.elapsed >= wave.cycleLen) {
-            // Pick a random NEW target index different from active.
-            // This is the ONE random roll per transition; everything
-            // else during the cross-fade is deterministic.
-            let target = _hexActiveIdx;
-            if (brickHexPool.length > 1) {
-              target = Math.floor(Math.random() * (brickHexPool.length - 1));
-              if (target >= _hexActiveIdx) target++;
-            }
-            _hexTargetIdx  = target;
-            _hexTransStart = t;
-            // Anchor both walls' clocks to their inter-wave pause so
-            // no tile flips during the cross-fade.
-            const srcMaxStep = Math.max(0, active.rec.count - 1);
-            _hexWaveOffsets[_hexActiveIdx] =
-              t - (srcMaxStep * active.trigger + slowestFall);
-            const dest = brickHexPool[target];
-            const destMaxStep = Math.max(0, dest.rec.count - 1);
-            _hexWaveOffsets[target] =
-              t - (destMaxStep * dest.trigger + slowestFall);
-          }
-        }
-      } else {
-        // Reset state when leaving hex mode so the next entry starts
-        // cleanly. (Per-tile transforms need no reset — instance matrices
-        // are recomposed from scratch on every frame a wall draws.)
-        _hexActiveIdx   = -1;
-        _hexTargetIdx   = -1;
-        _hexNextSwitchT = -1;
-        _hexTransStart  = -1;
-        if (_hexWaveOffsets) _hexWaveOffsets.fill(0);
-      }
-
-      // Compute per-pool-wall alpha. Outside hex mode every pool wall
-      // is hidden (alpha 0); the canonical wall draws instead.
-      //
-      // Cross-fade is SEQUENTIAL, not simultaneous: source dissolves out
-      // over [0, sFrac], target appears over [1-tFrac, 1]. With sFrac =
-      // tFrac = 0.6 there's a brief low-alpha overlap window in the
-      // middle (~0.4..0.6 of the transition) so the swap never shows
-      // two ghost walls at full opacity at once — that was the main
-      // source of "glitching" the user was seeing.
-      const xFadeSFrac = 0.6;
-      const xFadeTFrac = 0.6;
-      const poolAlphas = new Array(brickHexPool.length).fill(0);
-      let canonicalAlpha;
-      if (!ssEnabled) {
-        canonicalAlpha = 1;
-      } else if (_hexTransStart < 0) {
-        // Stable — only active wall visible.
-        canonicalAlpha = 0;
-        if (_hexActiveIdx >= 0) poolAlphas[_hexActiveIdx] = 1;
-      } else {
-        canonicalAlpha = 0;
-        const tp = (t - _hexTransStart) / ssTransDur;
-        if (tp >= 1) {
-          // Cross-fade complete — promote target to active.
-          _hexActiveIdx   = _hexTargetIdx;
-          _hexTargetIdx   = -1;
-          _hexTransStart  = -1;
-          _hexNextSwitchT = t + sampleDwell();
-          if (_hexActiveIdx >= 0) poolAlphas[_hexActiveIdx] = 1;
-        } else {
-          // Source fades out over the first sFrac of the transition;
-          // target fades in over the last tFrac. Smoothstep both ends
-          // so the curve eases in/out rather than linear.
-          const srcU = Math.min(1, tp / xFadeSFrac);
-          const dstU = Math.max(0, (tp - (1 - xFadeTFrac)) / xFadeTFrac);
-          const srcA = 1 - (srcU * srcU * (3 - 2 * srcU));
-          const dstA =      (dstU * dstU * (3 - 2 * dstU));
-          if (_hexActiveIdx >= 0) poolAlphas[_hexActiveIdx] = srcA;
-          if (_hexTargetIdx >= 0) poolAlphas[_hexTargetIdx] = dstA;
-        }
-      }
-
-      // Group visibility — canonical only draws in non-hex mode; pool
-      // walls only when their alpha is nonzero.
+      // Wall selection. Outside hex mode the CANONICAL wall is the only
+      // brick layer (used by the brick↔rose ghost morph). Inside hex
+      // mode the canonical is hidden and the MORPH wall draws — one
+      // wall, always, so two different-size honeycombs can never render
+      // on top of each other (the old crossfade-pool overlap).
+      const canonicalAlpha = isHexMode ? 0 : 1;
       if (brickHexCanonical) {
         brickHexCanonical.wall.visible = canonicalAlpha > 0.001;
       }
-      for (let i = 0; i < brickHexPool.length; i++) {
-        brickHexPool[i].wall.visible = poolAlphas[i] > 0.001;
+      if (brickHexMorph) {
+        brickHexMorph.wall.visible = isHexMode;
       }
 
-      // Build wallSpecs from whichever walls are actually drawing this
-      // frame. In hex mode that's the active wall (+ target during a
-      // cross-fade); in 'all' mode that's just the canonical wall.
       const wallSpecs = [];
       if (canonicalAlpha > 0.001 && brickHexCanonical) {
         wallSpecs.push({
@@ -1696,17 +1948,6 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
           sizeAlpha:  canonicalAlpha,
           wallScale:  1,
           waveOffset: 0,
-        });
-      }
-      for (let i = 0; i < brickHexPool.length; i++) {
-        if (poolAlphas[i] <= 0.001) continue;
-        const pw = brickHexPool[i];
-        wallSpecs.push({
-          rec:        pw.rec,
-          trigger:    pw.trigger,
-          sizeAlpha:  poolAlphas[i],
-          wallScale:  1,
-          waveOffset: _hexWaveOffsets ? (_hexWaveOffsets[i] || 0) : 0,
         });
       }
 
@@ -1730,7 +1971,7 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
         // whole wall shares one front + one back material now. Per-tile
         // components (edge fade, back-face reveal, wiggle/flash colour)
         // ride the instanced attributes below instead.
-        const s = wallScale * breathScale;
+        const s = wallScale;
         const fMat = rec.front.material;
         fMat.color.copy(_hexDriftColor);
         fMat.opacity = brickW * sizeAlpha * baseOpacity;
@@ -1858,6 +2099,280 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
           rec.back.instanceMatrix.needsUpdate = true;
           rec.backAlphaAttr.needsUpdate = true;
         }
+      }
+
+      // ---- Morph wall (solo hex mode): size evolution + shape morphs --
+      if (isHexMode && brickHexMorph) {
+        const rec = brickHexMorph;
+        const n   = rec.count;
+
+        // --- Global size target: re-rolls to a random value in
+        // [min, max] every retargetMin..retargetMax seconds and glides
+        // there over retargetDur seconds. This is the "unexpected"
+        // wall-wide morph; per-tile wander + regional swells layer on
+        // top below.
+        const seCfg  = brickCfg.sizeEvolve || {};
+        const seOn   = seCfg.enabled !== false;
+        const seMin  = Math.max(0.05, seCfg.min ?? 0.45);
+        const seMax  = Math.min(1.0, Math.max(seMin, seCfg.max ?? 0.97));
+        const seRate = seCfg.rate ?? 0.06;
+        const seReg  = Math.max(0, Math.min(1, seCfg.regionality ?? 0.55));
+        const seWob  = seCfg.wobble ?? 0.55;
+        const rtMin  = seCfg.retargetMin ?? 9;
+        const rtMax  = Math.max(rtMin, seCfg.retargetMax ?? 20);
+        const rtDur  = Math.max(seCfg.retargetDur ?? 6, 0.001);
+        let gSize = 1;
+        if (seOn) {
+          if (_szStart < 0) {
+            _szFrom = _szTo = seMin + Math.random() * (seMax - seMin);
+            _szStart = t;
+            _szNextRoll = t + rtMin + Math.random() * (rtMax - rtMin);
+          }
+          const gk0 = Math.min(1, (t - _szStart) / rtDur);
+          const gEase = gk0 * gk0 * (3 - 2 * gk0);
+          if (t >= _szNextRoll) {
+            _szFrom = _szFrom + (_szTo - _szFrom) * gEase;
+            _szTo   = seMin + Math.random() * (seMax - seMin);
+            _szStart = t;
+            _szNextRoll = t + rtDur + rtMin + Math.random() * (rtMax - rtMin);
+            gSize = _szFrom;
+          } else {
+            gSize = _szFrom + (_szTo - _szFrom) * gEase;
+          }
+        } else {
+          gSize = seMax;
+        }
+        // Per-tile deviation amplitude + travelling regional swell. The
+        // swell is a plane wave whose direction slowly rotates, so
+        // whole neighbourhoods of tiles bulge and relax together.
+        const devAmp = seOn ? seWob * (seMax - seMin) * 0.5 : 0;
+        const regK   = twoPi / Math.max(maxR * 1.2, 1e-3);
+        const regPhi = t * 0.05;
+        const regKx  = Math.cos(regPhi) * regK;
+        const regKy  = Math.sin(regPhi) * regK;
+        const regW   = twoPi * seRate * 0.7;
+        const tileW  = twoPi * seRate;
+
+        // --- Shape-morph scheduler: Poisson picks, capped alt share.
+        const smCfg  = brickCfg.shapeMorph || {};
+        const smOn   = smCfg.enabled !== false;
+        const smRate = smCfg.rate ?? 1.2;
+        const smDur  = Math.max(smCfg.morphDur ?? 2.6, 0.2);
+        const smCap  = Math.max(0, Math.min(1, smCfg.maxAltFraction ?? 0.22));
+        const smRet  = Math.max(0, Math.min(1, smCfg.returnBias ?? 0.6));
+        const smDt   = _shapeLastT < 0 ? 0 : Math.max(0, t - _shapeLastT);
+        _shapeLastT = t;
+        if (smOn && Math.random() < smRate * smDt) {
+          const i = Math.floor(Math.random() * n);
+          if (rec.morphStart[i] < 0) {
+            const cur = rec.shapeIdx[i];
+            let target = -1;
+            if (cur !== 0) {
+              // Non-hex tile: usually return home to hexagon, sometimes
+              // hop to a different alt shape.
+              if (Math.random() < smRet) {
+                target = 0;
+              } else {
+                target = 1 + Math.floor(Math.random() * 3);
+                if (target === cur) target = 0;
+              }
+            } else if (_nonHexCount < smCap * n) {
+              target = 1 + Math.floor(Math.random() * 3);
+            }
+            if (target >= 0 && target !== cur) {
+              rec.morphFrom[i]  = cur;
+              rec.morphTo[i]    = target;
+              rec.morphStart[i] = t;
+            }
+          }
+        }
+
+        // --- Wave clock (same spiral domino as the canonical wall).
+        const hexTrigger  = rec.trigger;
+        const hexMaxStep  = Math.max(0, n - 1);
+        const hexCycleLen = hexMaxStep * hexTrigger + slowestFall;
+        const hexFullCyc  = hexCycleLen + hexPause;
+        const hexElapsed  = hexFullCyc > 0
+          ? ((t % hexFullCyc) + hexFullCyc) % hexFullCyc
+          : 0;
+        const stepDenom   = Math.max(1, n - 1);
+
+        // Wall-wide material state (front + back shared by all four
+        // shape meshes).
+        rec.frontMat.color.copy(_hexDriftColor);
+        rec.frontMat.opacity = brickW * baseOpacity;
+        const backOn = !!rec.backMat && altOpacity > 0;
+        if (rec.backMat) {
+          rec.backMat.color.copy(_hexDriftColor);
+          rec.backMat.opacity = brickW * altOpacity;
+        }
+        for (const sh of rec.shapes) {
+          if (sh.back) sh.back.visible = backOn;
+        }
+
+        for (let i = 0; i < n; i++) {
+          // Colour multiplier (evolution wiggle + ember flashes).
+          let mul = 1;
+          if (evoOn) {
+            mul = 1 + evoWiggleAmp * Math.sin(
+              t * evoWiggleSpeed * rec.evoFactor[i] + rec.evoSeed[i]);
+            for (let fi = 0; fi < _evoMaxFlashes; fi++) {
+              const f = _evoFlashes[fi];
+              if (f.rec !== rec || f.index !== i) continue;
+              const u = (t - f.start) / f.dur;
+              if (u >= 0 && u < 1) {
+                mul *= 1 + Math.sin(u * Math.PI) * f.intensity;
+              }
+            }
+          }
+
+          // Per-tile radius factor — global glide + independent wander
+          // + regional swell, hard-clamped to [seMin, seMax]. seMax ≤ 1
+          // = the no-overlap guarantee (tile can never outgrow its
+          // grid cell).
+          let sFac = gSize;
+          if (devAmp > 0) {
+            const wander = Math.sin(tileW * rec.sizeFreq[i] * t + rec.sizeSeed[i]);
+            const swell  = Math.sin(rec.homeX[i] * regKx + rec.homeY[i] * regKy
+                                    - regW * t + rec.sizeSeed[i] * 0.13);
+            sFac += devAmp * ((1 - seReg) * wander + seReg * swell);
+          }
+          if (sFac < seMin) sFac = seMin;
+          else if (sFac > seMax) sFac = seMax;
+
+          // Shape morph envelope — shrink the old shape to zero over
+          // the first half, regrow the new shape over the second half.
+          let active = rec.shapeIdx[i];
+          let shapeEnv = 1;
+          const ms = rec.morphStart[i];
+          if (ms >= 0) {
+            const u2 = (t - ms) / smDur;
+            if (u2 >= 1) {
+              const from = rec.morphFrom[i], to = rec.morphTo[i];
+              if (from === 0 && to !== 0)      _nonHexCount++;
+              else if (from !== 0 && to === 0) _nonHexCount--;
+              rec.shapeIdx[i]   = to;
+              rec.morphStart[i] = -1;
+              active = to;
+            } else if (u2 < 0.5) {
+              active = rec.morphFrom[i];
+              const q = u2 * 2;
+              shapeEnv = 1 - q * q * (3 - 2 * q);
+            } else {
+              active = rec.morphTo[i];
+              const q = (u2 - 0.5) * 2;
+              shapeEnv = q * q * (3 - 2 * q);
+            }
+          }
+
+          // Domino flip.
+          const step      = rec.flipStep[i];
+          const flipSpeed = rec.flipSpeed[i] || 1;
+          const thisFall  = hexFall / Math.max(flipSpeed, 0.05);
+          const ph   = (hexElapsed - step * hexTrigger) / thisFall;
+          let angle = 0;
+          if (ph > 0 && ph < 1) {
+            const eased = 0.5 - 0.5 * Math.cos(ph * Math.PI);
+            angle = eased * twoPi;
+          }
+
+          // Entry/exit edge waves (same as the canonical wall).
+          let edgeDrift = 0;
+          let edgeFade  = 1;
+          if (wavesOn) {
+            const stepFrac = step / stepDenom;
+            const entryStart = hexEntryDelay + hexEntryStagger * stepFrac;
+            const entryEnd   = entryStart + hexEntryGlide;
+            if (cyc < entryEnd) {
+              const u = Math.max(0, (cyc - entryStart) / Math.max(hexEntryGlide, 1e-3));
+              const eased = u * u * (3 - 2 * u);
+              edgeDrift = 1 - eased;
+              edgeFade  = eased;
+            }
+            const exitStart = exitTailEnd - hexExitStagger * (1 - stepFrac);
+            if (cyc > exitStart) {
+              const u = Math.min(1, (cyc - exitStart) / Math.max(hexExitGlide, 1e-3));
+              const eased = u * u * (3 - 2 * u);
+              if (eased > edgeDrift) edgeDrift = eased;
+              if (1 - eased < edgeFade) edgeFade = 1 - eased;
+            }
+          }
+
+          const driftFactor = e > edgeDrift ? e : edgeDrift;
+          const px = rec.homeX[i]
+                   + rec.driftX[i] * rec.driftDist[i] * driftFactor;
+          const py = rec.homeY[i]
+                   + rec.driftY[i] * rec.driftDist[i] * driftFactor;
+
+          // Hand the tile's buffer slot over to a different shape mesh
+          // when the active shape changed — zero the old slot so the
+          // tile is never drawn twice.
+          const last = rec.lastShape[i];
+          if (last !== active) {
+            const oldSh = rec.shapes[last];
+            const fo = oldSh.front.instanceMatrix.array;
+            const o0 = i * 16;
+            for (let z = 0; z < 16; z++) fo[o0 + z] = 0;
+            if (oldSh.back) {
+              const bo = oldSh.back.instanceMatrix.array;
+              for (let z = 0; z < 16; z++) bo[o0 + z] = 0;
+            }
+            rec.lastShape[i] = active;
+          }
+
+          const sh   = rec.shapes[active];
+          const s    = sFac * shapeEnv;
+          const cA   = Math.cos(angle), sA = Math.sin(angle);
+          const o    = i * 16;
+          const mArr = sh.front.instanceMatrix.array;
+          mArr[o]      = s;  mArr[o + 1]  = 0;        mArr[o + 2]  = 0;      mArr[o + 3]  = 0;
+          mArr[o + 4]  = 0;  mArr[o + 5]  = cA * s;   mArr[o + 6]  = sA * s; mArr[o + 7]  = 0;
+          mArr[o + 8]  = 0;  mArr[o + 9]  = -sA * s;  mArr[o + 10] = cA * s; mArr[o + 11] = 0;
+          mArr[o + 12] = px; mArr[o + 13] = py;       mArr[o + 14] = 0;      mArr[o + 15] = 1;
+
+          const ci = i * 3;
+          const cArr = sh.front.instanceColor.array;
+          cArr[ci] = mul; cArr[ci + 1] = mul; cArr[ci + 2] = mul;
+          sh.alphaAttr.array[i] = edgeFade;
+
+          if (backOn && sh.back) {
+            const backOff = rec.backOff;
+            const bmArr = sh.back.instanceMatrix.array;
+            bmArr[o]      = s;  bmArr[o + 1]  = 0;       bmArr[o + 2]  = 0;      bmArr[o + 3]  = 0;
+            bmArr[o + 4]  = 0;  bmArr[o + 5]  = cA * s;  bmArr[o + 6]  = sA * s; bmArr[o + 7]  = 0;
+            bmArr[o + 8]  = 0;  bmArr[o + 9]  = -sA * s; bmArr[o + 10] = cA * s; bmArr[o + 11] = 0;
+            bmArr[o + 12] = px;
+            bmArr[o + 13] = py + sA * s * backOff;
+            bmArr[o + 14] = -cA * s * backOff;
+            bmArr[o + 15] = 1;
+
+            let backVis = 0;
+            const backFacing = -cA;
+            if (backFacing > 0) {
+              if (backFacing >= 0.4) {
+                backVis = 1;
+              } else {
+                const u = backFacing / 0.4;
+                backVis = u * u * (3 - 2 * u);
+              }
+            }
+            sh.backAlphaAttr.array[i] = edgeFade * backVis;
+          }
+        }
+
+        for (const sh of rec.shapes) {
+          sh.front.instanceMatrix.needsUpdate = true;
+          sh.front.instanceColor.needsUpdate  = true;
+          sh.alphaAttr.needsUpdate = true;
+          if (backOn && sh.back) {
+            sh.back.instanceMatrix.needsUpdate = true;
+            sh.backAlphaAttr.needsUpdate = true;
+          }
+        }
+      } else if (!isHexMode) {
+        // Reset hex-mode state when away so the next entry re-rolls.
+        _szStart = -1; _szNextRoll = -1;
+        _shapeLastT = -1;
       }
 
       // Ghosts: grow out of their hex slot (brickBaseScale=0) and

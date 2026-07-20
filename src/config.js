@@ -350,6 +350,37 @@ export const ANIM = {
                             // the pulse grows rather than snaps on.
     },
 
+    // Five-pattern cycle for solo 'flowers' mode (key 4). The overlay
+    // petals cycle through the arrangements in `sequence`, holding each
+    // for `dwell` seconds and morphing to the next over `transit`
+    // seconds using the same eased, bobbing ghost-flight as the
+    // original hex↔rose transit.
+    //   rose        — the live pulsing rosette rings (existing look;
+    //                 domino + shimmer keep running)
+    //   phyllotaxis — golden-angle sunflower swirl with a slow global
+    //                 spin
+    //   mandala     — concentric petal rings, alternate rings spin in
+    //                 opposite directions, petals point out/in
+    //   starburst   — radiating feathered fans from the centre
+    //   hexLattice  — flat petal mosaic on a honeycomb grid (the "hex
+    //                 wall" arrangement rebuilt from petals — the real
+    //                 instanced wall stays mode-3 only)
+    // Layout sizes are maxR-relative (*Factor knobs); petalScale sets
+    // each arrangement's petal size so individual petals stay legible.
+    flowerPatterns: {
+      enabled:  true,
+      sequence: ['rose', 'phyllotaxis', 'mandala', 'starburst', 'hexLattice'],
+      dwell:    9.0,
+      transit:  4.5,
+      phyllotaxis: { radiusFactor: 0.70, petalScale: 0.50,
+                     tilt: 0.55, spinSpeed: 0.06 },
+      mandala:     { rings: 5, innerFactor: 0.16, outerFactor: 0.72,
+                     petalScale: 0.52, spinSpeed: 0.12 },
+      starburst:   { spokes: 18, innerFactor: 0.10, outerFactor: 0.78,
+                     petalScale: 0.55, spinSpeed: -0.03 },
+      hexLattice:  { petalScaleCap: 1.0 },
+    },
+
     // Large 3D hexagonal prism centred on the logo — a neutral canvas
     // for future "looks" (material swaps, emissive pulses, rotation,
     // etc.). Not driven by the fan pulse/spin; add animation hooks in
@@ -380,29 +411,32 @@ export const ANIM = {
       // back-face alt colour stays hidden at rest); drop toward 0.4 for
       // see-through tiles.
       baseOpacity: 1.0,
-      // Two parallel hex walls live behind the visible one — a LARGE
-      // (sparse, slow domino wave) and a SMALL (dense, more tiles
-      // flipping at once). At random moments in solo 'hex' mode the
-      // wall sequentially fades from one size to the other.
-      //   largeRadiusFactor — large hex circumradius as fraction of
-      //                       starSize (≈ original wall density)
-      //   smallRadiusFactor — small hex circumradius as fraction of
-      //                       starSize (1/3 of large = ~9× more tiles)
-      //   largeDominoTrigger — sec between adjacent large-wall flip
-      //                        starts (0.18 = the original wave)
-      //   smallDominoTrigger — sec between small-wall flip starts.
-      //                        Small value = tiles flip nearly together
-      //                        across a band, so the wall ripples fast.
+      // Canonical wall radius / domino trigger. The canonical wall is
+      // the one the mode-0 brick↔rose ghost pairing flies out of; solo
+      // hex mode (key 3) renders the MORPH WALL below instead.
       largeRadiusFactor:  0.25,
-      smallRadiusFactor:  0.0833,    // 0.25 / 3
       largeDominoTrigger: 0.18,
-      smallDominoTrigger: 0.04,
+      // Hex-mode morph wall — ONE wall whose tiles size-morph and
+      // shape-morph in place. Replaces the old 8-wall crossfade pool:
+      // that pool drew two different-size honeycombs on top of each
+      // other during every crossfade, which was the main source of
+      // visible tile overlap. The wall-wide `breathing` scale (up to
+      // 1.18× on an exactly-tessellating grid) was the other source;
+      // both are gone. Tiles live on a fixed grid of pitch
+      // `gridRadiusFactor · starSize` and each tile's radius is
+      // CLAMPED to that pitch, so neighbours physically cannot overlap
+      // no matter what the size evolution below does.
+      //   gridRadiusFactor  — grid pitch circumradius as a fraction of
+      //                       starSize. Hard ceiling every per-tile
+      //                       radius is clamped to.
+      //   gridDominoTrigger — sec between adjacent flip starts on the
+      //                       morph wall's spiral domino wave.
+      gridRadiusFactor:   0.16,
+      gridDominoTrigger:  0.10,
       // Per-hex organic scatter (same wave shape, but each tile flips on
       // its own clock and breaks ranks from the strict spatial sort so
       // the wave reads as ragged bursts instead of a clean left-to-right
-      // band). Tile SIZE is deliberately uniform per wall so the
-      // honeycomb tessellates cleanly; the `breathing` block below
-      // animates the whole wall's scale in lockstep instead.
+      // band).
       //   flipSpeedJitter — ±fraction on each tile's flip duration.
       //                     0.55 = tiles span ~0.45×–1.55× of hexDominoFall.
       //                     The wave's pause auto-extends to fit the
@@ -420,47 +454,60 @@ export const ANIM = {
       // like radial rings. 0 collapses the spiral into pure outer→inner
       // (no angular winding).
       spiralTurns:       2.0,
-      // Wall-wide size lerp — the entire wall slowly breathes between
-      // (1 - amount) and (1 + amount) on a sine cycle. Every hex shares
-      // the same scale each frame so the tessellation stays intact;
-      // the wall just inhales/exhales as a single body. Hex mode only.
-      //   amount — half-amplitude as a fraction (0.18 = ±18 %).
-      //   period — seconds for one full breath in-out cycle.
-      breathing: {
-        enabled: true,
-        amount:  0.18,
-        period:  14.0,
-      },
-      sizeSwitch: {
-        enabled:            true,
-        startSize:          'small',  // legacy hint; actual start pool idx
-                                      // is now random across the pool below
-        minDwell:           13.0,     // min sec at one size before switching
-        maxDwell:           30.0,     // max sec; actual is uniform random
-        // Cross-fade duration. Hard-clamped at runtime to fit inside the
-        // inter-wave pause (hexDominoPause below) with 0.5s of headroom,
-        // so the swap can never overlap a tile flip.
-        transitionDuration: 2.0,
-      },
-      // Time between successive flip-waves on a wall. The size-switch
-      // cross-fade is anchored inside this pause window so no tile is
-      // mid-flip during a swap — bump this up if you want the wave to
-      // breathe longer between sweeps, but never below transitionDuration
-      // + 0.5s (the state machine clamps automatically).
+      // Time between successive flip-waves on a wall.
       hexDominoPause: 4.0,
-      // Hex-wall size pool — `wallCount` walls are pre-built at random
-      // radii spanning [minRadiusFactor, maxRadiusFactor]·starSize. Each
-      // transition picks a random pool index different from the current
-      // one, so every swap reveals a NEW size rather than alternating
-      // between two fixed values. `triggerMin / triggerMax` interpolate
-      // the per-wall domino trigger linearly with radius (denser walls
-      // get tighter triggers so the wave reads consistently).
-      sizePool: {
-        minRadiusFactor: 0.06,   // slightly below legacy smallRadiusFactor (0.0833)
-        maxRadiusFactor: 0.30,   // slightly above legacy largeRadiusFactor (0.25)
-        count:           8,      // how many walls to pre-build
-        triggerMin:      0.04,   // domino trigger at minRadiusFactor
-        triggerMax:      0.20,   // domino trigger at maxRadiusFactor
+      // Organic per-tile size evolution (hex mode, morph wall only).
+      // Each tile's radius drifts continuously inside
+      // [min, max] × grid pitch, driven by three stacked layers:
+      //   * a wall-wide "global size" target that re-rolls to a random
+      //     value every retargetMin..retargetMax seconds and glides
+      //     there over retargetDur seconds (the big, unexpected shifts);
+      //   * a slow per-tile sine (random phase + ±40 % rate) — every
+      //     tile wanders on its own schedule;
+      //   * a travelling regional swell — a spatial wave that drifts
+      //     across the wall so whole neighbourhoods bulge and relax
+      //     together.
+      //   min / max     — per-tile radius bounds as a fraction of the
+      //                   grid pitch. max ≤ 1.0 is the no-overlap
+      //                   guarantee (0.97 leaves a hairline seam even
+      //                   at full size).
+      //   rate          — base per-tile wander speed, cycles/sec.
+      //   regionality   — 0 = tiles fully independent, 1 = pure
+      //                   regional swells; 0.55 = both readable.
+      //   wobble        — per-tile deviation amplitude as a fraction
+      //                   of the (max-min) range.
+      sizeEvolve: {
+        enabled:     true,
+        min:         0.45,
+        max:         0.97,
+        rate:        0.06,
+        regionality: 0.55,
+        wobble:      0.55,
+        retargetMin: 9.0,
+        retargetMax: 20.0,
+        retargetDur: 6.0,
+      },
+      // Sparse shape morphing (hex mode, morph wall only). A Poisson
+      // scheduler occasionally picks one tile and morphs it into a
+      // different shape — hexagon → triangle / square / circle-ish —
+      // by shrinking it to zero and regrowing it as the new shape
+      // (never popping). Non-hex tiles are biased to morph back to
+      // hexagons so the wall always reads as a honeycomb with sparse
+      // accents. Non-hex shapes are built at 0.86 × the hex radius so
+      // they fit the hex cell's inradius — they can never overlap a
+      // neighbour either.
+      //   rate           — morph events per second across the wall.
+      //   morphDur       — seconds for one shrink→regrow morph.
+      //   maxAltFraction — cap on the share of tiles that may be
+      //                    non-hex at any moment.
+      //   returnBias     — chance a non-hex tile morphs BACK to a
+      //                    hexagon rather than to another alt shape.
+      shapeMorph: {
+        enabled:        true,
+        rate:           1.2,
+        morphDur:       2.6,
+        maxAltFraction: 0.22,
+        returnBias:     0.6,
       },
       // Random subset of hexes get a CONTRASTING colour on their back
       // face. As each tile flips, those random tiles flash the alt
@@ -484,10 +531,10 @@ export const ANIM = {
         deepColor:     '#5C0A04', // deep oxblood-red at the cycle's far end
       },
       // Long-form evolution on top of the existing color drift, domino,
-      // and size-switch — gives the wall surprising-but-coherent variation
-      // across long viewings. Three amplitude-only layers; the domino
-      // phase clock + size-switch timer + brickW cycle are NEVER touched,
-      // so transitions stay stutter-free:
+      // and size/shape morphing — gives the wall surprising-but-coherent
+      // variation across long viewings. Three amplitude-only layers; the
+      // domino phase clock + size-evolution clock + brickW cycle are
+      // NEVER touched, so transitions stay stutter-free:
       //   * macroAmp / macroPeriod — slow ±fraction LFO on the wall's
       //     overall brightness (multiplies `_hexDriftColor` once per
       //     frame, so front + back disc track together).
