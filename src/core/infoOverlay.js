@@ -4,14 +4,15 @@
 
 const ROWS = [
   ['MODES', ''],
-  ['0', 'Visual Sequence — rosettes + hex lattice cascade'],
-  ['1', 'Molten Gold — liquid gold fills the A'],
+  ['0', 'THE SHOW — plays every visual in sequence'],
+  ['1', 'Molten Gold — gold logo particlizes to stars'],
   ['2', 'Fractal Pattern — infinite lens dive'],
   ['3', 'Hexagons — pulsing morphing hex wall'],
-  ['4', 'Flowers — petal pattern morphs'],
+  ['4', 'Flowers — five petal patterns'],
   ['5', 'Fireplace — amber arch, flame, corona'],
   ['6', 'Depth Portal — infinite outline tunnel'],
   ['7', 'Constellations — star figures in the void'],
+  ['8', 'Visual Sequence — classic rosette cascade'],
   ['9', 'Calibration patterns (C cycles them)'],
   ['SHOW', ''],
   ['S / N', 'auto-show play–pause / next step'],

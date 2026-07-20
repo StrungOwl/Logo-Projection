@@ -36,12 +36,12 @@ const step = (n, dt = 1 / 60) => page.evaluate(({ n, dt }) => {
   };
 }, { n, dt });
 
-// 1. Dip transition: keyboard '4' → exposure dips to ~0, mode flips at
-//    blackpoint, exposure recovers to base 0.95.
+// 1. Dip transition: keyboard '5' (fireplaceOne) → exposure dips to ~0,
+//    mode flips at blackpoint, exposure recovers to base 0.95.
 const start = await page.evaluate(() => {
   window.ANIM.viewMode = 'visualSequence';
   window.__tick(499, 1 / 60);   // let the manager adopt the direct write
-  window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Digit4', key: '4' }));
+  window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Digit5', key: '5' }));
   return window.ANIM.viewMode;
 });
 assert(start === 'visualSequence', `mode unchanged immediately after keypress (transition pending), got '${start}'`);
@@ -75,15 +75,22 @@ for (let i = 0; i < 14; i++) {
 }
 assert(modesSeen.size >= 3, `sequencer advanced through ${modesSeen.size} modes (${[...modesSeen].join(', ')})`);
 
-// 4. Manual key pauses the show.
+// 4. Manual key pauses the show (8 = visualSequence solo).
 const paused = await page.evaluate(() => {
-  window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Digit0', key: '0' }));
+  window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Digit8', key: '8' }));
   return true;
 });
 const before = (await step(1)).mode;
 await step(240);   // 4s — a 1.5s-dwell show would have advanced twice
 const stay = await step(1);
 assert(stay.mode === 'visualSequence', `show paused on manual input (mode stayed '${stay.mode}')`);
+
+// 5. '0' restarts THE SHOW from the top (step 1 = moltenGold, wipe seam).
+await page.evaluate(() => {
+  window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Digit0', key: '0' }));
+});
+const showStart = await step(60);   // 1s — wipe covers at ~0.45s, swap happens under it
+assert(showStart.mode === 'moltenGold', `key 0 restarts the show at moltenGold (got '${showStart.mode}')`);
 
 // 5. Control channel: window.__control param write + ack, BroadcastChannel mode msg.
 const ctl = await page.evaluate(async () => {

@@ -22,14 +22,15 @@ Useful URLs:
 
 | Key | Mode | What you see |
 |---|---|---|
-| `0` | Visual Sequence | Synchronized rosette + hex lattice + flower overlay cascade |
-| `1` | Molten Gold | Liquid gold rises to the top, holds, drains to reveal the starry sky |
+| `0` | **The Show** | The curated full sequence — every visual with a bespoke transition per seam, looping |
+| `1` | Molten Gold | Opens as the full gold logo, holds, then particlizes downward to reveal the stars |
 | `2` | Fractal Pattern | Rosette + lattice with the infinite fractal lens zoom |
 | `3` | Hexagons | Pulsing hex-brick wall; sky auto-cycles nebula ↔ dense starfield |
 | `4` | Flowers | Hex bricks morph → rose petals → back |
 | `5` | Fireplace | Amber-stone brick arch + radiant voussoir corona + flame + starry sky |
 | `6` | Depth Portal | Infinite conveyor of glowing receding A-outlines in a black void |
 | `7` | Constellations | Star figures + gilded frame + edge-light comets |
+| `8` | Visual Sequence | The classic composite — rosettes + hex lattice + flower overlay cascade |
 | `9` | Calibration | Alignment patterns for mapping (cycle with `C`) |
 
 ## Keyboard

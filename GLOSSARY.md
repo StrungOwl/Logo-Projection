@@ -8,14 +8,15 @@ Switch with the digit keys (each goes through a dip-to-black transition).
 
 | Key | Internal name | Display name | What you see |
 |---|---|---|---|
-| `0` | `visualSequence` | Visual Sequence | The "default show" — rosette pattern + hex lattice + flower overlay running on a synchronized cascade. |
-| `1` | `moltenGold` | Molten Gold | Liquid gold cycle: rises to the top, holds, drains to reveal the starry sky. |
+| `0` | — | **The Show** | Restarts the curated full sequence (ANIM.show.playlist): molten gold opening → constellations → portal → fireplace → hexagons → flowers → fractal → visual sequence → loop, each seam with its own transition. |
+| `1` | `moltenGold` | Molten Gold | Opens as the full gold logo, holds, particlizes downward to reveal the starry sky, refills. |
 | `2` | `fractalPattern` | Fractal Pattern | Rosette panel + hex lattice with the fractal "telescope" lens zooming infinitely into the center. |
 | `3` | `hexagons` | Hexagons | The pulsing hex-brick wall; the sky auto-cycles between warm nebula and dense starfield. |
 | `4` | `flowers` | Flowers | Hex bricks morph into rose petals and back. |
 | `5` | `fireplaceOne` | Fireplace | Cascading amber-stone brick arch + voussoir corona + volumetric flame + starry sky. |
 | `6` | `fireplaceTwo` | Depth Portal | Infinite conveyor of glowing receding A-outlines in a pure black void. |
 | `7` | `flameOnly` | Constellations | Star figures, gilded frame, edge-light comets — no fire. |
+| `8` | `visualSequence` | Visual Sequence | The classic composite — rosette pattern + hex lattice + flower overlay on a synchronized cascade. |
 | `9` | `calibration` | Calibration | Mapping alignment patterns (cycle with `C`). |
 
 ## Effects (what's in the `src/effects/` folders)

@@ -973,14 +973,21 @@ if (typeof window !== 'undefined') {
       if (calibration) console.log(`[calibration] pattern: ${calibration.cyclePattern()}`);
       return;
     }
-    // Digit keys (no modifiers) switch ANIM.viewMode. 9 = calibration.
+    // Digit keys (no modifiers). 0 = THE SHOW: restart the curated full
+    // sequence from the gold opening (it self-advances through every
+    // visual with per-pair transitions). 1-8 = solo modes, 9 = calibration.
     if (!e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
-      // Key order is the show order: molten gold leads at 1, everything
-      // else shifted up one (user request 2026-07-19).
+      if (e.code === 'Digit0') {
+        e.preventDefault();
+        sequencer.goto(0);
+        sequencer.play();
+        control.sendState();
+        return;
+      }
       const modeByKey = {
-        Digit0: 'visualSequence', Digit1: 'moltenGold',     Digit2: 'fractalPattern',
-        Digit3: 'hexagons',        Digit4: 'flowers',        Digit5: 'fireplaceOne',
-        Digit6: 'fireplaceTwo',    Digit7: 'flameOnly',      Digit9: 'calibration',
+        Digit1: 'moltenGold',   Digit2: 'fractalPattern', Digit3: 'hexagons',
+        Digit4: 'flowers',      Digit5: 'fireplaceOne',   Digit6: 'fireplaceTwo',
+        Digit7: 'flameOnly',    Digit8: 'visualSequence', Digit9: 'calibration',
       };
       const next = modeByKey[e.code];
       if (next) {

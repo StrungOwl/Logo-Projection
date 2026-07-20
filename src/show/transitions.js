@@ -111,6 +111,17 @@ export function createTransitionManager({ renderer }) {
       st.lastApplied = mode;
       return;
     }
+    // 'burst' — instant swap with NO luminance envelope, plus a comet
+    // ignition racing the silhouette. Built for seams where both modes
+    // share a continuous background (molten's revealed starfield →
+    // constellations): a dip would blink the sky; this keeps it alive
+    // while the edge flash marks the handoff.
+    if (s === 'burst') {
+      ANIM.viewMode = mode;
+      st.lastApplied = mode;
+      fireTrigger('edge.burst', st.tNow || 0);
+      return;
+    }
     if (s === 'wipe' && !wipe) return requestMode(mode, 'dip');
     st.phase = 'out';
     st.style = s;
@@ -123,6 +134,7 @@ export function createTransitionManager({ renderer }) {
   }
 
   function update(t, dt) {
+    st.tNow = t;   // current clock for styles that fire triggers directly
     // Adopt external ANIM.viewMode writes (devtools, probes, export pin).
     if (st.phase === 'idle' && ANIM.viewMode !== st.lastApplied) {
       st.lastApplied = ANIM.viewMode;

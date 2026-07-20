@@ -369,7 +369,10 @@ export const ANIM = {
     // each arrangement's petal size so individual petals stay legible.
     flowerPatterns: {
       enabled:  true,
-      sequence: ['rose', 'phyllotaxis', 'mandala', 'starburst', 'hexLattice'],
+      // hexLattice FIRST: entering flowers mode opens on the petal
+      // honeycomb, so the show's hexagons→flowers cut reads as the wall
+      // continuing — then it blooms into the rose and onward.
+      sequence: ['hexLattice', 'rose', 'phyllotaxis', 'mandala', 'starburst'],
       dwell:    9.0,
       transit:  4.5,
       phyllotaxis: { radiusFactor: 0.70, petalScale: 0.50,
@@ -2601,12 +2604,26 @@ export const ANIM = {
   },
 
   // -----------------------------------------------------------------------
-  // AUTO-SHOW — unattended playlist for installation duty. Keys: S
-  // play/pause, N next. Remote: {"type":"show","action":...}. Cue `at`
-  // counts seconds from the end of the step's transition-in; `every`
-  // re-fires that trigger on a period for the rest of the dwell.
-  // autoStartInProjection makes ?proj=1 boots start the show by
-  // themselves; manual mode keys pause it (pauseOnManualInput).
+  // THE SHOW (key 0) — the curated full sequence. Keys: S play/pause,
+  // N next. Remote: {"type":"show","action":...}. Cue `at` counts
+  // seconds from the end of the step's transition-in; `every` re-fires
+  // on a period. autoStartInProjection makes ?proj=1 boots start it;
+  // manual mode keys (1-8) pause it; 0 restarts it from the top.
+  //
+  // Each step's `transition` is the seam INTO that step, chosen per
+  // visual pair:
+  //   → moltenGold      'wipe'      gold disc swallows everything back
+  //   → flameOnly       'burst'     same starfield continues, comets
+  //                                 ignite the frame — no blink
+  //   → fireplaceTwo    'dip'       dark-to-dark blink into the void
+  //   → fireplaceOne    'wipe'      the rushing corridor (portal.rush
+  //                                 cue fires 4s before) wipes to fire
+  //   → hexagons        'edgeFlash' ember comet flash hands fire to wall
+  //   → flowers         'cut'       flowers open on the petal honeycomb
+  //                                 (hexLattice first in sequence) — the
+  //                                 wall reads as continuing, then blooms
+  //   → fractalPattern  'dip'       petals settle into the rosette panel
+  //   → visualSequence  'cut'       same panel family, cascade on arrival
   // -----------------------------------------------------------------------
   show: {
     autoStart: false,
@@ -2614,27 +2631,32 @@ export const ANIM = {
     defaultTransition: 'dip',
     pauseOnManualInput: true,
     playlist: [
-      { mode: 'visualSequence', dwell: 50,
-        cues: [ { at: 6,  trigger: 'cascade.now' },
-                { at: 28, trigger: 'arch.cascade' } ] },
-      { mode: 'fractalPattern', dwell: 45,
-        cues: [ { at: 5, trigger: 'fractal.zoom', every: 18 } ] },
-      { mode: 'hexagons',       dwell: 40,
-        cues: [ { at: 8,  trigger: 'domino.on' },
-                { at: 34, trigger: 'domino.off' } ] },
-      { mode: 'flowers',        dwell: 35 },
-      // fireplaceOne: no cues — the mode-5 choreographer
-      // (ANIM.fireplaceChoreo) owns all motion in this step.
-      { mode: 'fireplaceOne',   dwell: 60 },
-      { mode: 'fireplaceTwo',   dwell: 45,
-        cues: [ { at: 18, trigger: 'portal.rush', every: 20 } ] },
-      { mode: 'flameOnly',      dwell: 60,
-        cues: [ { at: 15, trigger: 'stellar.pulse', every: 25 },
-                { at: 10, trigger: 'edge.burst',    every: 30 } ] },
-      { mode: 'moltenGold',     dwell: 50, transition: 'wipe',
-        cues: [ { at: 3,  trigger: 'molten.fill' },
-                { at: 28, trigger: 'molten.surge' },
-                { at: 38, trigger: 'molten.drain' } ] },
+      // 1. Gold emblem opening — the full golden logo particlizes
+      //    downward to reveal the stars (the molten cycle resets to
+      //    holdTop on every entry; needs no cues). Dwell ends a few
+      //    seconds into the starry rest so step 2 inherits the sky.
+      { mode: 'moltenGold',     dwell: 26, transition: 'wipe' },
+      // 2. Constellations emerge in that same sky.
+      { mode: 'flameOnly',      dwell: 55, transition: 'burst',
+        cues: [ { at: 24, trigger: 'stellar.pulse', every: 20 } ] },
+      // 3. The sky collapses into the outline corridor; the rush-out cue
+      //    accelerates the conveyor INTO the next seam.
+      { mode: 'fireplaceTwo',   dwell: 40, transition: 'dip',
+        cues: [ { at: 36, trigger: 'portal.rush' } ] },
+      // 4. Warm fire; the mode-5 choreographer owns all motion here.
+      { mode: 'fireplaceOne',   dwell: 55, transition: 'wipe' },
+      // 5. Fire hands off to the living hex wall.
+      { mode: 'hexagons',       dwell: 40, transition: 'edgeFlash' },
+      // 6. Dwell 70 ≈ one full pass through all five petal patterns.
+      { mode: 'flowers',        dwell: 70, transition: 'cut' },
+      // 7. Rosette panel + fractal dives.
+      { mode: 'fractalPattern', dwell: 45, transition: 'dip',
+        cues: [ { at: 8, trigger: 'fractal.zoom', every: 18 } ] },
+      // 8. The classic composite, then the gold wipe swallows it all
+      //    back to step 1.
+      { mode: 'visualSequence', dwell: 50, transition: 'cut',
+        cues: [ { at: 2,  trigger: 'cascade.now' },
+                { at: 30, trigger: 'arch.cascade' } ] },
     ],
   },
 
