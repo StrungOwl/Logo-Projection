@@ -1,4 +1,4 @@
-// Constellation overlay — visible only in flameOnly mode (key 6). Lays
+// Constellation overlay — visible only in flameOnly mode (key 7). Lays
 // out a recognisable celestial figure (Ursa Major / Big Dipper) inside
 // the logo silhouette: 7 stars in canonical relative positions, joined
 // by 7 lines that trace bowl + handle. Every star and every line is
@@ -231,45 +231,45 @@ function buildSequence(polys) {
       figure: FIGURES.ursaMajor,
       region: 'upper dome',
       candidates: [
-        { cx: 0, cy: domeY, scale: w * 0.38 },
+        { cx: 0, cy: domeY, scale: w * 0.48 },
+        { cx: 0, cy: domeY, scale: w * 0.40 },
         { cx: 0, cy: domeY, scale: w * 0.32 },
-        { cx: 0, cy: domeY, scale: w * 0.26 },
       ],
     },
     {
       figure: FIGURES.cygnus,
       region: 'left foot',
       candidates: [
-        { cx: -footX, cy: lowerY - h * 0.10, scale: w * 0.28 },
-        { cx: -footX, cy: lowerY,            scale: w * 0.22 },
-        { cx: -footX, cy: lowerY + h * 0.05, scale: w * 0.18 },
+        { cx: -footX, cy: lowerY - h * 0.10, scale: w * 0.36 },
+        { cx: -footX, cy: lowerY,            scale: w * 0.28 },
+        { cx: -footX, cy: lowerY + h * 0.05, scale: w * 0.22 },
       ],
     },
     {
       figure: FIGURES.cassiopeia,
       region: 'upper-right dome',
       candidates: [
-        { cx:  w * 0.18, cy: domeY, scale: w * 0.22 },
-        { cx:  w * 0.15, cy: domeY, scale: w * 0.18 },
-        { cx:  w * 0.12, cy: domeY, scale: w * 0.16 },
+        { cx:  w * 0.18, cy: domeY, scale: w * 0.30 },
+        { cx:  w * 0.15, cy: domeY, scale: w * 0.24 },
+        { cx:  w * 0.12, cy: domeY, scale: w * 0.18 },
       ],
     },
     {
       figure: FIGURES.orion,
       region: 'right foot',
       candidates: [
-        { cx:  footX, cy: lowerY - h * 0.12, scale: w * 0.28 },
-        { cx:  footX, cy: lowerY,            scale: w * 0.22 },
-        { cx:  footX, cy: lowerY + h * 0.05, scale: w * 0.18 },
+        { cx:  footX, cy: lowerY - h * 0.12, scale: w * 0.36 },
+        { cx:  footX, cy: lowerY,            scale: w * 0.28 },
+        { cx:  footX, cy: lowerY + h * 0.05, scale: w * 0.22 },
       ],
     },
     {
       figure: FIGURES.lyra,
       region: 'upper-left dome',
       candidates: [
-        { cx: -w * 0.18, cy: domeY, scale: w * 0.22 },
-        { cx: -w * 0.15, cy: domeY, scale: w * 0.18 },
-        { cx: -w * 0.12, cy: domeY, scale: w * 0.16 },
+        { cx: -w * 0.18, cy: domeY, scale: w * 0.30 },
+        { cx: -w * 0.15, cy: domeY, scale: w * 0.24 },
+        { cx: -w * 0.12, cy: domeY, scale: w * 0.18 },
       ],
     },
   ];
@@ -278,7 +278,6 @@ function buildSequence(polys) {
   for (const entry of plan) {
     const placed = placeFigure(entry.figure, polys, entry.candidates);
     if (placed) {
-      console.log(`[constellation] ${entry.figure.name} placed in ${entry.region}: (${placed.candidate.cx.toFixed(1)},${placed.candidate.cy.toFixed(1)}) scale ${placed.candidate.scale.toFixed(1)}`);
       sequence.push({ figure: entry.figure, stars: placed.stars, edges: placed.edges });
     } else {
       console.warn(`[constellation] could not place ${entry.figure.name} in ${entry.region} — skipping`);
@@ -294,13 +293,16 @@ export function createConstellation({
   renderer,
   // Visual look — white, very subtle, blends into the starfield.
   color               = 0xFFFFFF,
-  baseLinewidth       = 1.0,
-  pointSize           = 5.5,        // screen pixels (pre-pixelRatio)
-  drawIntervalMin     = 0.8,
-  drawIntervalMax     = 1.5,
-  drawDuration        = 1.3,
-  persistentOpacity   = 0.10,       // line settle brightness — even quieter
-  pointBaseBright     = 0.80,
+  // Projection tuning: a 1 px line at 10 % opacity vanished on the wall.
+  // Fat lines (LineSegments2) honour linewidth, so 2.5 px reads from a
+  // few metres back; settled lines hold at 32 %.
+  baseLinewidth       = 2.5,
+  pointSize           = 7.5,        // screen pixels (pre-pixelRatio)
+  drawIntervalMin     = 0.6,
+  drawIntervalMax     = 1.2,
+  drawDuration        = 1.2,
+  persistentOpacity   = 0.32,
+  pointBaseBright     = 0.95,
   flareIntensity      = 0.55,
   flareDuration       = 0.7,
   // Per-constellation pulse event (within the pulsing phase)
@@ -309,10 +311,10 @@ export function createConstellation({
   pulseConvergeDist   = 0.9,
   pulseBoostIntensity = 1.4,
   // Cycle phase durations
-  initialDelay        = 20.0,       // seconds in flameOnly before first figure
-  pulsingDuration     = 10.0,       // hold + pulse window
+  initialDelay        = 4.0,        // seconds in flameOnly before first figure (was 20)
+  pulsingDuration     = 11.0,       // hold + pulse window
   fadingDuration      = 2.0,        // line/star fade out
-  gapDuration         = 5.0,        // rest period — pure starry sky between figures
+  gapDuration         = 2.5,        // rest period — pure starry sky between figures
   drawingMaxDuration  = 14.0,       // safety cap if draws stall
   pulseTriggerDelay   = 2.5,        // seconds into pulsing phase before pulse fires
   // After all 5 figures fade out, hold a 60 s "hearth flame" window
@@ -539,7 +541,6 @@ export function createConstellation({
     nextDrawAt = activeTime;
     pulseFiredThisCycle = false;
     pulseActive = false;
-    console.log(`[constellation] cycle ${idx + 1}/${sequence.length}: ${activeEntry.figure.name}`);
   }
 
   function triggerPulse() {
@@ -601,7 +602,6 @@ export function createConstellation({
           flamePhaseQueued = false;
           phase      = PHASE_FLAME;
           phaseStart = activeTime;
-          console.log('[constellation] entering flame phase');
         } else {
           cycleIndex = (cycleIndex + 1) % sequence.length;
           phase      = PHASE_DRAWING;
@@ -613,7 +613,6 @@ export function createConstellation({
       if (phaseElapsed >= flamePhaseDuration) {
         phase      = PHASE_GAP;
         phaseStart = activeTime;
-        console.log('[constellation] flame phase done; resting before cycle 1');
       }
     }
 
@@ -772,8 +771,6 @@ export function createConstellation({
     }
     return 1;
   }
-
-  console.log(`[constellation] sequence built — ${sequence.length} figures, max ${maxStars} stars / ${maxEdges} edges per buffer`);
 
   return {
     group,

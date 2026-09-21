@@ -2,6 +2,8 @@
 
 Animated 3D logo piece built for **projection mapping onto a physical A-logo surface**. Three.js, no build step — ES modules served statically, all dependencies vendored (runs fully offline). Nine view modes, post-processing bloom, an auto-show sequencer for unattended installation duty, remote control from TouchDesigner, and two complete projection pipelines.
 
+It also ships as a **full-screen version** (`fullscreen.html` / `start-fullscreen.bat`) that draws the same show on a procedural slab in the projector's aspect ratio — for a plain wall or screen, no 3D logo, no mapping. See [Full-screen version](#full-screen-version).
+
 See [GLOSSARY.md](GLOSSARY.md) for plain-English definitions of every term, and [docs/TOUCHDESIGNER.md](docs/TOUCHDESIGNER.md) for the TouchDesigner capture + control setup.
 
 ## Run locally
@@ -16,7 +18,22 @@ Useful URLs:
 - `index.html` — normal editing view (orbit camera)
 - `index.html?proj=1&w=1920&h=1080` — fixed-resolution projection mode
 - `index.html?proj=1&w=1920&h=1080&ws=127.0.0.1:9980` — projection + TouchDesigner control
+- `fullscreen.html` — the full-screen (no logo) version, boots straight into projection framing
 - `control.html` — remote-control panel (open in a second window of the same browser)
+
+## Full-screen version
+
+`start-fullscreen.bat` (or open `fullscreen.html`) runs every mode and THE SHOW on a flat slab that fills the whole output — the projector's aspect ratio is read from the window (or `?w=&h=`), the margin is zero, and THE SHOW auto-starts. Press `F11` on the projector output and it fills edge to edge. A four-point star aperture in the middle keeps the fire, the galaxy glow and the portal's vanishing point; the gilded gate frame becomes a thin border.
+
+| URL knob | Effect |
+|---|---|
+| `?hole=none` | Solid slab, no star aperture (the fire uses a synthetic column in the same place) |
+| `?holeScale=1.3` | Bigger / smaller aperture (also `MODEL.screen.holeWidth/holeHeight/holeY` in `src/config.js`) |
+| `?aspect=1.333` | Force an aspect instead of following the window |
+| `?proj=0` | Editing view with the orbit camera |
+| `?surface=screen` on `index.html` | Same thing without the dedicated page (`?surface=logo` forces the GLB) |
+
+Implementation: `src/core/surface.js` builds the slab in the same mesh units as the GLB (height 110.85, depth 10) so every effect keeps its authored size; `src/core/logo.js` dispatches on the surface and finishes both through the same path.
 
 ## View modes
 
@@ -89,16 +106,23 @@ control.html               Remote-control panel
 With the server running (`start.bat`):
 
 ```
-node .verify/modes.mjs <label>        # deterministic screenshots of every mode
+node .verify/modes.mjs <label>        # deterministic screenshots of every mode (orbit view)
+node .verify/proj-modes.mjs <label> [modes] [times]   # 1920x1080 projection-mode shots at several times
+SURFACE=screen node .verify/proj-modes.mjs <label>   # same, on the full-screen surface
 node .verify/diff.mjs <a> <b> 0.1     # pixel-diff two shot sets
 node .verify/verify-pipeline.mjs      # projection + calibration asserts
 node .verify/verify-show.mjs          # transitions/sequencer/control asserts
 node .verify/verify-warp.mjs          # warp + wipe smoke test
 node .verify/perf-calls.mjs           # draw calls + triangles per mode
+node .verify/fps.mjs [seconds]        # real-GPU frame rate per mode (headed Chromium); UNCAP=1 removes vsync
 ```
+
+Probe caveat: a projection boot auto-starts THE SHOW, whose opening wipe is still in flight for ~1 s — pause the show and tick past it before writing `ANIM.viewMode` directly, or the wipe flips the mode back to its own target (`proj-modes.mjs` does this).
 
 Probes are deterministic (seeded RNG + fixed timestep). Caveat: changing the ORDER of object creation at load shifts the seeded stream — expect a re-baseline after structural changes, and judge diffs visually.
 
 ## Performance
 
-Post-processing runs on a HalfFloat MSAA render target; quality presets (`Q`) scale MSAA samples, bloom resolution, particle counts, and pixel ratio. `ANIM.post.enabled=false` (Shift+B) bypasses the composer entirely and reproduces the exact pre-revamp pipeline.
+Post-processing runs on a HalfFloat MSAA render target; quality presets (`Q`) scale MSAA samples, bloom resolution, particle counts, and pixel ratio. `ANIM.post.enabled=false` (Shift+B) bypasses the composer entirely and reproduces the exact pre-revamp pipeline. The composer is the single biggest per-frame cost (~5 ms at 1080p); the HIGH preset runs the bloom pyramid at 60 % resolution, which is invisible on the wall and saves ~2 ms.
+
+Uncapped 1080p on an RTX 3070 (2026-09): every mode ≥ 70 fps; Visual Sequence ~70, Fractal ~80, the rest 85–125. Per-mode draw calls: `node .verify/perf-calls.mjs`.

@@ -19,6 +19,22 @@ export const MODEL = {
   path:            './3DModels/SDG_logo_3d.glb',
   scaleToMaxDim:   8,
   positionOffsetY: -1.0,
+
+  // Which surface to build the show on (see src/core/surface.js):
+  //   'logo'   - the GLB above, for mapping onto the physical A
+  //   'screen' - a procedural full-frame slab in the projector's aspect,
+  //              for a plain wall / screen (fullscreen.html, or
+  //              index.html?surface=screen)
+  surface: 'logo',
+  // Screen-surface knobs. aspect null = follow the output resolution.
+  //   hole       'star' cuts the four-point aperture the effects burn /
+  //              glow through; 'none' leaves the slab solid (the flame
+  //              then uses a synthetic column in the same place)
+  //   holeWidth / holeHeight - aperture size as fractions of the slab
+  //   holeY      aperture centre offset, fraction of height (+ = up)
+  //   holeScale  overall multiplier on the aperture (URL: &holeScale=)
+  screen: { aspect: null, hole: 'star', holeWidth: 0.30, holeHeight: 0.50,
+            holeY: 0.04, holeScale: 1.0 },
 };
 
 // -----------------------------------------------------------------------
@@ -72,12 +88,12 @@ export const ANIM = {
   galaxy: {
     timeScale:  1.0,
     brightness: 1.0,
-    // Effect-2 only: auto-alternates the backdrop between the warm
-    // nebula and a denser/larger "boosted starry sky" while in hex
+    // Hexagons mode (key 3) only: auto-alternates the backdrop between the
+    // warm nebula and a denser/larger "boosted starry sky" while in hex
     // mode. dwellSeconds is how long each variant holds; fadeSeconds
     // is the smoothstepped transition between them. boostSizeScale
-    // sets the uStarSizeScale during the starry half (1.5 ≈ effect-4
-    // flameOnly look; 2.5 = noticeably larger stars).
+    // sets the uStarSizeScale during the starry half (1.5 ≈ flameOnly
+    // (key 7) look; 2.5 = noticeably larger stars).
     bgCycle: {
       enabled:        true,
       dwellSeconds:   30.0,
@@ -582,7 +598,7 @@ export const ANIM = {
     outerMargin: 5.0,    // distance past hull max-radius where entry rays begin, units
   },
 
-  // Fractal "telescope" zoom for the pattern effect (mode 1 only). One
+  // Fractal "telescope" zoom for the fractalPattern effect (mode 2 only). One
   // designated focal tile (the central rosette) slowly grows toward the
   // camera while the rest of the pattern is pushed radially outward —
   // anything past the silhouette is auto-masked by the existing hullClip,
@@ -594,10 +610,10 @@ export const ANIM = {
   // back to start invisibly. Gives the impression of falling THROUGH the
   // central tile to the next iteration of the pattern.
   //
-  // Mode 0 ('all') is unaffected — this only fires when
-  // viewMode === 'pattern' AND fractalZoom.enabled !== false.
+  // Mode 8 ('all') is unaffected — this only fires when
+  // viewMode === 'fractalPattern' AND fractalZoom.enabled !== false.
   fractalZoom: {
-    enabled:        true,     // false → fall back to the radial cascade in mode 1
+    enabled:        true,     // false → fall back to the radial cascade in mode 2
     oneShot:        true,     // true → play intro + fade-IN to canonical rest
                               // pattern, then either park forever (loopStaticDur
                               // = 0) or retrigger after `loopStaticDur` seconds
@@ -906,7 +922,7 @@ export const ANIM = {
                             // gap window length when playAll: true. Matches
                             // the legacy 40s free-run split (15+5+15+5).
       brickHold:   15.0,    // brick wall holds at full ('all' mode)
-      hexHold:     60.0,    // brick wall hold in solo 'hex' mode (effect 2).
+      hexHold:     60.0,    // brick wall hold in solo 'hex' mode (key 3).
                             // Independent so 'all' stays cascade-sync'd at 15s.
       brickToRose:  5.0,    // morph brick → rosette petals
       roseHold:    15.0,    // petal rosettes dance at full
@@ -1643,9 +1659,10 @@ export const ANIM = {
   //             Illuminates the inner walls of the cutout (StandardMaterial
   //             on the logo) for the "fire glow" reaction.
   //
-  // Flame is hidden in every mode except 'fireplace'. Galaxy backdrop
-  // stays visible behind it but lerps toward a black-sky-with-stars
-  // (`uStarryMode`) while fireplace mode is active.
+  // Flame is hidden except in fire-like modes (fireplaceOne, key 5; also
+  // fireplaceTwo legacy static). Galaxy backdrop stays visible behind it
+  // but lerps toward a black-sky-with-stars (`uStarryMode`) while a
+  // fire-like mode is active.
   // -----------------------------------------------------------------------
   flame: {
     // Z extent of the flame volume relative to the model's front face
@@ -1741,10 +1758,13 @@ export const ANIM = {
     //   columnEdgeSoft  — soft-edge fraction at the column boundary
     //                     (separate from `edgeSoftness` which still
     //                     fades against the cutout polygon edges)
-    bodyHalfWidthBase: 0.14,
-    bodyHalfWidthTop:  0.005,
-    columnWobble:      0.04,
-    widthNoiseAmt:     0.26,
+    // Widened (was 0.14 / 0.005): at those values the whole fire read as
+    // a thin needle on the wall; the star bay is wide enough for a broad
+    // tongue that still tapers to a point.
+    bodyHalfWidthBase: 0.30,
+    bodyHalfWidthTop:  0.03,
+    columnWobble:      0.05,
+    widthNoiseAmt:     0.30,
     widthNoiseFreq:    0.14,
     columnEdgeSoft:    0.45,
 
@@ -1774,7 +1794,7 @@ export const ANIM = {
     //                ~5 % width at the waist). 0 disables.
     //   waistWidth — Gaussian half-width of the pinch (in t units).
     waistY:     0.22,
-    waistAmt:   0.55,
+    waistAmt:   0.30,      // softer pinch (was 0.55) - keeps the base a body
     waistWidth: 0.18,
 
     // Second narrow waist higher up — independent Gaussian pinch used
@@ -1785,7 +1805,7 @@ export const ANIM = {
     // pinch depth needed. Set `waist2Amt: 0` to disable this second
     // pinch entirely.
     waist2Y:     0.62,
-    waist2Amt:   0.68,
+    waist2Amt:   0.45,     // was 0.68
     waist2Width: 0.18,   // wider Gaussian so the tail thins the visible
                          // middle of the body (~t=0.5) while the peak
                          // pinch stays at t=0.62 to keep the column off
@@ -1856,7 +1876,7 @@ export const ANIM = {
     // bright saturated-yellow core characteristic of real flame. Kept
     // moderate so the hot core stays visibly amber/orange instead of
     // blowing out to a flat white.
-    brightness: 2.4,
+    brightness: 2.8,
     opacity:    1.0,
 
     // Multiplier applied to all base-scene warm lights (key, innerGlow,
@@ -1978,7 +1998,7 @@ export const ANIM = {
     // Gate-frame rim — same buildFlameRim system as `rim` above, but the
     // ribbon traces the entire gate-frame's inner aperture (the inset
     // silhouette wrapping the whole logo) instead of just the inner-star
-    // cutout. Only rendered in flameOnly mode (key 6); supplies the
+    // cutout. Only rendered in flameOnly mode (key 7); supplies the
     // glowing chase + ignite events along the full perimeter while the
     // flame body itself is hidden.
     //
@@ -2177,7 +2197,7 @@ export const ANIM = {
     //   colorBottom / colorMid / colorTop — saturated blue palette.
     secondary: {
       enabled:           true,
-      heightFraction:    0.33,
+      heightFraction:    0.22,   // was 0.33 - a base core, not a column
       // Animate the small flame's top Y over time. Two beating sines
       // give a non-repeating-feeling drift; the heightFrac that
       // determines the secondary's top sits at `heightFraction` plus
@@ -2193,7 +2213,7 @@ export const ANIM = {
       //                   Long values give very gradual drift.
       heightAnimation: {
         enabled:       true,
-        amount:        0.18,
+        amount:        0.12,
         cycleDuration: 14,
       },
       // Narrower than main (which is 0.18 / 0.05) so the blue column
@@ -2207,7 +2227,7 @@ export const ANIM = {
       colorBottom: '#5FBEFF',  // saturated cyan-blue at the hot base
       colorMid:    '#1A55FF',  // saturated electric blue mid-band
       colorTop:    '#0A1FA8',  // deep saturated blue at the cool tip
-      brightness:    2.2,      // moderate — saturated blue with normal
+      brightness:    1.4,      // was 2.2 - it drew OVER the orange (normal blend)
                                // blending; doesn't need to overpower
                                // anything since it draws on top
       opacity:       1.0,
@@ -2277,8 +2297,8 @@ export const ANIM = {
       colorBottom: '#B81A0E',
       colorMid:    '#5D1FA8',
       colorTop:    '#2280FF',
-      brightness:  2.4,
-      opacity:     0.55,
+      brightness:  2.0,
+      opacity:     0.28,     // was 0.55 - the purple outline was the most visible thing
       // No shimmer / flares — the outline stays clean (no warm-tinted
       // flicker, no chromatic flashes overriding the red→blue gradient).
       // Branching is NOT overridden — it inherits the main flame's
@@ -2293,11 +2313,11 @@ export const ANIM = {
       },
     },
 
-    // Galaxy starry-night mode. When viewMode === 'fireplace' the galaxy
+    // Galaxy starry-night mode. In fire-like modes the galaxy
     // shader lerps `uStarryMode` toward 1: nebula + warm core glow fade
     // out, deep-space goes pure black, and an extra dense star layer
     // fades in. `fadeSpeed` is 1/sec. `brightness` overrides the
-    // galaxy's `uBrightness` uniform while fireplace mode is active so
+    // galaxy's `uBrightness` uniform while a fire-like mode is active so
     // the backdrop is darker and the flame body reads clearly against it.
     galaxyStarry: {
       fadeSpeed:   1.5,
@@ -2317,7 +2337,7 @@ export const ANIM = {
   // FIREPLACE — brick frame that traces silhouette[0] directly so it
   // hugs the actual SDG curve (dome + flares) rather than a bbox-derived
   // half-ellipse. Lives in its own module (patterns/fireplace.js) and
-  // reads ONLY this config block. Visible in the 'fireplace' view mode.
+  // reads ONLY this config block. Visible in the fireplaceOne view mode (key 5).
   //   springerYFrac — fraction of silhouette Y range below which the
   //                   centerline is clipped. 0 = legs trace silhouette
   //                   all the way down; 0.05 ≈ legs reach the bottom of
@@ -2544,7 +2564,7 @@ export const ANIM = {
   // -----------------------------------------------------------------------
   post: {
     enabled: true,
-    bloom: { enabled: true, strength: 0.3, radius: 0.3, threshold: 1.6 },
+    bloom: { enabled: true, strength: 0.32, radius: 0.35, threshold: 1.6 },
   },
 
   // -----------------------------------------------------------------------
@@ -2671,7 +2691,7 @@ export const ANIM = {
   warp: { enabled: false, corners: null },
 
   // -----------------------------------------------------------------------
-  // DEPTH PORTAL (mode 5 rework) — the recede stack on an infinite
+  // DEPTH PORTAL (mode 6 rework) — the recede stack on an infinite
   // conveyor toward the viewer, per-copy oscillating twist, overbright
   // rim lines that bloom into receding concentric outlines.
   //   conveyor.enabled:false → the original static stack (legacy look).
@@ -2687,8 +2707,12 @@ export const ANIM = {
     // occludes it. flameEnabled:true restores the old flame-in-cutout.
     headScale: 1.0,
     flameEnabled: false,
-    twistDeg: 4,
-    wobble: { ampDeg: 3, period: 16 },
+    // Per-copy twist ACCUMULATES with depth (copy k turns k x twistDeg), so
+    // keep these small - at 4 deg/copy the far end sat 40 deg+ off axis and
+    // the corridor spiralled out of the star. Copies scale + twist about
+    // the star centre (patternFadeCenter), so the tunnel converges into it.
+    twistDeg: 1.2,
+    wobble: { ampDeg: 1.5, period: 16 },
     // Corridor fills are translucent depth-haze; rims carry the shape.
     // innerRimScale dims the star-cutout outlines relative to the outer
     // A outline (user: "make the inner star less bright").
@@ -2707,7 +2731,7 @@ export const ANIM = {
       palettes: ['#FFD070', '#FF9440', '#FFF3D8', '#E8C4FF'],
       colorPeriod: 150,
       speedWander: 0.45,
-      twistWander: 5,
+      twistWander: 1.0,
     },
   },
 

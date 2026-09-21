@@ -32,6 +32,11 @@ import { buildSilhouetteShape } from '../../util/geometry.js';
 export function createRecede({
   silhouettePolygons,
   hullMaxR,
+  // Vanishing point in the same panel-local space as the polygons. The
+  // conveyor scales + twists every copy about THIS point so the corridor
+  // converges into the star cutout instead of the hull centroid (which
+  // sat above and right of the star and skewed the whole stack).
+  pivot = [0, 0],
 }) {
   const group = new THREE.Group();
   group.name = 'recede';
@@ -143,6 +148,8 @@ export function createRecede({
     copies.push({ mesh, mat, rimMatOuter, rimMatInner, offset: k * zStep });
   }
 
+  const px = pivot[0] || 0, py = pivot[1] || 0;
+
   // Conveyor phase — copies move toward the viewer (depth decreases).
   let phase = 0;
   let rushUntil = -1;
@@ -161,7 +168,7 @@ export function createRecede({
       const u = N > 1 ? k / (N - 1) : 0;
       const s = baseScale * Math.pow(shrinkFactor, k) * breath;
       c.mesh.scale.set(s, s, 1);
-      c.mesh.position.z = -k * zStep + zDrift;
+      c.mesh.position.set(0, 0, -k * zStep + zDrift);
       c.mesh.rotation.z = 0;
       c.mat.opacity = opacityHead + (opacityTail - opacityHead) * u;
       c.mesh.renderOrder = -0.3 - 0.1 * (N - 1 - k);
@@ -195,7 +202,7 @@ export function createRecede({
       ? THREE.MathUtils.degToRad(ev.twistWander ?? 0)
         * 0.5 * (Math.sin(t * 0.029 + 0.7) + Math.sin(t * 0.0093))
       : 0;
-    const twist  = THREE.MathUtils.degToRad(c.twistDeg ?? 4) + twistExtra;
+    const twist  = THREE.MathUtils.degToRad(c.twistDeg ?? 1.2) + twistExtra;
     const wob    = c.wobble || {};
     const wobble = THREE.MathUtils.degToRad(wob.ampDeg ?? 3)
                  * Math.sin(t * (2 * Math.PI / (wob.period ?? 16)));
@@ -219,9 +226,17 @@ export function createRecede({
       const d = ((cp.offset - phase) % maxD + maxD) % maxD;
       const step = d / zStep;
       const s = headScale * Math.pow(shrinkFactor, step);
+      const rot = twist * step + wobble * (step / N);
+      // Scale + rotate about the pivot: p' = pivot + R(rot)·s·(p - pivot)
+      // → mesh.position = pivot - R(rot)·s·pivot (mesh origin stays the
+      // polygon origin so the shared geometry needs no rebuild).
+      const cr = Math.cos(rot), sr = Math.sin(rot);
       cp.mesh.scale.set(s, s, 1);
-      cp.mesh.position.z = -d;
-      cp.mesh.rotation.z = twist * step + wobble * (step / N);
+      cp.mesh.position.set(
+        px - s * (cr * px - sr * py),
+        py - s * (sr * px + cr * py),
+        -d);
+      cp.mesh.rotation.z = rot;
       // Envelope hides the wrap: fade out approaching the front (d→0),
       // fade in emerging from the deep end.
       const front = Math.min(1, d / (zStep * 0.8));

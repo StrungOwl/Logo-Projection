@@ -1,4 +1,4 @@
-// Molten Gold Fill — signature mode 7. The logo cavity fills with liquid
+// Molten Gold Fill — signature mode 1. The logo cavity fills with liquid
 // gold from the feet upward: a dark ember-red convecting body (domain-
 // warped FBM), topped by an overbright rippled meniscus band that blooms
 // hard. Above the surface: nothing (discard) — on the physical surface
@@ -42,9 +42,11 @@ export function createMolten({ logoMesh, meta, renderer }) {
     uMinY:          { value: minY },
     uMaxY:          { value: maxY },
     uWaveAmp:       { value: 0.45 },
-    uDeepColor:     { value: new THREE.Color('#3A0E02') },
-    uHotColor:      { value: new THREE.Color('#D96A14') },
-    uMeniscusColor: { value: new THREE.Color('#FFD870') },
+    // Tuned for the ACES output: the old '#D96A14' hot tone tonemapped to
+    // a brown-orange slab; this pair reads as lit gold with ember depths.
+    uDeepColor:     { value: new THREE.Color('#5C1E04') },
+    uHotColor:      { value: new THREE.Color('#FFB13A') },
+    uMeniscusColor: { value: new THREE.Color('#FFE9A0') },
     uMeniscusBoost: { value: 3.0 },
   };
 
@@ -109,8 +111,11 @@ export function createMolten({ logoMesh, meta, renderer }) {
         vec2 q = vPos * 0.35;
         vec2 warp = vec2(fbm(q + uTime * 0.05), fbm(q + vec2(5.2, 1.3) - uTime * 0.04));
         float convect = fbm(q + warp * 1.6 + vec2(0.0, -uTime * (0.08 + uSurge * 0.2)));
-        vec3 body = mix(uHotColor, uDeepColor, smoothstep(0.05, 0.8, depth));
-        body *= 0.65 + convect * (0.8 + uSurge * 0.8);
+        vec3 body = mix(uHotColor, uDeepColor, smoothstep(0.05, 0.9, depth));
+        body *= 0.55 + convect * (0.9 + uSurge * 0.8);
+        // Specular-ish glints on the brightest convection cells so the
+        // surface reads as metal, not paint.
+        body += uMeniscusColor * 0.35 * pow(max(convect - 0.55, 0.0) * 2.2, 2.0) * (1.0 - depth);
 
         // Meniscus — the overbright band at the surface (this is what
         // blooms). Width breathes slightly with the wave.
@@ -273,6 +278,7 @@ export function createMolten({ logoMesh, meta, renderer }) {
       st.fill = c.fillTop ?? 1.0;
     }
     st.wasVisible = group.visible;
+    if (!group.visible) return;   // hidden: nothing to animate (reset above re-seats on entry)
     uniforms.uTime.value = t;
     uniforms.uWaveAmp.value = c.waveAmp ?? 0.45;
     uniforms.uMeniscusBoost.value = c.meniscusBoost ?? 3.0;

@@ -101,10 +101,12 @@
   <script>
     const bc = new BroadcastChannel('logo-projection-control');
     const $ = (id) => document.getElementById(id);
+    // Mirrors the keyboard map in src/main.js. '0' restarts THE SHOW
+    // (show goto 0 + play) rather than selecting a mode.
     const MODES = [
-      ['0', 'visualSequence'], ['1', 'moltenGold'], ['2', 'fractalPattern'],
-      ['3', 'hexagons'], ['4', 'flowers'], ['5', 'fireplaceOne'],
-      ['6', 'fireplaceTwo'], ['7', 'flameOnly'], ['9', 'calibration'],
+      ['1', 'moltenGold'],   ['2', 'fractalPattern'], ['3', 'hexagons'],
+      ['4', 'flowers'],      ['5', 'fireplaceOne'],   ['6', 'fireplaceTwo'],
+      ['7', 'flameOnly'],    ['8', 'visualSequence'], ['9', 'calibration'],
     ];
     const CAL = ['off', 'fill', 'outline', 'grid', 'checker', 'corners'];
     // Seed list — replaced by the live registry from the first state msg.
@@ -119,6 +121,10 @@
 
     function renderModes() {
       $('modes').innerHTML = '';
+      const show = document.createElement('button');
+      show.textContent = '0 THE SHOW';
+      show.onclick = () => { send({ type: 'show', action: 'goto', target: 0 }); send({ type: 'show', action: 'play' }); };
+      $('modes').appendChild(show);
       for (const [key, mode] of MODES) {
         const b = document.createElement('button');
         b.textContent = `${key} ${mode}`;

@@ -66,6 +66,14 @@ Switch with the digit keys (each goes through a dip-to-black transition).
 | `transitions.js` | Mode-change envelopes: `dip` (exposure to black and back), `wipe` (silhouette disc from the pattern center), `edgeFlash` (dip + comet burst), `cut`. |
 | `sequencer.js` | The auto-show: walks `ANIM.show.playlist` (mode, dwell, cues), pauses on manual input. Keys `S`/`N`. |
 
+## Surfaces
+
+| Term | What it means |
+|---|---|
+| Logo surface | The GLB (`MODEL.path`) — the physical A for mapping. Default. |
+| Screen surface | `src/core/surface.js` — a procedural slab in the output aspect with a star aperture, for a flat wall/screen (`fullscreen.html`, `?surface=screen`). Same effects, same show. |
+| Aperture / hole | The star cut into the screen surface (`?hole=star` default, `none` for a solid slab). The GLB's star is part of its single silhouette loop; the slab carries it as a real interior loop. |
+
 ## Architectural terms
 
 | Term | What it means |

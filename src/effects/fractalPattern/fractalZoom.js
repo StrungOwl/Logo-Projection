@@ -1,4 +1,4 @@
-// Fractal "telescope" zoom — drives viewMode 'fractalPattern' (key 1).
+// Fractal "telescope" zoom — drives viewMode 'fractalPattern' (key 2).
 //
 // State machine:
 //   rest  → originals at full opacity, parked at rest. Clones hidden.

@@ -282,10 +282,10 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
   const wrappers = [];
   // Per-viewMode visibility splits (main.js toggles these independently):
   //   flowerRoots  — petal rosettes + morph-ghost group (the "rose" side
-  //                  of the brick↔rose morph; visible in modes 0/3).
+  //                  of the brick↔rose morph; visible in modes 8/4).
   //   hexRoots     — the bigger overlay brick-wall hexes that animate
-  //                  in/out (visible in modes 0/2/3 — mode 2 wants them
-  //                  alone; mode 3 wants them as transition states).
+  //                  in/out (visible in modes 8/3/4 — mode 3 wants them
+  //                  alone; mode 4 wants them as transition states).
   //   sharedMask   — the stencil mask both flowers and hexes test
   //                  against; must be visible whenever either is on.
   const flowerRoots = [];
@@ -916,7 +916,7 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
       // Per-tile data arrays. The Math.random() call ORDER inside this
       // loop matches the old per-mesh builder exactly (evoSeed, evoFactor,
       // flipSpeed per tile) so the downstream RNG stream is unmoved.
-      //   evoSeed/evoFactor — effect-2 brightness wiggle phase + ±40% rate.
+      //   evoSeed/evoFactor — hex mode (key 3) brightness wiggle phase + ±40% rate.
       //   flipSpeed         — per-tile flip-duration scatter (mixed speeds).
       const homeX     = new Float32Array(n);
       const homeY     = new Float32Array(n);
@@ -1513,7 +1513,7 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
   let _shapeLastT  = -1;
   let _nonHexCount = 0;
 
-  // --- Brick-wall evolution state (effect-2 long-form variation) -------
+  // --- Brick-wall evolution state (hex mode, key 3, long-form variation) -------
   // Pre-allocated flash pool so the per-frame scheduler has zero
   // allocations. A "flash" is a transient bell-curve brightness boost
   // on a randomly-chosen visible-wall hex — addressed as (wall record,
@@ -1679,10 +1679,16 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
       return x * x * (3 - 2 * x);
     })();
 
+    // Solo 'hexagons' mode never shows a petal (morphAlpha is pinned to 0
+    // below, ghosts sit at scale 0, rosettes are hidden) — skip the
+    // per-petal domino/shimmer loop and the per-ghost matrix decompose
+    // there; they were ~1,100 wasted transform solves every frame.
+    const hexOnlyMode = ANIM.viewMode === 'hexagons';
     for (const w of wrappers) {
       w.visible = !inMorph;
       w.rotation.z = w.userData.baseRotation +
                      w.userData.spinDir * t * cfg.spinSpeed;
+      if (hexOnlyMode) continue;
       const flowers = w.userData.cascadeLayers;
       for (let fi = 0; fi < flowers.length; fi++) {
         const flower = flowers[fi];
@@ -1841,9 +1847,9 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
       // grid pitch so overlap is impossible.)
 
       // Compute the target hex colour for this frame: drifted while in
-      // solo 'hex' mode (effect 2), otherwise the static base hue.
+      // solo 'hex' mode (key 3), otherwise the static base hue.
       // Outside 'hex' mode the alt-back overlay + low opacity is also
-      // suppressed so the wall reads identically to its pre-effect-2
+      // suppressed so the wall reads identically to its pre-key-3
       // look in 'all' / fireplace.
       const cd = brickCfg.colorDrift;
       const baseStr = brickCfg.color ?? '#D14A22';
@@ -2380,6 +2386,7 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
       // rosette's petal.matrixWorld so the hand-off at alpha≈1 is
       // seamless — ghost and rosette render the same transform.
       for (const g of ghosts) {
+        if (hexOnlyMode) break;
         let rScaleX;
         if (g.sourcePetal) {
           _localMat.multiplyMatrices(_logoInv, g.sourcePetal.matrixWorld);

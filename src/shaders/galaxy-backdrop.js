@@ -21,8 +21,8 @@ export function createGalaxyMaterial() {
       uMinY:       { value: -1.0 },
       uFadeHeight: { value: 1.0 },
       uBrightness: { value: ANIM.galaxy.brightness },
-      // Starry-night blend (0..1). Lerped toward 1 by main.js while
-      // viewMode === 'fireplace' — fades the nebula + warm core glow out and
+      // Starry-night blend (0..1). Lerped toward 1 by main.js while a
+      // fire-like mode is active — fades the nebula + warm core glow out and
       // brings up an extra dense, flicker-heavy star layer over a black
       // background so the flame reads against a clear night sky.
       uStarryMode: { value: 0.0 },
@@ -32,8 +32,8 @@ export function createGalaxyMaterial() {
       uStarSizeScale: { value: 1.0 },
       // 0..1 — when active, layers in EXTRA dense + larger star layers
       // on top of the standard starry-mode set. main.js lerps this up
-      // during the hex-mode auto-cycle (effect 2 only). Effect 4/5
-      // leave it at 0 so their starry look is unchanged.
+      // during the hexagons auto-cycle (key 3 only). fireplaceOne (key 5) /
+      // fireplaceTwo (key 6) leave it at 0 so their starry look is unchanged.
       uStarryBoost: { value: 0.0 },
       // 1 while the post-processing composer is active, 0 on the legacy
       // direct-render path (driven per-frame from main.js). This shader
@@ -44,6 +44,10 @@ export function createGalaxyMaterial() {
       // (pow 2.2) so the OutputPass sRGB-encode restores the authored
       // tone; ACES then only gently compresses the brightest values.
       uOutputLinear: { value: 0.0 },
+      // Scales the warm core glow. 1 = authored logo look. The screen
+      // surface sets ~0.45: its aperture sits exactly on the glow centre
+      // where the unscaled stack clips to a flat pale yellow.
+      uCoreGlow: { value: 1.0 },
     },
     vertexShader: `
       varying vec3 vLocalPos;
@@ -65,6 +69,7 @@ export function createGalaxyMaterial() {
       uniform float uStarSizeScale;
       uniform float uStarryBoost;
       uniform float uOutputLinear;
+      uniform float uCoreGlow;
       varying vec3 vLocalPos;
       varying vec3 vNormal;
 
@@ -154,8 +159,8 @@ export function createGalaxyMaterial() {
         float rimHaze  = exp(-dCenter * 3.2) * 0.6;
         vec3 emberColor = vec3(1.0, 0.45, 0.10);
         vec3 hotCore    = vec3(1.0, 0.78, 0.40);
-        color += emberColor * coreGlow * 1.8;
-        color += hotCore * rimHaze * 1.2;
+        color += emberColor * coreGlow * 1.8 * uCoreGlow;
+        color += hotCore * rimHaze * 1.2 * uCoreGlow;
 
         // Inner rim ring of brighter heat right at the silhouette edge
         float edgeRing = smoothstep(0.85, 1.0, dCenter) * (1.0 - smoothstep(1.0, 1.05, dCenter));
@@ -182,8 +187,8 @@ export function createGalaxyMaterial() {
           // Boosted layers — lower thresholds (more cells seed a star)
           // and lower sharpness (each star has a bigger soft glow).
           // Combined with main.js raising uStarSizeScale, this gives
-          // the effect-2 cycle's "starry sky" a denser, bolder look
-          // than the effect-4 starry sky.
+          // the hexagons (key 3) cycle's "starry sky" a denser, bolder look
+          // than the fireplaceOne (key 5) starry sky.
           if (uStarryBoost > 0.001) {
             // Higher sharpness here = tighter, smaller star points. The
             // density (lower thresholds vs base layers) still gives the

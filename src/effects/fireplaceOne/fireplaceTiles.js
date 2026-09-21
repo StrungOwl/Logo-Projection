@@ -1926,6 +1926,18 @@ export function createArch({ silhouette, maxZ, frameDepth = 0.5,
     const maskShape = new THREE.Shape();
     maskShape.moveTo(sil[0].x, sil[0].y);
     for (let i = 1; i < sil.length; i++) maskShape.lineTo(sil[i].x, sil[i].y);
+    // Interior cutout loops (the screen surface's star aperture; the
+    // GLB folds its star into loop 0) punch holes in the mask so the
+    // brick layer never covers the flame's window.
+    for (let h = 1; h < silhouette.length; h++) {
+      const hole = silhouette[h];
+      if (!hole || hole.length < 3) continue;
+      const path = new THREE.Path();
+      path.moveTo(hole[0].x, hole[0].y);
+      for (let i = 1; i < hole.length; i++) path.lineTo(hole[i].x, hole[i].y);
+      path.closePath();
+      maskShape.holes.push(path);
+    }
     const maskGeo = new THREE.ShapeGeometry(maskShape);
     const maskMat = new THREE.MeshBasicMaterial({
       colorWrite:   false,
@@ -2428,6 +2440,7 @@ export function createArch({ silhouette, maxZ, frameDepth = 0.5,
   function triggerCascade(t) { cascadeStartTime = t; lastFireTime = t; }
 
   function update(t /*, dt */) {
+    if (!group.visible) return;   // only fireplaceOne shows the arch
     // Tick every lantern's flicker (independent of cascade state).
     for (const u of lanternUpdaters) u(t);
 
@@ -2460,6 +2473,28 @@ export function createArch({ silhouette, maxZ, frameDepth = 0.5,
         b.position.lerpVectors(b.userData.startPos, b.userData.restPos, e);
       }
     }
+  }
+
+  // Interior-cutout guard. Several brick layers test placement against
+  // the outer loop or the hull only; on the GLB that is fine (its star is
+  // folded into loop 0) but the screen surface carries the star as a real
+  // hole loop, and ~300 bricks landed inside the flame's window. Hide any
+  // unnamed brick whose centre falls inside an interior loop. No-op when
+  // the silhouette has no interior loops.
+  const holeLoops = silhouette.slice(1).filter(l => l && l.length >= 3);
+  if (holeLoops.length) {
+    let hidden = 0;
+    group.traverse(o => {
+      if (!o.isMesh || o.name) return;
+      // Accumulate parent offsets up to the arch group (layer groups
+      // translate only; none of them rotate).
+      let x = o.position.x, y = o.position.y;
+      for (let p = o.parent; p && p !== group; p = p.parent) { x += p.position.x; y += p.position.y; }
+      for (const h of holeLoops) {
+        if (pointInPolygon(x, y, h)) { o.visible = false; hidden++; break; }
+      }
+    });
+    if (hidden) console.log(`[arch] hid ${hidden} bricks inside interior cutouts`);
   }
 
   return { group, update, triggerCascade, sparkZ };

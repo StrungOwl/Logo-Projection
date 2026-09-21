@@ -13,6 +13,7 @@ import { createCalibration } from './core/calibration.js';
 import { createWarp } from './core/warp.js';
 import { toggleInfoOverlay } from './core/infoOverlay.js';
 import { loadLogo } from './core/logo.js';
+import { applyScreenDefaults } from './core/surface.js';
 import { addEffects } from './effects/effects.js';
 import { addOverlay } from './effects/flowers/starFans.js';
 import { addParticles, updateParticles } from './effects/_shared/streams.js';
@@ -49,8 +50,8 @@ const ctx = {
   updateRotations:    null,
   updateLatticeEvolution: null,
   updateOverlay:      null,
-  // Per-effect group handles. Keyed visibility (0–5 view modes) reads
-  // these in tick() so the user can solo a single layer for tuning.
+  // Per-effect group handles. Keyed visibility (modes 1–9) reads these
+  // in tick() so the user can solo a single layer for tuning.
   panelGroup:         null,
   latticeGroup:       null,
   gateFrameGroup:     null,
@@ -135,7 +136,7 @@ function setDominoes(on, t) {
 let smoothedFlameEnv = 1.0;
 
 // Logo starry blend 0..1 — driven by viewMode. Lerps toward 1 in
-// flameOnly (key 6) so the starry shader fades onto the logo body,
+// flameOnly (key 7) so the starry shader fades onto the logo body,
 // and toward 0 elsewhere. Same value also dims the galaxy backdrop
 // plate so the two layers cross-fade.
 let logoStarryBlend = 0;
@@ -166,7 +167,7 @@ let lastViewMode    = null;
 let lastBrightness  = NaN;
 let lastEnvIntensity = NaN;
 
-// Gate-frame "fiery silhouette" override (mode 6 flameOnly). Captures
+// Gate-frame "fiery silhouette" override (key 7 flameOnly). Captures
 // the frame's base gradient + color on first invocation so we can
 // restore them on exit. Per-frame emissive pulse driven by
 // smoothedFlameEnv lives in tick() (see flame envelope block below).
@@ -208,6 +209,7 @@ function applyGateFrameTint(flameOn) {
 loadLogo().then((logo) => {
   ctx.galaxyMat     = logo.galaxyMat;
   ctx.logoMaterials = logo.logoMaterials;
+  if (logo.meta.isScreenSurface) applyScreenDefaults(ANIM);
 
   // Inject the starry-night shader patch onto every logo material so
   // they can emit a twinkling starfield (gated by uStarryBlend, lerped
@@ -370,12 +372,14 @@ export function tick(t, dt) {
   // View-mode + master-toggle gating. The base scene (logo galaxy, gate
   // frame, particles, lights) stays on across every mode. Each effect
   // family is shown only in Visual Sequence or its own solo mode.
-  //   0 → 'visualSequence'  rosette + hex lattice + flower overlay
-  //   1 → 'fractalPattern'  rosette + hex lattice (with fractal lens)
-  //   2 → 'hexagons'        overlay BIG hex bricks only
-  //   3 → 'flowers'         full flower overlay (hex → roses → hex)
-  //   4 → 'fireplaceOne'    cascading brick arch + flame + starry sky
-  //   5 → 'fireplaceTwo'    nested receding logo silhouettes + flame
+  //   1 → 'moltenGold'      liquid-gold fill cycle
+  //   2 → 'fractalPattern'  rosette + hex lattice (with fractal lens)
+  //   3 → 'hexagons'        overlay BIG hex bricks only
+  //   4 → 'flowers'         full flower overlay (hex → roses → hex)
+  //   5 → 'fireplaceOne'    cascading brick arch + flame + starry sky
+  //   6 → 'fireplaceTwo'    depth-portal corridor of receding outlines
+  //   7 → 'flameOnly'       constellations + gilded frame
+  //   8 → 'visualSequence'  rosette + hex lattice + flower overlay
   // `ANIM.patterns.enabled === false` is the legacy kill switch — when
   // off, panel + lattice stay hidden regardless of view mode.
   const mode = ANIM.viewMode || 'visualSequence';
@@ -406,10 +410,9 @@ export function tick(t, dt) {
     const logoStarsBlend = Math.max(0, (logoStarryBlend - 0.5) / 0.5);
     tickLogoStarry(t, logoStarsBlend);
   }
-  // Flame stays lit in fireplaceOne (key 4), fireplaceTwo (key 5 — recede),
-  // and flameOnly (key 6). fireplaceTwo no longer carries any bricks; the
-  // recede stack + flame + galaxy is the whole show. flameOnly remains the
-  // "molten frame" mode where the gate frame is recolored fiery.
+  // Flame stays lit in fireplaceOne (key 5) and, only when the legacy
+  // static stack is active, fireplaceTwo (key 6). flameOnly (key 7) is the
+  // constellation mode where the gate frame is recolored fiery.
   // Portal (conveyor) mode owns the whole frame: body black, flame off,
   // full-size corridor. Legacy static recede keeps the old flame + body.
   const portalActive = showRecede && !(ANIM.recede?.conveyor?.enabled === false);
@@ -534,10 +537,10 @@ export function tick(t, dt) {
     const envI = fireLikeMode
       ? ((ANIM.flame && ANIM.flame.envMapIntensity) ?? 0.08)
       : 1.0;
-    // flameOnly (key 6) forces the logo body to pure black so the
+    // flameOnly (key 7) forces the logo body to pure black so the
     // silhouette reads as a void framing the central flame. envI is
     // already at the fireplace-low value so any residual env reflection
-    // is killed too. moltenGold (key 7) dims the body to a faint amber
+    // is killed too. moltenGold (key 1) dims the body to a faint amber
     // (~15%) instead — "the emblem being filled" — so the liquid surface
     // reads against a barely-there vessel rather than a void.
     const blackBody = showFlameOnly || portalActive;
@@ -560,11 +563,11 @@ export function tick(t, dt) {
   // cascadeState.playAllT to gate its brick↔petals morph to the all-at-
   // center window, and sparks read cascadeState.active for snap strength.
   //
-  // Pattern mode (key 1) swaps the radial cascade out for the fractal
+  // fractalPattern (key 2) swaps the radial cascade out for the fractal
   // lens (central magnification + back-layer fractal copies). Both
   // updaters drive the same per-tile mesh.position/scale, so only one
   // can run at a time. The fractal updater self-cleans when viewMode
-  // isn't 'pattern' (parks tiles back at rest, fades back layers out).
+  // isn't 'fractalPattern' (parks tiles back at rest, fades back layers out).
   const fractalActive = mode === 'fractalPattern'
                      && ctx.updateFractalZoom
                      && !(ANIM.fractalZoom && ANIM.fractalZoom.enabled === false);
@@ -635,7 +638,7 @@ export function tick(t, dt) {
   // Drive the amber-stone bricks' internal glow with the same envelope.
   setAmberFlameEnv(smoothedFlameEnv);
 
-  // In flameOnly mode (key 6), pulse the gate-frame's emissive intensity
+  // In flameOnly mode (key 7), pulse the gate-frame's emissive intensity
   // with the smoothed flame envelope so the fiery silhouette breathes
   // with the fire flicker. The base color + gradient swap was applied
   // once on mode entry by applyGateFrameTint.
@@ -644,7 +647,7 @@ export function tick(t, dt) {
     if (mat) mat.emissiveIntensity = 0.45 + 0.6 * smoothedFlameEnv;
   }
 
-  // Constellation overlay (key 6 only) — fade in after CONSTELLATION_DELAY
+  // Constellation overlay (key 7 only) — fade in after CONSTELLATION_DELAY
   // so the starry sky + frame can establish first. Constellation runs its
   // own internal clock for draw-in scheduling and stellar pulses; we just
   // drive opacity in/out and call its update.
@@ -672,7 +675,7 @@ export function tick(t, dt) {
       ctx.hearthFlameLights[i].visible = hearthVisible;
     }
   }
-  if (ctx.updateHearthFlame) ctx.updateHearthFlame(t, dt);
+  if (ctx.updateHearthFlame && hearthVisible) ctx.updateHearthFlame(t, dt);
 
   // Galaxy starry-night blend — lerps toward 1 in fireplace mode (black
   // sky + denser flickering stars behind the flame), toward 0 otherwise
@@ -749,31 +752,27 @@ export function tick(t, dt) {
       }
     }
   }
-  // updateOverlay re-asserts brickHexWall.visible based on its morph phase
-  // each frame, which in mode 'flowers' would re-enable the bricks during
-  // the brick hold. Re-apply the mode 'flowers' suppression after the
-  // overlay runs so the brick wall stays hidden — the rose petals + their
-  // morph-ghost transit are the only things visible in this mode.
-  if (mode === 'flowers') {
+  // updateOverlay re-asserts its roots' visibility from its own morph
+  // phase every frame (bricks during brick holds, the ghost/rosette side
+  // during rose holds). Re-apply the per-mode gating AFTER it runs so a
+  // layer this mode doesn't own can never leak back on. The leak wasn't
+  // just visual: in fractalPattern the 1,152 morph-ghost petals (and in
+  // the fire modes ~1,000 masked hex bricks) were issuing draw calls
+  // while contributing nothing to the frame.
+  if (!showFlowers) {
+    for (let i = 0; i < ctx.overlayFlowerRoots.length; i++) {
+      ctx.overlayFlowerRoots[i].visible = false;
+    }
+  }
+  // 'flowers' solo mode also hides the brick wall: the rose petals + their
+  // morph-ghost transit are the only things visible there.
+  if (!showHexBrick || mode === 'flowers') {
     for (let i = 0; i < ctx.overlayHexRoots.length; i++) {
       ctx.overlayHexRoots[i].visible = false;
     }
   }
-  // flameOnly / moltenGold / fireplace modes: updateOverlay's internal
-  // morph state can re-enable BOTH the hex wall and the rose flowers
-  // during its brick-hold and rose-hold phases. None of these modes want
-  // any overlay content — and the leak isn't just visual: ~1000 masked
-  // hex bricks were issuing draw calls in the fireplace modes whenever
-  // the morph happened to sit in a brick phase.
-  if (mode === 'flameOnly' || mode === 'moltenGold'
-      || mode === 'fireplaceOne' || mode === 'fireplaceTwo') {
-    for (let i = 0; i < ctx.overlayHexRoots.length; i++) {
-      ctx.overlayHexRoots[i].visible = false;
-    }
-    for (let i = 0; i < ctx.overlayFlowerRoots.length; i++) {
-      ctx.overlayFlowerRoots[i].visible = false;
-    }
-    if (ctx.overlayMaskMesh) ctx.overlayMaskMesh.visible = false;
+  if (ctx.overlayMaskMesh && !(showFlowers || showHexBrick)) {
+    ctx.overlayMaskMesh.visible = false;
   }
   const snapScale = ctx.cascadeState ? ctx.cascadeState.active : 1;
   // Sparks fade out (not snap to invisible) while the playAll overlay

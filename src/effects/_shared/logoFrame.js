@@ -232,7 +232,7 @@ export function createGateFrame({
 
   // Expose the shared material + gradient uniforms so callers (main.js)
   // can recolor the frame for special modes (e.g. fiery silhouette in
-  // flame-only mode 6) without re-traversing the group. lipMaterial is
+  // flame-only mode 7) without re-traversing the group. lipMaterial is
   // the gilded lip/boss material (=== frameMaterial when gilding is off).
   group.userData.frameMaterial = mat;
   group.userData.lipMaterial   = lipMat;

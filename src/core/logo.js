@@ -14,6 +14,7 @@ import { MODEL, COLORS } from '../config.js';
 import { hexToRgb } from '../util/color.js';
 import { applyGradientTint } from '../shaders/gradient-tint.js';
 import { createGalaxyMaterial } from '../shaders/galaxy-backdrop.js';
+import { resolveSurface, buildScreenModel, screenOptions } from './surface.js';
 
 // Extension-aware loader — picks GLTFLoader for .glb/.gltf, OBJLoader for
 // .obj. Hands back a single Object3D root so callers don't care about the
@@ -187,9 +188,31 @@ function convexHull2D(pts) {
 
 // Load the logo and return a promise resolving to a bundle of objects +
 // metadata that the patterns/particles layers need.
+//
+// Surface dispatch: 'logo' loads MODEL.path (the GLB); 'screen' builds
+// the procedural full-frame slab from src/core/surface.js. Both go
+// through finishModel() so every downstream layer sees the same bundle.
 export function loadLogo() {
+  if (resolveSurface() === 'screen') {
+    const opts = screenOptions();
+    console.log(`[surface] full-screen slab - aspect ${opts.aspect.toFixed(3)}, hole '${opts.hole}'`);
+    try {
+      return Promise.resolve(finishModel(buildScreenModel(opts)));
+    } catch (err) {
+      return Promise.reject(err);
+    }
+  }
   return new Promise((resolve, reject) => {
     loadModelByExt(MODEL.path, (model) => {
+      try { resolve(finishModel(model)); } catch (err) { reject(err); }
+    }, reject);
+  });
+}
+
+// Everything after the raw model exists: centre, materials, silhouette
+// metadata, galaxy plate, final scale + placement. Throws on a model
+// with no usable mesh.
+function finishModel(model) {
       // Center the model at origin before scaling.
       const box = new THREE.Box3().setFromObject(model);
       const size = box.getSize(new THREE.Vector3());
@@ -246,9 +269,13 @@ export function loadLogo() {
         }
       });
 
-      if (!logoMesh) { reject(new Error('Logo has no mesh with position data')); return; }
+      if (!logoMesh) throw new Error('Logo has no mesh with position data');
 
       const meta = computeSilhouetteMeta(logoMesh);
+      // Screen surface without a hole: hand the flame a synthetic column
+      // region (see surface.js) since there is no inner cutout to trace.
+      if (logoMesh.userData.flameCutout) meta.flameCutout = logoMesh.userData.flameCutout;
+      meta.isScreenSurface = !!logoMesh.userData.isScreenSurface;
       const galaxyMat = attachGalaxyPlate(logoMesh, meta);
 
       // Final scale + vertical placement. Must happen AFTER silhouette
@@ -260,9 +287,7 @@ export function loadLogo() {
       model.rotation.set(0, 0, 0);
       model.position.y += MODEL.positionOffsetY;
 
-      resolve({ model, logoMesh, galaxyMat, meta, logoMaterials });
-    }, reject);
-  });
+      return { model, logoMesh, galaxyMat, meta, logoMaterials };
 }
 
 // Computes: front-face convex hull, inner-star centroid (fadeCenter used
@@ -359,6 +384,7 @@ function attachGalaxyPlate(logoMesh, meta) {
   galaxyMat.uniforms.uRadius.value = maxR;
   galaxyMat.uniforms.uMinY.value   = hullMinY;
   galaxyMat.uniforms.uFadeHeight.value = (hullMaxY - hullMinY) * 0.10;
+  if (meta.isScreenSurface) galaxyMat.uniforms.uCoreGlow.value = 0.45;
 
   const galaxyMesh = new THREE.Mesh(new THREE.ShapeGeometry(shape), galaxyMat);
   galaxyMesh.position.set(0, 0, maxZ - 0.5);

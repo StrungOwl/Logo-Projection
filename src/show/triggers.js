@@ -20,7 +20,15 @@ export function fireTrigger(name, t, args) {
     console.warn(`[triggers] unknown trigger '${name}' (known: ${listTriggers().join(', ')})`);
     return false;
   }
-  fn(t, args);
+  // Guarded: fireTrigger runs inside tick() → animate(). An exception
+  // here would repeat every frame BEFORE pipeline.render() and freeze the
+  // picture on the last good frame for the rest of an unattended run.
+  try {
+    fn(t, args);
+  } catch (err) {
+    console.error(`[triggers] '${name}' threw:`, err);
+    return false;
+  }
   return true;
 }
 

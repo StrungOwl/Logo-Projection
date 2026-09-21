@@ -11,7 +11,7 @@
 // pass's internal resolution on lower presets. Both read by
 // src/core/pipeline.js when the composer is active.
 export const QUALITY_PRESETS = {
-  HIGH: { particles: 1.0,  sparks: 1.0,  pixelRatioMax: 2.0, trailLength: 1.0, msaaSamples: 4, bloomScale: 1.0 },
+  HIGH: { particles: 1.0,  sparks: 1.0,  pixelRatioMax: 2.0, trailLength: 1.0, msaaSamples: 4, bloomScale: 0.6 },
   MED:  { particles: 0.6,  sparks: 0.6,  pixelRatioMax: 1.5, trailLength: 0.6, msaaSamples: 2, bloomScale: 0.7 },
   LOW:  { particles: 0.35, sparks: 0.35, pixelRatioMax: 1.0, trailLength: 0.4, msaaSamples: 0, bloomScale: 0.5 },
 };

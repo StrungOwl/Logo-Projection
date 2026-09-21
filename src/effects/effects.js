@@ -175,7 +175,7 @@ export function addEffects(logoMesh, meta, renderer) {
   logoMesh.add(gate);
 
   // Gate-frame rim — buildFlameRim ribbon along the gate frame's inner
-  // aperture, only shown in flameOnly mode (key 6). Built + driven in
+  // aperture, only shown in flameOnly mode (key 7). Built + driven in
   // _shared/gateRim.js; both handles are null when disabled in config.
   const { gateRimGroup, updateGateRim } = createGateRim({
     logoMesh, gateOutline, gateFrameWidth, cx, cy, maxZ,
@@ -231,7 +231,7 @@ export function addEffects(logoMesh, meta, renderer) {
 
   // ---------------------------------------------------------------------
   // Flame effect — fills the main central cutout of the logo. Hidden
-  // unless ANIM.viewMode === 'fireplace' (gated in src/main.js), where it
+  // unless a fire-like mode is active (gated in src/main.js), where it
   // burns inside the procedural-brick arch above. Carries its own update
   // fn for the body shader, sparks, and flickering point light.
   // ---------------------------------------------------------------------
@@ -244,7 +244,7 @@ export function addEffects(logoMesh, meta, renderer) {
 
   // ---------------------------------------------------------------------
   // Hearth flame — single wide flame using the LOGO SILHOUETTE itself as
-  // the cutout polygon (mode 6). Column widening, layer disables, and the
+  // the cutout polygon (mode 7). Column widening, layer disables, and the
   // depth-test override live with the rest of the flame machinery in
   // fireplaceOne/flame.js; createHearthFlame adds its group to logoMesh.
   // ---------------------------------------------------------------------
@@ -266,7 +266,7 @@ export function addEffects(logoMesh, meta, renderer) {
   logoMesh.add(fireplace.group);
 
   // ---------------------------------------------------------------------
-  // Recede — Effect 5 (key 5, viewMode 'fireplaceTwo'). Nested static
+  // Recede — Effect 5 (key 6, viewMode 'fireplaceTwo'). Nested static
   // copies of the logo silhouette stacked back in z, each smaller and
   // dimmer than the one in front. Carries the same starry-shimmer shader
   // patch the logo body uses so the whole stack twinkles. Visibility
@@ -275,6 +275,7 @@ export function addEffects(logoMesh, meta, renderer) {
   const recede = createRecede({
     silhouettePolygons,
     hullMaxR: maxR,
+    pivot: patternFadeCenter,
   });
   // Sits just behind the logo's front face so the frontmost copy is
   // tucked into the cutout-stack rather than floating in front of the
@@ -284,7 +285,7 @@ export function addEffects(logoMesh, meta, renderer) {
   logoMesh.add(recede.group);
 
   // ---------------------------------------------------------------------
-  // Molten Gold — mode 7 (key 7, viewMode 'moltenGold'). Liquid-gold fill
+  // Molten Gold — mode 1 (key 1, viewMode 'moltenGold'). Liquid-gold fill
   // inside the silhouette. meta coords are mesh-local so the group
   // parents straight onto the logo mesh with no centroid offset (same
   // convention as the calibration patterns). Gated in src/main.js.
@@ -306,7 +307,7 @@ export function addEffects(logoMesh, meta, renderer) {
   logoMesh.add(edgeChase.mesh);
 
   // ---------------------------------------------------------------------
-  // Constellation — visible only in flameOnly mode (key 6). Anchor stars
+  // Constellation — visible only in flameOnly mode (key 7). Anchor stars
   // sampled inside the silhouette, slowly connect into a constellation
   // map; an occasional inward shockwave + anchor-streak event fires on
   // a random cadence. Positions are in panel-local (mesh-local minus

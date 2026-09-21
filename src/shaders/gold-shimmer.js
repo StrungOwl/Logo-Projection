@@ -140,8 +140,11 @@ export function applyGoldShimmer(material) {
   };
 }
 
+let lastSyncT = -Infinity;
 export function tickShimmer(t) {
-  // Re-pull config knobs each frame so devtools edits take effect live.
-  syncFromConfig();
+  // Re-pull config knobs a few times a second (not every frame — the
+  // hex-string colour parses were per-frame garbage) so devtools edits
+  // still land within ~250 ms.
+  if (t - lastSyncT > 0.25 || t < lastSyncT) { syncFromConfig(); lastSyncT = t; }
   sharedUniforms.uTime.value = t;
 }

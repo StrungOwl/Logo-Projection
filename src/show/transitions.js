@@ -92,6 +92,16 @@ export function createTransitionManager({ renderer }) {
   function requestMode(mode, style) {
     if (mode === ANIM.viewMode && st.phase === 'idle') return;
     const s = style || ANIM.transitions?.defaultStyle || 'dip';
+    // Instant styles ('cut' / 'burst') are honoured even mid-transition:
+    // cancel whatever envelope is running (restore full exposure, drop
+    // the wipe disc) and swap now. Previously they fell into the
+    // retarget branch below and silently became the slower dip/wipe.
+    if ((s === 'cut' || s === 'burst') && st.phase !== 'idle') {
+      st.phase = 'idle';
+      st.env = 1;
+      applyEnvelope();
+      if (wipe) wipe.mesh.visible = false;
+    }
     // Mid-transition re-requests: during fade-OUT just retarget the
     // pending flip; during fade-IN reverse back out toward the new mode
     // from the current envelope level (dropping the request here was the

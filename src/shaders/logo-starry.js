@@ -1,12 +1,11 @@
 // Starry-night shader injection for the logo body. Grafts a multi-scale
 // twinkling starfield onto every logo MeshStandardMaterial via
 // onBeforeCompile so the body keeps PBR shading but emits the same kind
-// of starlit sky the galaxy backdrop draws. Sampled in WORLD-XY (like
-// shaders/ember-flicker.js) so the star pattern reads as one continuous
+// of starlit sky the galaxy backdrop draws. Sampled in WORLD-XY so the star pattern reads as one continuous
 // field across every part of the logo, regardless of which sub-mesh.
 //
 // Driven by a shared `uStarryBlend` uniform — main.js lerps it toward 1
-// in flameOnly mode (key 6) so the stars fade in while the galaxy
+// in flameOnly mode (key 7) so the stars fade in while the galaxy
 // backdrop plate's brightness is faded toward 0, swapping where the
 // twinkle lives.
 

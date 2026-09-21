@@ -1,7 +1,7 @@
 // Gate-frame rim — same buildFlameRim ribbon system the central flame
 // uses on its inner-star cutout, but here the polygon is the gate-frame's
 // inner aperture (the entire logo silhouette inset by gateFrameWidth).
-// Only shown in flameOnly mode (key 6); main.js toggles .visible. The
+// Only shown in flameOnly mode (key 7); main.js toggles .visible. The
 // per-frame driver mirrors flame.js's chase/ignite scheduler.
 //
 // Returns { gateRimGroup, updateGateRim } — both null when the rim is

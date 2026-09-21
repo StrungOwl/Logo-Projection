@@ -117,7 +117,7 @@ export function createPipeline({ renderer, scene, camera, ctx }) {
   //
   // The composer's render target must be custom:
   //   - stencilBuffer: the overlay mask + fireplace tiles stencil-test
-  //     (modes 0/2/3/4 silently break on the default stencil-less RT)
+  //     (modes 8/3/4/5 silently break on the default stencil-less RT)
   //   - HalfFloatType: HDR headroom so additive stacks can exceed 1.0 and
   //     feed the bloom threshold meaningfully
   //   - samples: MSAA lives on the default framebuffer only; without

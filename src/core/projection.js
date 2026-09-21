@@ -13,12 +13,22 @@
 import * as THREE from 'three';
 import { ANIM } from '../config.js';
 import { frameLogo } from './scene.js';
+import { isScreenSurface } from './surface.js';
 
 export function createProjectionMode({ camera, controls, pipeline }) {
   const params = new URLSearchParams(window.location.search);
-  const bootRequested = params.get('proj') === '1' || params.has('projection');
-  const bootW = parseInt(params.get('w') || '1920', 10) || 1920;
-  const bootH = parseInt(params.get('h') || '1080', 10) || 1080;
+  const screen = isScreenSurface();
+  // The full-screen surface is projection-native: it boots straight into
+  // fixed-resolution framing (at the window's own size unless w/h are
+  // given) with zero margin so the slab fills the output exactly.
+  const bootRequested = params.get('proj') === '1' || params.has('projection')
+                     || (screen && params.get('proj') !== '0');
+  const defW = screen ? window.innerWidth  : 1920;
+  const defH = screen ? window.innerHeight : 1080;
+  const bootW = parseInt(params.get('w') || String(defW), 10) || defW;
+  const bootH = parseInt(params.get('h') || String(defH), 10) || defH;
+  if (screen && !params.has('margin')) ANIM.projection.margin = 0;
+  if (params.has('margin')) ANIM.projection.margin = parseFloat(params.get('margin')) || 0;
   if (params.has('fov'))  ANIM.projection.fov  = parseFloat(params.get('fov'))  || ANIM.projection.fov;
   if (params.has('zoom')) ANIM.projection.zoom = parseFloat(params.get('zoom')) || ANIM.projection.zoom;
 

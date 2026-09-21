@@ -1358,6 +1358,11 @@ export function createFlame({
     // EdgesGeometry-based chain bounded by an elliptical mask centred on
     // the fade centre (same isolation strategy as src/particles.js).
     cutoutMeshLocal = extractInnerCutout(logoMesh, meta);
+    // Surfaces with no aperture (screen slab, hole:'none') supply a
+    // synthetic column polygon instead of giving up.
+    if ((!cutoutMeshLocal || cutoutMeshLocal.length < 4) && meta.flameCutout?.length >= 4) {
+      cutoutMeshLocal = meta.flameCutout;
+    }
     if (!cutoutMeshLocal || cutoutMeshLocal.length < 4) {
       console.warn('[flame] could not extract inner cutout; flame disabled');
       return { group, update: () => {}, lights: [], flameMesh: null, sparkPoints: null };
@@ -1965,7 +1970,7 @@ export function createFlame({
 // flame, not a column that meanders.
 //
 // Disabling depth test on the flame body lets it render on top of the
-// opaque-black logo body in mode 6 (which would otherwise occlude the
+// opaque-black logo body in mode 7 (which would otherwise occlude the
 // flame except where the inner-star cutout opens into the silhouette).
 //
 // Rim ribbon is suppressed via disableRim — no chase-pulse tracer.
@@ -2018,7 +2023,7 @@ export function createHearthFlame({ logoMesh, meta, renderer }) {
   logoMesh.add(hearthFlame.group);
 
   // Disable depth test on every flame material so the body renders on
-  // top of the opaque logo body in mode 6 (key 6 sets the body color
+  // top of the opaque logo body in mode 7 (key 7 sets the body color
   // to pure black; depthTest=true would have the body's depth occlude
   // the flame everywhere except the inner-star cutout).
   hearthFlame.group.traverse(o => {
