@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { pointInPolygon } from '../../util/polygon.js';
 import { buildHullClip, buildRadialFade } from '../_shared/shaderPatches.js';
+import { ANIM } from '../../config.js';
 
 // Re-exported for callers that pulled this helper from the lattice module.
 // Authoritative source is util/polygon.js.
@@ -173,6 +174,8 @@ export function createLatticeUnderlay({
     uNoiseAmp:         { value: evolution.enabled ? evolution.noiseAmp   : 0 },
     uNoiseScale:       { value: evolution.noiseScale },
     uNoiseSpeed:       { value: evolution.noiseSpeed },
+    uHexRelief:        { value: 1 },
+    uPulseBias:        { value: 1 },
   };
 
   if (fadeOuterR > 0 || maxOpacity < 1) {
@@ -194,12 +197,13 @@ export function createLatticeUnderlay({
     if (hullClipUniforms) Object.assign(shader.uniforms, hullClipUniforms);
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>',
-        '#include <common>\nvarying vec3 vGradWP;\nvarying vec2 vPanelXY;\nuniform mat4 uPanelInv;')
+        '#include <common>\nvarying vec4 vHexLD;\nvarying vec3 vGradWP;\nvarying vec2 vPanelXY;\nuniform mat4 uPanelInv;')
       .replace('#include <project_vertex>',
         `#include <project_vertex>
          vec4 _wp = modelMatrix * vec4(position, 1.0);
          vGradWP = _wp.xyz;
-         vPanelXY = (uPanelInv * _wp).xy;`);
+         vPanelXY = (uPanelInv * _wp).xy;
+         vHexLD = vec4(position.xy, (modelMatrix * vec4(position.xy, 0.0, 0.0)).xy);`);
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>',
         `#include <common>
@@ -230,6 +234,9 @@ export function createLatticeUnderlay({
          uniform float uNoiseSpeed;
          varying vec3  vGradWP;
          varying vec2  vPanelXY;
+         varying vec4  vHexLD;
+         uniform float uHexRelief;
+         uniform float uPulseBias;
          // Cheap hash → 2D value noise. Used for slow-drifting "hot
          // patches" on the wall (uNoiseScale = patch frequency,
          // uNoiseSpeed = patch drift). Output ∈ [0, 1].
@@ -264,6 +271,8 @@ export function createLatticeUnderlay({
          // through the middle, so the pulse reads as a slow held breath
          // rather than constant sweeping motion.
          float _pk = smoothstep(0.0, 1.0, smoothstep(0.0, 1.0, _raw));
+         // Bias > 1 keeps each hex dark for longer, so fewer are lit at once.
+         _pk = pow(_pk, uPulseBias);
          // Spatial noise modulator. Drives off uEvoTime (continuous) so it
          // keeps drifting through cascade motion; multiplied POST-sine so
          // changing amplitude/scale/speed cannot disturb phase.
@@ -273,10 +282,18 @@ export function createLatticeUnderlay({
          float _pBright = mix(uPulseBrightMin, uPulseBrightMax, _pk) * _nm;
          float _pEmiss  = mix(uPulseEmissiveMin, uPulseEmissiveMax, _pk) * _nm;
          vec3  _pColor  = mix(uPulseColorA, uPulseColorB, _pk);
-         diffuseColor.rgb = _pColor * mix(uGradDark, uGradBright, _gt) * _pBright;`)
+         diffuseColor.rgb = _pColor * mix(uGradDark, uGradBright, _gt) * _pBright;
+         // Relief: each hex is shaded as a shallow dome - bright crown, dark
+         // rim, and a highlight on the side that faces the upper-left light.
+         float _hr   = clamp(length(vHexLD.xy) / ${hexRadius.toFixed(4)}, 0.0, 1.0);
+         float _side = dot(normalize(vHexLD.zw + vec2(1e-5)), vec2(-0.6, 0.8));
+         float _dome = (1.0 - 0.8 * smoothstep(0.35, 1.0, _hr))
+                     * (1.0 + 0.55 * _side * smoothstep(0.15, 0.85, _hr));
+         _dome = mix(1.0, _dome, uHexRelief);
+         diffuseColor.rgb *= _dome;`)
       .replace('#include <emissivemap_fragment>',
         `#include <emissivemap_fragment>
-         totalEmissiveRadiance += _pColor * _pEmiss;`)
+         totalEmissiveRadiance += _pColor * _pEmiss * _dome;`)
       .replace('#include <dithering_fragment>',
         `#include <dithering_fragment>
          ${radialFadeBody}`);
@@ -422,7 +439,7 @@ export function createLatticeUnderlay({
       if (hullClipUniforms) Object.assign(shader.uniforms, hullClipUniforms);
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>',
-          '#include <common>\nvarying vec3 vGradWP;\nvarying vec2 vPanelXY;\nuniform mat4 uPanelInv;'
+          '#include <common>\nvarying vec4 vHexLD;\nvarying vec3 vGradWP;\nvarying vec2 vPanelXY;\nuniform mat4 uPanelInv;'
           + '\nattribute float aPulseSeed;'
           + '\nattribute float aPulseSpeedFactor;'
           + '\nattribute float aPulseTime;'
@@ -434,6 +451,7 @@ export function createLatticeUnderlay({
          vec4 _wp = modelMatrix * instanceMatrix * vec4(position, 1.0);
          vGradWP = _wp.xyz;
          vPanelXY = (uPanelInv * _wp).xy;
+         vHexLD = vec4(position.xy, (modelMatrix * instanceMatrix * vec4(position.xy, 0.0, 0.0)).xy);
          vPulseSeed = aPulseSeed;
          vPulseSpeedFactor = aPulseSpeedFactor;
          vPulseTime = aPulseTime;`);
@@ -465,6 +483,9 @@ export function createLatticeUnderlay({
          uniform float uNoiseSpeed;
          varying vec3  vGradWP;
          varying vec2  vPanelXY;
+         varying vec4  vHexLD;
+         uniform float uHexRelief;
+         uniform float uPulseBias;
          varying float vPulseSeed;
          varying float vPulseSpeedFactor;
          varying float vPulseTime;
@@ -505,6 +526,8 @@ export function createLatticeUnderlay({
          // through the middle, so the pulse reads as a slow held breath
          // rather than constant sweeping motion.
          float _pk = smoothstep(0.0, 1.0, smoothstep(0.0, 1.0, _raw));
+         // Bias > 1 keeps each hex dark for longer, so fewer are lit at once.
+         _pk = pow(_pk, uPulseBias);
          // Spatial noise modulator. Drives off uEvoTime (continuous) so it
          // keeps drifting through cascade motion; multiplied POST-sine so
          // changing amplitude/scale/speed cannot disturb phase.
@@ -514,10 +537,18 @@ export function createLatticeUnderlay({
          float _pBright = mix(uPulseBrightMin, uPulseBrightMax, _pk) * _nm;
          float _pEmiss  = mix(uPulseEmissiveMin, uPulseEmissiveMax, _pk) * _nm;
          vec3  _pColor  = mix(uPulseColorA, uPulseColorB, _pk);
-         diffuseColor.rgb = _pColor * mix(uGradDark, uGradBright, _gt) * _pBright;`)
+         diffuseColor.rgb = _pColor * mix(uGradDark, uGradBright, _gt) * _pBright;
+         // Relief: each hex is shaded as a shallow dome - bright crown, dark
+         // rim, and a highlight on the side that faces the upper-left light.
+         float _hr   = clamp(length(vHexLD.xy) / ${hexRadius.toFixed(4)}, 0.0, 1.0);
+         float _side = dot(normalize(vHexLD.zw + vec2(1e-5)), vec2(-0.6, 0.8));
+         float _dome = (1.0 - 0.8 * smoothstep(0.35, 1.0, _hr))
+                     * (1.0 + 0.55 * _side * smoothstep(0.15, 0.85, _hr));
+         _dome = mix(1.0, _dome, uHexRelief);
+         diffuseColor.rgb *= _dome;`)
         .replace('#include <emissivemap_fragment>',
           `#include <emissivemap_fragment>
-         totalEmissiveRadiance += _pColor * _pEmiss;`)
+         totalEmissiveRadiance += _pColor * _pEmiss * _dome;`)
         .replace('#include <dithering_fragment>',
           `#include <dithering_fragment>
          ${radialFadeBody}`);
@@ -621,13 +652,30 @@ export function createLatticeUnderlay({
   const TAU = Math.PI * 2;
   group.userData.updateEvolution = (t) => {
     pulseUniforms.uEvoTime.value = t;
+    // Live knobs (ANIM.latticeHex) so ANIM.variations can re-roll the wall
+    // on every visit. Changing pulseSpeed re-phases the pulse once - the
+    // roll happens on mode entry, under the transition.
+    const L  = ANIM.latticeHex || {};
+    const LE = L.evolution || {};
+    const liveEmissiveMax = L.emissiveMax   ?? baseEmissiveMax;
+    const liveBrightMax   = L.brightnessMax ?? baseBrightMax;
+    pulseUniforms.uPulseSpeed.value = L.pulseSpeed ?? pulseSpeed;
+    pulseUniforms.uHexRelief.value  = L.relief ?? 1;
+    pulseUniforms.uPulseBias.value  = Math.max(0.1, L.bias ?? 1);
+    pulseUniforms.uPulseEmissiveMax.value = liveEmissiveMax;
+    pulseUniforms.uPulseBrightMax.value   = liveBrightMax;
+    if (evoEnabled) {
+      pulseUniforms.uNoiseAmp.value   = LE.noiseAmp   ?? evolution.noiseAmp;
+      pulseUniforms.uNoiseScale.value = LE.noiseScale ?? evolution.noiseScale;
+      pulseUniforms.uNoiseSpeed.value = LE.noiseSpeed ?? evolution.noiseSpeed;
+    }
     if (!evoEnabled) return;
     const cohN = 0.5 + 0.5 * Math.sin(t * TAU / evoCohPeriod);
     pulseUniforms.uCoherence.value = evoCohMin + (evoCohMax - evoCohMin) * cohN;
     pulseUniforms.uPulseEmissiveMax.value =
-      baseEmissiveMax * (1 + evoEmissivePulse * Math.sin(t * TAU / evoEmissivePeriod));
+      liveEmissiveMax * (1 + evoEmissivePulse * Math.sin(t * TAU / evoEmissivePeriod));
     pulseUniforms.uPulseBrightMax.value =
-      baseBrightMax * (1 + evoBrightPulse * Math.sin(t * TAU / evoBrightPeriod));
+      liveBrightMax * (1 + evoBrightPulse * Math.sin(t * TAU / evoBrightPeriod));
     // Hue tilt within the warm family: opposite-sign drift on R and B
     // around the configured base. G stays fixed so the colour never
     // crosses into cool tones — only the gold↔amber balance shifts.

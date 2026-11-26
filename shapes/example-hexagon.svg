@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Example shape: one closed outline is all a shape needs. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 600">
+  <polygon fill="none" stroke="#f00" points="300.0,20.0 57.5,160.0 57.5,440.0 300.0,580.0 542.5,440.0 542.5,160.0"/>
+</svg>

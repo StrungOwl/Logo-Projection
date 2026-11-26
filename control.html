@@ -106,11 +106,11 @@
     const MODES = [
       ['1', 'moltenGold'],   ['2', 'fractalPattern'], ['3', 'hexagons'],
       ['4', 'flowers'],      ['5', 'fireplaceOne'],   ['6', 'fireplaceTwo'],
-      ['7', 'flameOnly'],    ['8', 'visualSequence'], ['9', 'calibration'],
+      ['7', 'flameOnly'],    ['8', 'visualSequence'], ['9', 'calibration'], ['Q', 'starDive'], ['W', 'mercury'], ['R', 'strata'], ['T', 'shards'],
     ];
     const CAL = ['off', 'fill', 'outline', 'grid', 'checker', 'corners'];
     // Seed list — replaced by the live registry from the first state msg.
-    let TRIGGERS = ['cascade.now', 'arch.cascade', 'fractal.zoom', 'domino.toggle', 'stellar.pulse'];
+    let TRIGGERS = ['cascade.now', 'arch.cascade', 'fractal.zoom', 'domino.toggle', 'stellar.pulse', 'stellar.meteor', 'stellar.vortex'];
 
     let lastState = null;
     function send(obj) { bc.postMessage(obj); log('→ ' + JSON.stringify(obj)); }

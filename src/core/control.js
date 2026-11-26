@@ -17,6 +17,11 @@
 //   { type:'quality',     value:'HIGH'|'MED'|'LOW' }
 //   { type:'show',        action:'play'|'pause'|'toggle'|'next'|'prev'|'goto'|'state', target?:idx|mode }
 //   { type:'warp',        ... }   // forwarded to the warp module (Phase 9)
+//   { type:'key',         key:'1', shift?:false }   // press a keyboard key
+//       remotely. `key` is a TouchDesigner Keyboard In name ('a', '1',
+//       'space', 'left', 'tab', 'esc'…) or a DOM code ('KeyA', 'Digit1').
+//       Runs the SAME handler as a real key press, so every keyboard
+//       control works from TouchDesigner with no per-key wiring.
 // Outbound: {type:'pong'} · {type:'state', ...} · {type:'event', name, t}
 //           {type:'ack', ok, for, error?}
 //
@@ -56,6 +61,14 @@ export function initControl(deps) {
   }
 
   const sendState = () => broadcast(stateMsg());
+  // A mode change lands only after its transition (dip / wipe), so the
+  // state sent at request time still names the OLD mode. Send it again
+  // once the transition has had time to finish.
+  let lateTimer = null;
+  const sendStateLate = () => {
+    clearTimeout(lateTimer);
+    lateTimer = setTimeout(sendState, 2500);
+  };
   const sendEvent = (name, extra) =>
     broadcast({ type: 'event', name, t: deps.getTime(), ...(extra || {}) });
 
@@ -82,6 +95,38 @@ export function initControl(deps) {
     return null;
   }
 
+  // Remote key press → a synthetic keydown on window, so the one keyboard
+  // handler in main.js (and the warp editor's) stays the single source
+  // of truth for what each key does.
+  const KEY_NAMES = {
+    space: ['Space', ' '], tab: ['Tab', 'Tab'], enter: ['Enter', 'Enter'],
+    esc: ['Escape', 'Escape'], escape: ['Escape', 'Escape'],
+    left: ['ArrowLeft', 'ArrowLeft'], right: ['ArrowRight', 'ArrowRight'],
+    up: ['ArrowUp', 'ArrowUp'], down: ['ArrowDown', 'ArrowDown'],
+    arrowleft: ['ArrowLeft', 'ArrowLeft'], arrowright: ['ArrowRight', 'ArrowRight'],
+    arrowup: ['ArrowUp', 'ArrowUp'], arrowdown: ['ArrowDown', 'ArrowDown'],
+  };
+  function pressKey(msg) {
+    const raw = String(msg.key ?? msg.code ?? '');
+    if (!raw) return 'missing key';
+    const shift = !!msg.shift;
+    let code, key;
+    const lower = raw.toLowerCase();
+    if (/^Key[A-Z]$/.test(raw))        { code = raw; key = raw.slice(3); key = shift ? key : key.toLowerCase(); }
+    else if (/^Digit[0-9]$/.test(raw)) { code = raw; key = raw.slice(5); }
+    else if (/^[a-z]$/i.test(raw))     { code = 'Key' + raw.toUpperCase(); key = shift ? raw.toUpperCase() : lower; }
+    else if (/^[0-9]$/.test(raw))      { code = 'Digit' + raw; key = raw; }
+    else if (/^Numpad[0-9]$/.test(raw)) { key = raw.slice(6); code = 'Digit' + key; }
+    else if (KEY_NAMES[lower])         { [code, key] = KEY_NAMES[lower]; }
+    else if (raw === ' ')              { code = 'Space'; key = ' '; }
+    else return `unknown key '${raw}'`;
+    window.dispatchEvent(new KeyboardEvent('keydown', {
+      code, key, shiftKey: shift, ctrlKey: !!msg.ctrl, altKey: !!msg.alt,
+      bubbles: true, cancelable: true,
+    }));
+    return null;
+  }
+
   function handleMessage(msg, replyFn) {
     const reply = (obj) => { if (replyFn) replyFn(obj); else broadcast(obj); };
     if (!msg || typeof msg !== 'object' || !msg.type) {
@@ -95,6 +140,7 @@ export function initControl(deps) {
         deps.transitions.requestMode(msg.value, msg.style);
         deps.sequencer?.notifyManualInput();
         reply({ type: 'ack', ok: true, for: 'mode' });
+        sendStateLate();
         return sendState();
       case 'trigger': {
         const ok = fireTrigger(msg.name, t, msg.args);
@@ -134,6 +180,15 @@ export function initControl(deps) {
         else if (act === 'goto')   s.goto(msg.target);
         else if (act !== 'state')  return reply({ type: 'ack', ok: false, for: 'show', error: `unknown action '${act}'` });
         reply({ type: 'ack', ok: true, for: 'show' });
+        return sendState();
+      }
+      case 'key': {
+        const err = pressKey(msg);
+        reply(err
+          ? { type: 'ack', ok: false, for: 'key', error: err }
+          : { type: 'ack', ok: true, for: 'key' });
+        if (err) return undefined;
+        sendStateLate();
         return sendState();
       }
       case 'warp':

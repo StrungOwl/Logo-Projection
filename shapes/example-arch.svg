@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Example shape: curves are fine. The small inner path is a hole.
+     With hole: 'svg' in shapes.js, that hole is the opening of the looks. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 800">
+  <path fill="none" stroke="#f00" d="M40,780 L40,360 C40,180 180,60 300,20 C420,60 560,180 560,360 L560,780 Z"/>
+  <path fill="none" stroke="#f00" d="M300,230 C330,330 380,380 470,410 C380,440 330,500 300,640 C270,500 220,440 130,410 C220,380 270,330 300,230 Z"/>
+</svg>

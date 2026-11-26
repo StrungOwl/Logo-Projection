@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Logo Projection — Shapes</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='40' fill='%23FFBF00'/%3E%3C/svg%3E">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #0b0a09; color: #e9dcc3; font-family: Calibri, Arial, sans-serif; padding: 32px 16px 60px; }
+    main { max-width: 1080px; margin: 0 auto; }
+    h1 { font-size: 28px; font-weight: 700; color: #ffc56a; }
+    p.lead { margin: 8px 0 26px; color: #b7a98f; max-width: 720px; line-height: 1.5; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 16px; }
+    .card { background: #15120f; border: 1px solid #2c251c; border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+    .thumb { aspect-ratio: 1; background: #000; border-radius: 6px; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+    .thumb canvas { width: 100%; height: 100%; }
+    .name { font-weight: 700; font-size: 17px; }
+    .file { color: #8c7f69; font-size: 13px; word-break: break-all; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; }
+    a.btn { flex: 1; text-align: center; text-decoration: none; padding: 9px 10px; border-radius: 6px; font-weight: 700; font-size: 14px; background: #ffc56a; color: #1a1206; }
+    a.btn.alt { background: transparent; color: #ffc56a; border: 1px solid #5b4a2a; }
+    a.btn:hover { filter: brightness(1.12); }
+    h2 { font-size: 18px; margin: 34px 0 10px; color: #ffc56a; }
+    ol { margin-left: 22px; line-height: 1.7; color: #cdbfa5; }
+    code { background: #1d1914; padding: 1px 6px; border-radius: 4px; color: #ffd89a; }
+    .err { color: #ff8f6b; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Shapes</h1>
+  <p class="lead">Pick the shape that the show draws on. Each shape is one SVG file in the
+    <code>shapes</code> folder. "Preview" opens the normal view. "Projector" opens the
+    full-frame picture for the projector, and the show starts by itself.</p>
+  <div class="grid" id="grid"></div>
+
+  <h2>Add a shape</h2>
+  <ol>
+    <li>Put an SVG file in the <code>shapes</code> folder. Example: <code>shapes/my-shape.svg</code></li>
+    <li>Open <code>index.html?shape=my-shape</code></li>
+    <li>To tune it, or to show it on this page, add an entry in <code>shapes/shapes.js</code>.</li>
+  </ol>
+  <p class="lead" style="margin-top:10px">Full guide: <code>shapes/README.md</code></p>
+</main>
+
+<script type="module">
+  import { SHAPES } from './shapes/shapes.js';
+
+  const grid = document.getElementById('grid');
+  const card = (name, label, file, links, draw) => {
+    const el = document.createElement('div');
+    el.className = 'card';
+    el.innerHTML = `<div class="thumb"><canvas width="460" height="460"></canvas></div>
+      <div><div class="name"></div><div class="file"></div></div><div class="row"></div>`;
+    el.querySelector('.name').textContent = label;
+    el.querySelector('.file').textContent = file;
+    const row = el.querySelector('.row');
+    for (const [text, href, alt] of links) {
+      const a = document.createElement('a');
+      a.className = 'btn' + (alt ? ' alt' : '');
+      a.textContent = text; a.href = href;
+      row.appendChild(a);
+    }
+    grid.appendChild(el);
+    draw(el.querySelector('canvas'), el);
+  };
+
+  // Thumbnail: every path of the SVG, filled even-odd, in gold.
+  async function drawSvg(canvas, el, file) {
+    try {
+      const res = await fetch(`./shapes/${file}`);
+      if (!res.ok) throw new Error(`${res.status}`);
+      const doc = new DOMParser().parseFromString(await res.text(), 'image/svg+xml');
+      const svg = doc.documentElement;
+      // Measure in the page (an off-screen copy), then draw each element.
+      const holder = document.createElement('div');
+      holder.style.cssText = 'position:absolute;left:-9999px;top:0;width:0;height:0;overflow:hidden';
+      document.body.appendChild(holder);
+      const live = document.importNode(svg, true);
+      holder.appendChild(live);
+      const box = live.getBBox();
+      const g = canvas.getContext('2d');
+      const pad = 22, s = Math.min((canvas.width - 2 * pad) / box.width, (canvas.height - 2 * pad) / box.height);
+      g.translate((canvas.width - box.width * s) / 2 - box.x * s, (canvas.height - box.height * s) / 2 - box.y * s);
+      g.scale(s, s);
+      const all = new Path2D();
+      for (const node of live.querySelectorAll('path, polygon, polyline, rect, circle, ellipse')) {
+        let d = node.getAttribute('d');
+        if (!d && node.getTotalLength) {
+          // Basic shapes: sample the outline.
+          const len = node.getTotalLength(), n = 160; d = '';
+          for (let i = 0; i < n; i++) { const p = node.getPointAtLength(len * i / n); d += (i ? 'L' : 'M') + p.x + ',' + p.y; }
+          d += 'Z';
+        }
+        if (d) all.addPath(new Path2D(d));
+      }
+      const grad = g.createLinearGradient(box.x, box.y, box.x, box.y + box.height);
+      grad.addColorStop(0, '#ffd58a'); grad.addColorStop(1, '#8a5a12');
+      g.fillStyle = grad;
+      g.fill(all, 'evenodd');
+      holder.remove();
+    } catch (err) {
+      el.querySelector('.file').innerHTML = `<span class="err">Cannot read shapes/${file} (${err.message})</span>`;
+    }
+  }
+
+  for (const [name, entry] of Object.entries(SHAPES)) {
+    const file = entry.file || `${name}.svg`;
+    const q = `shape=${encodeURIComponent(name)}`;
+    card(name, entry.label || name, `shapes/${file}`, [
+      ['Preview', `./index.html?${q}`],
+      ['Projector', `./index.html?${q}&proj=1&w=1920&h=1080`, true],
+    ], (canvas, el) => drawSvg(canvas, el, file));
+  }
+
+  // The two built-in surfaces, for a quick way back.
+  const plain = (canvas, text) => {
+    const g = canvas.getContext('2d');
+    g.fillStyle = '#ffc56a'; g.font = 'bold 150px Georgia'; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText(text, canvas.width / 2, canvas.height / 2 + 8);
+  };
+  card('logo', 'The 3D logo', '3DModels/SDG_logo_3d.glb', [
+    ['Preview', './index.html?surface=logo'],
+    ['Projector', './index.html?surface=logo&proj=1&w=1920&h=1080', true],
+  ], (c) => plain(c, 'A'));
+  card('screen', 'Full screen (plain wall)', 'no file', [
+    ['Open', './fullscreen.html'],
+  ], (c) => plain(c, '▭'));
+</script>
+</body>
+</html>

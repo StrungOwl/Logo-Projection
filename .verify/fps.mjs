@@ -6,7 +6,7 @@ const secs  = Number(process.argv[2] || 5);
 const MODES = ['moltenGold','fractalPattern','hexagons','flowers','fireplaceOne','fireplaceTwo','flameOnly','visualSequence'];
 const modes = (process.argv[3] ? process.argv[3].split(',') : MODES);
 const browser = await chromium.launch({ headless: false,
-  executablePath: 'C:/Users/root/AppData/Local/ms-playwright/chromium-1208/chrome-win64/chrome.exe',
+  executablePath: process.env.CHROME || 'C:/Users/root/AppData/Local/ms-playwright/chromium-1208/chrome-win64/chrome.exe',
   args: ['--window-size=1920,1080', ...(process.env.UNCAP ? ['--disable-gpu-vsync','--disable-frame-rate-limit'] : []), '--disable-background-timer-throttling', '--disable-renderer-backgrounding'] });
 const page = await browser.newPage({ viewport: { width: 1920, height: 1080 } });
 await page.goto('http://127.0.0.1:5501/index.html?proj=1&w=1920&h=1080', { waitUntil: 'domcontentloaded' });

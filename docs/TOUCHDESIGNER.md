@@ -1,119 +1,102 @@
-# TouchDesigner Integration Guide
+# TouchDesigner Guide
 
-How to get the Logo Projection app into TouchDesigner at full resolution,
-map it onto the physical A-logo surface, and control it from TD.
+Run the Logo Projection show inside TouchDesigner, send it to the projector,
+and keep every keyboard control.
 
-Requires a **TouchDesigner Commercial/Educational/Pro license** — the free
-Non-Commercial edition caps every TOP at 1280×1280, which downscales any
-capture no matter how it arrives.
+## Quick start
 
-There are two capture paths (pick one) plus one control channel (works with
-both). The app also has a built-in corner-pin warp (`W` key) if you ever
-want to skip TD entirely — see README.
+1. Open `touchdesigner/LogoProjection.toe`.
+2. Wait about 10 seconds. The show starts by itself.
+3. Press `F1`. The picture goes full-screen on the projector monitor. `Esc` comes back.
+4. Press the same keys as in the browser (`0`–`9`, `Q` `W` `R` `T`, `X`, `Space`, `F`, `D`, `P`, `S`, `N`, `C`, `K`, `B` …).
+   The full list is in the README, or press `I` in a browser window.
 
----
+No `start.bat`, no OBS, no internet. TouchDesigner serves the app's files itself.
 
-## 1. Capture path A — OBS → Spout (recommended)
+## Licence limit (read this)
 
-GPU texture sharing, near-zero latency, no browser inside TD.
+A **Non-Commercial** TouchDesigner licence caps every picture at **1280 × 1280**.
+The project then runs at **1280 × 720**. On a 1080p projector that is a little soft.
 
-1. Install [OBS Studio](https://obsproject.com/) and the
-   [OBS-Spout2 plugin](https://github.com/Off-World-Live/obs-spout2-plugin).
-2. In OBS: add a **Browser** source →
-   - URL: `http://127.0.0.1:5501/index.html?proj=1&w=1920&h=1080&ws=127.0.0.1:9980`
-   - Width/Height: `1920 × 1080` (or your projector's native res — also
-     update `w`/`h` in the URL to match; the app renders at exactly that
-     internal resolution).
-3. OBS → Tools → **Spout Output Settings** → enable Spout output.
-4. TouchDesigner: add a **Spout In TOP** (Syphon Spout In) → select the OBS
-   sender. Full-res frames arrive on the GPU.
+- Commercial / Educational licence: select `/project1/logo`, set Picture width `1920`, height `1080`.
+- No licence and you need full sharpness: do not use TouchDesigner. Run `start.bat` or
+  `start-fullscreen.bat`, put Chrome on the projector, press `F11`. All keys work there, and
+  `M` gives the built-in four-corner warp.
 
-Start the app server first (`start.bat` in the project root serves port 5501).
+## What is inside `/project1/logo`
 
-## 2. Capture path B — Web Render TOP (no OBS)
-
-Simplest wiring; TD runs a Chromium instance internally.
-
-1. Add a **Web Render TOP**.
-2. URL: `http://127.0.0.1:5501/index.html?proj=1&w=1920&h=1080&ws=127.0.0.1:9980`
-3. Set the TOP resolution to the same `w × h`.
-4. Note: the keyboard does not reach a Web Render TOP — ALL control goes
-   through the WebSocket channel (below), which is why `?ws=` is in the URL.
-   If the TOP renders black, its Chromium build may be too old for
-   importmaps/WebGL2 — fall back to path A.
-
-## 3. Control channel — WebSocket DAT
-
-The app is the WebSocket **client**; TD is the **server**. With `?ws=HOST:PORT`
-in the URL the app connects (and reconnects forever, so start order doesn't
-matter).
-
-1. Add a **WebSocket DAT** → set *Network Type* to **Server**, port `9980`
-   (any port works; keep it in sync with the `?ws=` URL param).
-2. Send JSON text messages to drive the app. From any DAT/script:
-
-```python
-import json
-ws = op('websocket1')
-
-def send(obj):
-    ws.sendText(json.dumps(obj))
-
-send({ "type": "mode",    "value": "fireplaceOne", "style": "dip" })
-send({ "type": "trigger", "name": "cascade.now" })
-send({ "type": "trigger", "name": "domino.toggle" })
-send({ "type": "param",   "path": "flame.light.intensityMax", "value": 4.5 })
-send({ "type": "show",    "action": "play" })          # auto-show sequencer
-send({ "type": "calibration", "pattern": "grid" })     # alignment patterns
-```
-
-3. The app pushes state back — parse it in the WebSocket DAT callbacks:
-
-```python
-# websocket1_callbacks
-import json
-
-def onReceiveText(dat, rowIndex, message):
-    msg = json.loads(message)
-    if msg.get('type') == 'state':
-        # msg['mode'], msg['show'], msg['triggers'] (full trigger list), ...
-        op('current_mode_text').par.text = msg['mode']
-    elif msg.get('type') == 'event':
-        # e.g. name == 'trigger:cascade.now' — sync TD-side visuals to beats
-        pass
-    return
-```
-
-Full message reference: header comment in `src/core/control.js`.
-
-### Message cheat sheet
-
-| Goal | Message |
+| Node | Job |
 |---|---|
-| Switch mode with dip-to-black | `{"type":"mode","value":"moltenGold","style":"dip"}` |
-| Hard cut | `{"type":"mode","value":"hexagons","style":"cut"}` |
-| Fire any trigger | `{"type":"trigger","name":"molten.surge"}` |
-| Tune a knob live | `{"type":"param","path":"post.bloom.strength","value":0.6}` |
-| Start / stop the auto-show | `{"type":"show","action":"play"}` / `"pause"` |
-| Jump to a playlist step | `{"type":"show","action":"goto","target":"fireplaceOne"}` |
-| Calibration patterns | `{"type":"calibration","pattern":"fill|outline|grid|checker|corners|off"}` |
+| `server` | Web Server DAT. Serves the app files **and** is the control channel (WebSocket). One port: 9980. |
+| `web` | Web Render TOP. The app, in projection mode, at Width × Height. |
+| `pin` | Corner Pin TOP. Move the four corners onto the real surface. |
+| `out` | The picture that goes to the projector. |
+| `win` | Window COMP. Borderless window on the projector (`F1`). |
+| `keys` | Keyboard In DAT. Sends every key press to the app. |
+| `api` | Python helpers (below). |
+| `state` | What the app last reported: mode, show playing or paused. |
 
-## 4. Mapping the surface (Kantan Mapper)
+Controls (select `/project1/logo`, page **Logo**):
 
-1. Send `{"type":"calibration","pattern":"fill"}` then
-   `{"type":"mode","value":"calibration"}` (or press `9` in a normal browser
-   window): the app renders a pure-white silhouette of the logo.
-2. In Kantan Mapper, create a shape for the physical surface and drag its
-   points until the white silhouette lands exactly on the physical A.
-   Use `outline` to fine-check edges, `grid` / `checker` to judge focus and
-   keystone, `corners` to confirm nothing is cropped.
-3. Feed the Spout In / Web Render TOP through your Kantan mapping, switch
-   the calibration pattern to `off`, and start the show:
-   `{"type":"show","action":"play"}`.
+| Control | What it does |
+|---|---|
+| Picture width / height | Render size. Match the projector (subject to the licence limit). |
+| Surface | The 3D logo, or the full-screen version for a plain wall. |
+| Shape | An SVG shape from the `shapes` folder (for example `mandala`). It wins over Surface. Clear the field to go back. Guide: `shapes/README.md`. |
+| Keyboard to app | On: keys drive the show. Turn off while you type in TouchDesigner. |
+| Reload the app | Reloads the page (after you edit the code). |
+| Projector monitor number | Which monitor the window opens on (0 = first). |
+| Open / Close the projector window | Same as `F1` / `Esc`. |
 
-## 5. Useful trigger names
+## Keyboard
 
-The definitive list arrives in every `state` message (`triggers` array).
-Highlights: `cascade.now`, `arch.cascade`, `fractal.zoom`, `domino.on/off/toggle`,
-`stellar.pulse`, `edge.burst`, `molten.fill/drain/surge`, `portal.rush`,
-`show.*` via the `show` message type.
+The Keyboard In DAT sends each key as `{"type":"key","key":"Digit6","shift":false}`.
+The app runs its normal key handler, so the key map is the same as in the browser and
+there is nothing to wire per key. `Ctrl` / `Alt` combos and `F1`–`F12` stay with TouchDesigner.
+
+Keys only arrive while a TouchDesigner window has focus.
+
+## Control from Python
+
+```python
+api = op('/project1/logo/api').module
+api.key('6')                    # same as pressing 6
+api.key('space')                # portal rush / cascade
+api.mode('fireplaceTwo')        # switch mode with a dip to black
+api.trigger('portal.flow')      # any trigger name
+api.param('recede.flow.count', 1100)   # tune a knob live (ANIM.* path)
+api.send({'type': 'show', 'action': 'play'})   # any raw message
+```
+
+Message shapes: header of `src/core/control.js`. Trigger names arrive in every `state`
+message; highlights: `cascade.now`, `arch.cascade`, `fractal.zoom`, `domino.toggle`,
+`stellar.pulse`, `stellar.meteor`, `stellar.vortex`, `edge.burst`, `molten.fill/drain/surge`, `portal.rush`, `portal.flow`,
+`dive.rush`, `dive.reverse`, `look.pulse`.
+
+## Mapping onto the real surface
+
+1. Press `9` (calibration), then `C` to cycle patterns: fill → outline → grid → checker → corners.
+2. Select `pin`. On its **Pin** page move the four corners until the white shape sits on the real logo.
+3. Press `0` to start the show.
+
+For a curved or complex surface use Kantan Mapper or Stoner from the Palette: feed it `web`
+instead of `pin`.
+
+## Rebuild the project file
+
+Only if `LogoProjection.toe` is missing or broken. New TouchDesigner project, `Alt+T`, paste:
+
+```
+exec(open(r'C:\Users\root\OneDrive\Documents\GitHub\2026\Logo Projection\touchdesigner\logo_build.py', encoding='utf-8').read())
+```
+
+Then File → Save As `touchdesigner/LogoProjection.toe`.
+
+The scripts `logo_server.py`, `logo_api.py`, `logo_keys.py` are synced into TouchDesigner:
+edit and save a file and TouchDesigner reloads it.
+
+## Other capture path: OBS → Spout
+
+Still works if you prefer it. Run `start.bat`, add an OBS Browser source at
+`http://127.0.0.1:5501/index.html?proj=1&w=1920&h=1080`, enable Spout output, and read it with
+a Syphon Spout In TOP. The licence limit applies to that TOP too.

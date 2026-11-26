@@ -4,7 +4,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 const OUT = join('.verify', 'shots', 'warp');
 mkdirSync(OUT, { recursive: true });
-const browser = await chromium.launch({ headless: true, executablePath: 'C:/Users/root/AppData/Local/ms-playwright/chromium-1208/chrome-win64/chrome.exe' });
+const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROME || 'C:/Users/root/AppData/Local/ms-playwright/chromium-1208/chrome-win64/chrome.exe' });
 const page = await browser.newContext({ viewport: { width: 1024, height: 1024 } }).then(c => c.newPage());
 const errors = []; const failures = [];
 page.on('pageerror', e => errors.push('pageerror: ' + e.message));

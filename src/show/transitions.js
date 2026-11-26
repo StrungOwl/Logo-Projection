@@ -10,6 +10,11 @@
 //               center, flip under full cover, then recedes — light never
 //               spills outside the physical surface
 //   'edgeFlash' dip + 'edge.burst' trigger fired at the flip frame
+//   morphs      'fade' | 'dissolve' | 'iris' | 'vortex' | 'zoom' | 'melt' | 'pour' —
+//               no blink to black: a snapshot of the old look is warped /
+//               dissolved over the new live look (see ./morph.js). Lengths
+//               in ANIM.transitions.morph. Needs the composer path; falls
+//               back to 'dip' without it.
 //
 // The envelope drives renderer.toneMappingExposure directly (OutputPass
 // reads it, so this works identically pre- and post-composer). Bloom
@@ -24,11 +29,19 @@ import * as THREE from 'three';
 import { ANIM } from '../config.js';
 import { fireTrigger } from './triggers.js';
 import { buildSilhouetteShape } from '../util/geometry.js';
+import { createMorph, MORPH_STYLES } from './morph.js';
 
 const easeInOut = (x) => x * x * (3 - 2 * x);
 
-export function createTransitionManager({ renderer }) {
+const MORPH_DUR = { fade: 2.4, dissolve: 2.8, iris: 2.8, vortex: 3.4, zoom: 2.4, melt: 3.2, pour: 4.0 };
+
+export function createTransitionManager({ renderer, camera }) {
   const baseExposure = renderer.toneMappingExposure;
+  // Morph pass (snapshot transitions). main.js hands morph.pass to the
+  // pipeline and calls attachMorph once the logo is loaded.
+  const morph = camera ? createMorph({ camera }) : null;
+  const isMorph = (s) => MORPH_STYLES.includes(s);
+  const morphUsable = () => !!(morph && morph.ready() && ANIM.post?.enabled);
 
   const st = {
     phase: 'idle',        // 'idle' | 'out' | 'in'
@@ -44,7 +57,7 @@ export function createTransitionManager({ renderer }) {
   function attachWipe(logoMesh, meta) {
     // Hull-shaped (convex) so the cutout region — where the galaxy and
     // flame draw — is covered too. Same footprint as the galaxy plate.
-    const shape = new THREE.Shape(meta.hull.map(p => new THREE.Vector2(p.x, p.y)));
+    const shape = new THREE.Shape((meta.footprint || meta.hull).map(p => new THREE.Vector2(p.x, p.y)));
     const cx = meta.cx + (meta.patternFadeCenter?.[0] || 0);
     const cy = meta.cy + (meta.patternFadeCenter?.[1] || 0);
     const mat = new THREE.ShaderMaterial({
@@ -89,9 +102,16 @@ export function createTransitionManager({ renderer }) {
     return holder;   // caller adds to scene
   }
 
-  function requestMode(mode, style) {
+  // dur (optional, seconds) overrides the length of a morph for this one change.
+  function requestMode(mode, style, dur) {
     if (mode === ANIM.viewMode && st.phase === 'idle') return;
-    const s = style || ANIM.transitions?.defaultStyle || 'dip';
+    let s = style || ANIM.transitions?.defaultStyle || 'dip';
+    if (isMorph(s) && !morphUsable()) s = 'dip';
+    // A morph in flight is finished at once before anything new starts
+    // (the new look is already live underneath it).
+    if (st.phase === 'morphCapture') { st.target = mode; return; }
+    if (st.phase === 'morph') { morph.end(); st.phase = 'idle'; }
+    if (mode === ANIM.viewMode && st.phase === 'idle') return;
     // Instant styles ('cut' / 'burst') are honoured even mid-transition:
     // cancel whatever envelope is running (restore full exposure, drop
     // the wipe disc) and swap now. Previously they fell into the
@@ -133,6 +153,15 @@ export function createTransitionManager({ renderer }) {
       return;
     }
     if (s === 'wipe' && !wipe) return requestMode(mode, 'dip');
+    if (isMorph(s)) {
+      st.phase = 'morphCapture';
+      st.style = s;
+      st.target = mode;
+      st.p = 0;
+      st.dur = dur > 0 ? dur : 0;
+      morph.begin(s);
+      return;
+    }
     st.phase = 'out';
     st.style = s;
     st.target = mode;
@@ -152,6 +181,29 @@ export function createTransitionManager({ renderer }) {
     if (st.phase === 'idle') return;
 
     const cfg = ANIM.transitions || {};
+    // ---- morphs: wait for the snapshot, flip, then run 0 → 1 ----
+    if (st.phase === 'morphCapture') {
+      if (!morph.captured()) {
+        // No frame was rendered through the pass (composer off?): give up
+        // on the morph after a moment and cut.
+        st.p += dt;
+        if (st.p > 0.5) { morph.end(); ANIM.viewMode = st.target; st.lastApplied = st.target; st.phase = 'idle'; }
+        return;
+      }
+      ANIM.viewMode = st.target;
+      st.lastApplied = st.target;
+      st.phase = 'morph';
+      st.p = 0;
+      return;
+    }
+    if (st.phase === 'morph') {
+      const dur = st.dur || ((cfg.morph && cfg.morph[st.style]) ?? MORPH_DUR[st.style] ?? 2.5);
+      st.p = Math.min(1, st.p + dt / Math.max(dur, 1e-3));
+      morph.setProgress(st.p);
+      if (st.p >= 1) { morph.end(); st.phase = 'idle'; }
+      return;
+    }
+
     const isWipe = st.style === 'wipe';
     const outDur = isWipe ? (cfg.wipeDur ?? 0.9) / 2 : (cfg.outDur ?? 0.35);
     const inDur  = isWipe ? (cfg.wipeDur ?? 0.9) / 2 : (cfg.inDur  ?? 0.6);
@@ -193,7 +245,10 @@ export function createTransitionManager({ renderer }) {
     requestMode,
     update,
     attachWipe,
+    morphPass: morph ? morph.pass : null,
+    attachMorph: (logoMesh, meta) => morph && morph.attachLogo(logoMesh, meta),
     isTransitioning: () => st.phase !== 'idle',
+    phase: () => st.phase,
     // Bloom rides this so glow can't ghost through the dip (pipeline
     // multiplies its per-frame bloom-strength sync by it).
     envelope: () => easeInOut(st.env),

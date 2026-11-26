@@ -8,6 +8,8 @@
 // and the compiled GPU programs depend on the exact text, so any edit here
 // must keep the emitted GLSL identical at every call site.
 
+import { CanvasTexture, LinearFilter, ClampToEdgeWrapping, Vector4 } from 'three';
+
 // Compose `fn` AFTER any existing material.onBeforeCompile — the previous
 // callback runs first, then `fn`, both receiving (shader, renderer).
 //
@@ -40,6 +42,64 @@ export function chainOnBeforeCompile(material, fn) {
 //                provide.
 // Both consumers use the same define / uniform / varying names, so none
 // are parameterized — the emitted text matches the original files exactly.
+//
+// BIG OUTLINES (SVG shapes, src/core/shape.js): the edge list is a uniform
+// array and every pixel loops over it. Past HULL_CLIP_MAX_EDGES that is
+// too slow and can pass the GPU's uniform limit (1024 vectors on most
+// Windows machines). Such outlines are drawn once into a mask texture
+// and the shader does one texture read instead. The logo stays under the
+// limit, so its GLSL is unchanged.
+export const HULL_CLIP_MAX_EDGES = 320;
+const HULL_MASK_SIZE = 2048;   // texels on the long side
+
+function buildHullClipTexture(loops) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const loop of loops) for (const p of loop) {
+    if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+  }
+  // One-texel margin so the outline never touches the texture border.
+  const span = Math.max(maxX - minX, maxY - minY);
+  const pad = span * 0.01;
+  minX -= pad; minY -= pad; maxX += pad; maxY += pad;
+  const bw = maxX - minX, bh = maxY - minY;
+  const W = Math.max(8, Math.round(HULL_MASK_SIZE * (bw >= bh ? 1 : bw / bh)));
+  const H = Math.max(8, Math.round(HULL_MASK_SIZE * (bh >  bw ? 1 : bh / bw)));
+  const canvas = document.createElement('canvas');
+  canvas.width = W; canvas.height = H;
+  const g = canvas.getContext('2d');
+  g.fillStyle = '#000'; g.fillRect(0, 0, W, H);
+  g.fillStyle = '#fff';
+  g.beginPath();
+  for (const loop of loops) {
+    for (let i = 0; i < loop.length; i++) {
+      const x = (loop[i].x - minX) / bw * W;
+      const y = (maxY - loop[i].y) / bh * H;     // canvas y is down
+      if (i === 0) g.moveTo(x, y); else g.lineTo(x, y);
+    }
+    g.closePath();
+  }
+  g.fill('evenodd');
+  const tex = new CanvasTexture(canvas);
+  tex.minFilter = LinearFilter;
+  tex.magFilter = LinearFilter;
+  tex.generateMipmaps = false;
+  tex.wrapS = tex.wrapT = ClampToEdgeWrapping;
+  return {
+    uniforms: {
+      uHullMask: { value: tex },
+      uHullBox:  { value: new Vector4(minX, minY, 1 / bw, 1 / bh) },
+    },
+    glslCommon: `
+      uniform sampler2D uHullMask;
+      uniform vec4 uHullBox;`,
+    glslCall: `
+      vec2 _huv = (vPanelXY - uHullBox.xy) * uHullBox.zw;
+      if (_huv.x < 0.0 || _huv.x > 1.0 || _huv.y < 0.0 || _huv.y > 1.0
+          || texture2D(uHullMask, _huv).r < 0.5) discard;`,
+  };
+}
+
 export function buildHullClip(polygonLoops) {
   let hullEdges = null;
   let hullEdgeCount = 0;
@@ -48,6 +108,9 @@ export function buildHullClip(polygonLoops) {
       ? [polygonLoops] : polygonLoops;
     let total = 0;
     for (const loop of loops) if (loop && loop.length >= 3) total += loop.length;
+    if (total > HULL_CLIP_MAX_EDGES && typeof document !== 'undefined') {
+      return buildHullClipTexture(loops.filter(l => l && l.length >= 3));
+    }
     if (total > 0) {
       hullEdges = new Float32Array(total * 4);
       let off = 0;

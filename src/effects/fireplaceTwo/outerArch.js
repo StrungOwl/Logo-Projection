@@ -264,7 +264,7 @@ function placeVoussoirCorona({ samples, logoCx, logoCy, coronaCfg, brickCfg,
   // threshold (1.6 linear) so the caps glow as a dotted halo crown.
   const tipMat = gildEvery > 0 ? new THREE.MeshStandardMaterial({
     color:             new THREE.Color('#FFC968'),
-    emissive:          new THREE.Color('#FFC968'),
+    emissive:          new THREE.Color('#FFA640'),   // ember gold (was #FFC968: read as white bulbs)
     emissiveIntensity: tipEmissive,
     metalness:         0.35,
     roughness:         0.40,

@@ -829,7 +829,9 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
       // stay proportionally thin (otherwise the small wall reads as
       // chunky stubby cylinders rather than tiles).
       const hexDepth_ = hexDepth * (hexR_ / largeHexR);
-      const hexGeo_ = new THREE.CylinderGeometry(hexR_, hexR_, hexDepth_, 6, 1);
+      // Front cap slightly smaller than the back: the sloped side walls face
+      // the lights at different angles, so every tile gets a lit bevel.
+      const hexGeo_ = new THREE.CylinderGeometry(hexR_ * (brickCfg.bevel ?? 1), hexR_, hexDepth_, 6, 1);
       hexGeo_.rotateX(Math.PI / 2);
       hexGeo_.rotateZ(Math.PI / 6);
 
@@ -1026,7 +1028,7 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
       const shapes = [];
       for (const def of shapeDefs) {
         const geo = new THREE.CylinderGeometry(
-          def.radius, def.radius, hexDepth_, def.sides, 1);
+          def.radius * (brickCfg.bevel ?? 1), def.radius, hexDepth_, def.sides, 1);
         geo.rotateX(Math.PI / 2);
         if (def.rz) geo.rotateZ(def.rz);
         const alphaAttr = new THREE.InstancedBufferAttribute(
@@ -1280,7 +1282,7 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
         const g = ghosts[perm[q]];
 
         // Phyllotaxis: angle q·golden, radius ∝ √(q/M).
-        g.ph = { th: q * golden, r: phR * Math.sqrt((q + 0.5) / M), sc: phSc };
+        g.ph = { th: q * golden, q, r: phR * Math.sqrt((q + 0.5) / M), sc: phSc };
 
         // Mandala: fill ring by ring; alternate rings point inward and
         // are offset by half a step.
@@ -1445,7 +1447,13 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
     switch (state) {
       case 'phyllotaxis': {
         const c    = fpCfg.phyllotaxis || {};
-        const ang  = g.ph.th + (c.spinSpeed ?? 0.06) * t;
+        // Generative: nudge the divergence off the golden angle. The
+        // offset is multiplied by the petal index, so a tiny change
+        // re-forms every spiral arm; it also wanders slowly by itself.
+        const gen  = fpCfg.gen || {};
+        const div  = (gen.divergence ?? 0)
+                   + (gen.divergenceDrift ?? 0) * Math.sin(t * 0.045);
+        const ang  = g.ph.th + g.ph.q * div + (c.spinSpeed ?? 0.06) * t;
         const rot  = ang + (c.tilt ?? 0.55);
         const half = g.petalLen * g.ph.sc * 0.5;
         pos.set(fadeCX + Math.cos(ang) * g.ph.r - Math.cos(rot) * half,
@@ -1460,15 +1468,23 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
         const ang  = g.ma.ang + dir * (c.spinSpeed ?? 0.12) * t;
         const rot  = g.ma.out ? ang : ang + Math.PI;
         const half = g.petalLen * g.ma.sc * 0.5;
-        pos.set(fadeCX + Math.cos(ang) * g.ma.r - Math.cos(rot) * half,
-                fadeCY + Math.sin(ang) * g.ma.r - Math.sin(rot) * half,
+        // Generative: rings breathe in and out, each on its own phase.
+        const mr = g.ma.r * (1 + ((fpCfg.gen || {}).ringBreath ?? 0)
+                          * Math.sin(t * 0.31 + g.ma.ring * 1.37));
+        pos.set(fadeCX + Math.cos(ang) * mr - Math.cos(rot) * half,
+                fadeCY + Math.sin(ang) * mr - Math.sin(rot) * half,
                 g.layoutZ);
         quat.setFromAxisAngle(_zAxis, rot);
         return g.ma.sc;
       }
       case 'starburst': {
         const c    = fpCfg.starburst || {};
-        const ang  = g.sb.ang + (c.spinSpeed ?? -0.03) * t;
+        // Generative: the spokes bend into spiral arms (twist grows
+        // with radius) and the bend sways slowly.
+        const tw   = ((fpCfg.gen || {}).burstTwist ?? 0)
+                   * (0.75 + 0.25 * Math.sin(t * 0.07));
+        const ang  = g.sb.ang + (c.spinSpeed ?? -0.03) * t
+                   + tw * (g.sb.r / Math.max(maxR, 1e-3));
         const half = g.petalLen * g.sb.sc * 0.5;
         pos.set(fadeCX + Math.cos(ang) * g.sb.r - Math.cos(ang) * half,
                 fadeCY + Math.sin(ang) * g.sb.r - Math.sin(ang) * half,
@@ -1630,8 +1646,31 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
       const cycF    = ((t % total) + total) % total;
       const idx     = Math.min(fpSeq.length - 1, Math.floor(cycF / per));
       const local   = cycF - idx * per;
-      fpA = fpSeq[idx];
-      fpB = fpSeq[(idx + 1) % fpSeq.length];
+      // Generative order: each pass through the list is reshuffled
+      // (a deterministic shuffle keyed on the pass number, so A→B at a
+      // pass boundary is known in advance and nothing jumps).
+      const pass = Math.floor(t / total);
+      const rawOrder = (n) => {
+        const o = fpSeq.slice();
+        let s = (n * 2654435761) >>> 0;
+        for (let i = o.length - 1; i > 0; i--) {
+          s = (Math.imul(s ^ (s >>> 15), 2246822519) + 0x9E3779B9) >>> 0;
+          const j = s % (i + 1);
+          const tmp = o[i]; o[i] = o[j]; o[j] = tmp;
+        }
+        return o;
+      };
+      const orderFor = (n) => {
+        if (fpCfg.shuffle === false || fpSeq.length < 3) return fpSeq;
+        const o = rawOrder(n);
+        // A pass never opens on the arrangement the last pass closed on.
+        const prev = rawOrder(n - 1);
+        if (o[0] === prev[prev.length - 1]) { const tmp = o[0]; o[0] = o[1]; o[1] = tmp; }
+        return o;
+      };
+      const ordA = orderFor(pass);
+      fpA = ordA[idx];
+      fpB = idx + 1 < ordA.length ? ordA[idx + 1] : orderFor(pass + 1)[0];
       const holding = local < dwell;
       const u = holding ? 0 : (local - dwell) / transit;
       fpE = 0.5 - 0.5 * Math.cos(Math.min(u, 1) * Math.PI);
@@ -1945,6 +1984,16 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
         brickHexMorph.wall.visible = isHexMode;
       }
 
+      // Star light (hexagons + visualSequence only): tiles near the star
+      // are hot and orange, tiles far from it sink to deep oxblood, so the
+      // wall reads as lit from the star instead of one flat colour.
+      const slCfg  = brickCfg.starLight || {};
+      const slOn   = slCfg.enabled !== false && !!brickCfg.starLight;
+      const slNear = slCfg.near ?? 1.6;
+      const slFar  = slCfg.far  ?? 0.3;
+      const slWarm = slCfg.warm ?? 1.0;
+      const slInvR = 1 / Math.max(maxR * (slCfg.radius ?? 0.8), 1e-3);
+
       const wallSpecs = [];
       if (canonicalAlpha > 0.001 && brickHexCanonical) {
         wallSpecs.push({
@@ -1977,7 +2026,10 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
         // whole wall shares one front + one back material now. Per-tile
         // components (edge fade, back-face reveal, wiggle/flash colour)
         // ride the instanced attributes below instead.
-        const s = wallScale;
+        // Visual Sequence: tiles shrink a touch so black seams open between
+        // them, and each one is lit by the star (see starLight below).
+        const seqLook = ANIM.viewMode === 'visualSequence';
+        const s = wallScale * (seqLook ? (brickCfg.seqScale ?? 1) : 1);
         const fMat = rec.front.material;
         fMat.color.copy(_hexDriftColor);
         fMat.opacity = brickW * sizeAlpha * baseOpacity;
@@ -2018,7 +2070,15 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
             }
           }
           const ci = i * 3;
-          cArr[ci] = mul; cArr[ci + 1] = mul; cArr[ci + 2] = mul;
+          if (seqLook && slOn) {
+            mul *= 1 + 0.22 * Math.sin(t * 0.5 * rec.evoFactor[i] + rec.evoSeed[i]);
+            const dq = Math.min(1, Math.hypot(rec.homeX[i] - fadeCX, rec.homeY[i] - fadeCY) * slInvR);
+            const kq = (1 - dq) * (1 - dq);
+            const lum = mul * (slFar + (slNear - slFar) * kq);
+            cArr[ci] = lum; cArr[ci + 1] = lum * (1 + slWarm * kq); cArr[ci + 2] = lum;
+          } else {
+            cArr[ci] = mul; cArr[ci + 1] = mul; cArr[ci + 2] = mul;
+          }
 
           const step      = rec.flipStep[i];
           const flipSpeed = rec.flipSpeed[i] || 1;
@@ -2209,7 +2269,9 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
         rec.frontMat.opacity = brickW * baseOpacity;
         const backOn = !!rec.backMat && altOpacity > 0;
         if (rec.backMat) {
-          rec.backMat.color.copy(_hexDriftColor);
+          // Flip side: darker than the face, so a turning tile reads as
+          // its shadowed back instead of a flat pale disc.
+          rec.backMat.color.copy(_hexDriftColor).multiplyScalar(brickCfg.backShade ?? 1);
           rec.backMat.opacity = brickW * altOpacity;
         }
         for (const sh of rec.shapes) {
@@ -2338,7 +2400,14 @@ export function addOverlay(logoMesh, meta, cascadeState = null) {
 
           const ci = i * 3;
           const cArr = sh.front.instanceColor.array;
-          cArr[ci] = mul; cArr[ci + 1] = mul; cArr[ci + 2] = mul;
+          if (slOn) {
+            const dq = Math.min(1, Math.hypot(rec.homeX[i] - fadeCX, rec.homeY[i] - fadeCY) * slInvR);
+            const kq = (1 - dq) * (1 - dq);
+            const lum = mul * (slFar + (slNear - slFar) * kq);
+            cArr[ci] = lum; cArr[ci + 1] = lum * (1 + slWarm * kq); cArr[ci + 2] = lum;
+          } else {
+            cArr[ci] = mul; cArr[ci + 1] = mul; cArr[ci + 2] = mul;
+          }
           sh.alphaAttr.array[i] = edgeFade;
 
           if (backOn && sh.back) {

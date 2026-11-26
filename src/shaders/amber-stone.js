@@ -43,6 +43,14 @@ const sharedUniforms = {
   uAmbGlowColor:    { value: new THREE.Color('#FF7A1E') },
   uAmbGlowStrength: { value: 2.0 },    // emissive multiplier at env=1
   uAmbFlameEnv:     { value: 0.0 },    // 0..1 low-passed flame brightness
+  // Hearth falloff (ANIM.arch.amber.hearth) - the fire lights the stone
+  // from the star opening outward. xy = world position of the fire base,
+  // z = world height of the fire column, w = world falloff radius.
+  // Fed every frame by flame.js through setAmberHearth().
+  uAmbHearth:       { value: new THREE.Vector4(0, 0, 1, 1) },
+  // x = amount (0 = legacy uniform look), y = albedo floor far from the
+  // fire, z = glow gain right at the fire, w = glow floor far from it.
+  uAmbHearthMix:    { value: new THREE.Vector4(0, 0.4, 2.0, 0.1) },
 };
 
 let initialized = false;
@@ -55,6 +63,19 @@ function syncFromConfig() {
   sharedUniforms.uAmbDarkCol.value.set(a.darkColor  || '#6E4416');
   sharedUniforms.uAmbGlowColor.value.set(a.glowColor || '#FF7A1E');
   sharedUniforms.uAmbGlowStrength.value = a.glowStrength ?? 2.0;
+  const h = a.hearth || {};
+  sharedUniforms.uAmbHearthMix.value.set(
+    hearthSeen ? (h.amount ?? 0) : 0, h.far ?? 0.4, h.glowNear ?? 2.0, h.glowFar ?? 0.1);
+}
+
+// World-space fire column for the hearth falloff. Called per frame by the
+// inner-star flame (flame.js); until the first call the falloff is off.
+let hearthSeen = false;
+export function setAmberHearth(x, y, height, unitScale) {
+  hearthSeen = true;
+  const h = (ANIM.arch && ANIM.arch.amber && ANIM.arch.amber.hearth) || {};
+  sharedUniforms.uAmbHearth.value.set(
+    x, y, Math.max(height, 1e-4), Math.max((h.radius ?? 26) * unitScale, 1e-4));
 }
 
 export function applyAmberStone(material) {
@@ -84,6 +105,8 @@ export function applyAmberStone(material) {
         uniform vec3  uAmbGlowColor;
         uniform float uAmbGlowStrength;
         uniform float uAmbFlameEnv;
+        uniform vec4  uAmbHearth;
+        uniform vec4  uAmbHearthMix;
         varying vec3  vAmbWorldPos;
         float ambHash21(vec2 p) {
           return fract(sin(dot(p, vec2(157.31, 269.53))) * 43758.5453123);
@@ -124,6 +147,13 @@ export function applyAmberStone(material) {
         float ambRid = 1.0 - abs(2.0 * ambFbm2(ambP * 2.7 + vec2(43.7, 17.9)) - 1.0);
         float ambVein = pow(smoothstep(0.80, 0.985, ambRid), 1.4);
         diffuseColor.rgb *= 1.0 - uAmbVeinStrength * ambVein * 0.85;
+        // Hearth falloff: distance to the vertical fire column. Stone near
+        // the star opening keeps its full tone, stone far from it sinks
+        // toward the albedo floor, so the wall reads lit from the centre.
+        vec2 ambHd = vAmbWorldPos.xy - uAmbHearth.xy;
+        ambHd.y -= clamp(ambHd.y, 0.0, uAmbHearth.z);
+        float ambHearth = exp(-dot(ambHd, ambHd) / (uAmbHearth.w * uAmbHearth.w));
+        diffuseColor.rgb *= mix(1.0, mix(uAmbHearthMix.y, 1.0, ambHearth), uAmbHearthMix.x);
       `)
       // Roughness breakup — a second, larger noise octave pushes the
       // material roughness up/down so polished patches catch the flame
@@ -141,7 +171,8 @@ export function applyAmberStone(material) {
       .replace('#include <emissivemap_fragment>', `
         #include <emissivemap_fragment>
         totalEmissiveRadiance += uAmbGlowColor
-          * (uAmbGlowStrength * pow(ambM, 2.0) * uAmbFlameEnv);
+          * (uAmbGlowStrength * pow(ambM, 2.0) * uAmbFlameEnv)
+          * mix(1.0, mix(uAmbHearthMix.w, uAmbHearthMix.z, ambHearth * ambHearth), uAmbHearthMix.x);
       `);
   });
 }

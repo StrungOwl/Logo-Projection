@@ -201,6 +201,9 @@ export function createIslamicPanel({
     uGradMaxY:    { value: gradientMaxY },
     uGradDark:    { value: new THREE.Vector3(...gradientDark) },
     uGradBright:  { value: new THREE.Vector3(...gradientBright) },
+    // Relief + self-glow on the gold tiles (ANIM.rosette, written each
+    // frame by effects.js). x = relief amount 0..1, y = glow intensity.
+    uTileLook:    { value: new THREE.Vector2(1, 0) },
   };
 
   // Enable transparency so the center fade can dissolve into the galaxy.
@@ -223,12 +226,13 @@ export function createIslamicPanel({
     if (hullClipUniforms) Object.assign(shader.uniforms, hullClipUniforms);
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>',
-        '#include <common>\nvarying vec3 vGradWP;\nvarying vec2 vPanelXY;\nuniform mat4 uPanelInv;')
+        '#include <common>\nvarying vec4 vTileLD;\nvarying vec3 vGradWP;\nvarying vec2 vPanelXY;\nuniform mat4 uPanelInv;')
       .replace('#include <project_vertex>',
         `#include <project_vertex>
          vec4 _wp = modelMatrix * vec4(position, 1.0);
          vGradWP = _wp.xyz;
-         vPanelXY = (uPanelInv * _wp).xy;`);
+         vPanelXY = (uPanelInv * _wp).xy;
+         vTileLD = vec4(position.xy, (modelMatrix * vec4(position.xy, 0.0, 0.0)).xy);`);
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>',
         `#include <common>
@@ -244,12 +248,24 @@ export function createIslamicPanel({
          uniform float uMaxOpacity;
          varying vec3  vGradWP;
          varying vec2  vPanelXY;
+         varying vec4  vTileLD;
+         uniform vec2  uTileLook;
          ${hullClipCommon}`)
       .replace('#include <color_fragment>',
         `#include <color_fragment>
          ${hullClipCall}
          float _gt = clamp((vGradWP.y - uGradMinY) / max(uGradMaxY - uGradMinY, 1e-4), 0.0, 1.0);
-         diffuseColor.rgb *= mix(uGradDark, uGradBright, _gt);`)
+         diffuseColor.rgb *= mix(uGradDark, uGradBright, _gt);
+         // Relief: every tile is shaded from its own centre - bright hub,
+         // darker tips, and the petals that face the upper-left light are
+         // brighter than the ones facing away.
+         float _tr   = clamp(length(vTileLD.xy) / ${mainTileSize.toFixed(4)}, 0.0, 1.0);
+         float _side = dot(normalize(vTileLD.zw + vec2(1e-5)), vec2(-0.6, 0.8));
+         float _rel  = mix(1.0, (1.25 - 0.75 * _tr) * (1.0 + 0.6 * _side * smoothstep(0.1, 0.6, _tr)), uTileLook.x);
+         diffuseColor.rgb *= _rel;`)
+      .replace('#include <emissivemap_fragment>',
+        `#include <emissivemap_fragment>
+         totalEmissiveRadiance += vec3(1.0, 0.6, 0.22) * uTileLook.y * _rel;`)
       .replace('#include <dithering_fragment>',
         `#include <dithering_fragment>
          ${radialFadeBody}`);

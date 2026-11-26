@@ -5,7 +5,7 @@
 // touches a mode key so live editing never fights the playlist.
 //
 // Playlist step shape (see ANIM.show in config.js):
-//   { mode, dwell, transition?, cues?: [{ at, trigger, every?, args? }] }
+//   { mode, dwell, transition?, transitionDur?, cues?: [{ at, trigger, every?, args? }] }
 // Cue `at` counts from the moment the step's transition-in completes;
 // `every` re-fires the trigger on that period for the rest of the dwell.
 
@@ -34,6 +34,7 @@ export function createSequencer({ transitions, getTime }) {
     transitions.requestMode(
       step.mode,
       styleOverride || step.transition || (ANIM.show && ANIM.show.defaultTransition),
+      styleOverride ? undefined : step.transitionDur,
     );
   }
 

@@ -26,6 +26,10 @@ export const MODEL = {
   //              for a plain wall / screen (fullscreen.html, or
   //              index.html?surface=screen)
   surface: 'logo',
+  // SVG shape to run the show on instead (a file in /shapes, listed in
+  // shapes/shapes.js). null = use `surface` above. Usually set per session
+  // with index.html?shape=<name>. Guide: shapes/README.md.
+  shape: null,
   // Screen-surface knobs. aspect null = follow the output resolution.
   //   hole       'star' cuts the four-point aperture the effects burn /
   //              glow through; 'none' leaves the slab solid (the flame
@@ -76,7 +80,9 @@ export const ANIM = {
   keyLight:          { intensityMin: 0.0,  intensityMax: 4.6,
                        colorAtMin: '#FF1400', colorAtMax: '#FFCC2E' },
   innerGlow:         { intensityMin: 40,   intensityMax: 260, color: '#FF6A18' },
-  frontPatternLight: { intensityMin: 1.2,  intensityMax: 4.8, color: '#FFB070' },
+  // intensityMax was 4.8 — it blew the centre out to flat orange-white
+  // and killed the pattern's contrast.
+  frontPatternLight: { intensityMin: 1.2,  intensityMax: 3.4, color: '#FFB070' },
   rimLight:          { intensityMin: 0.5,  intensityMax: 2.5,
                        phaseOffset: Math.PI * 0.5, color: '#4D8AFF' },
 
@@ -113,10 +119,18 @@ export const ANIM = {
   // drift out of sync in both phase and period. `brightness*` modulates
   // diffuse, `emissive*` drives a self-lit pop that cuts past the scene
   // lighting. `colorAt{Min,Max}` are the dim/bright colour endpoints.
-  latticeHex: { brightnessMin: 0.25, brightnessMax: 1.6,
-                emissiveMin:   0.0,  emissiveMax: 2.8,
+  // 2026-11 contrast pass: lit hexes are deep amber instead of blown-out
+  // cream (emissiveMax 2.8 -> 1.2, colorAtMax #FFB040 -> #FF7A1E), so the
+  // pale rosette on top of each one stays readable.
+  //   relief - 0..1, dome shading on each hex (bright crown, dark rim)
+  //   bias   - > 1 keeps hexes dark longer: fewer lit at once, more black
+  // brightnessMax / emissiveMax / pulseSpeed / relief / bias and
+  // evolution.noise* are read live (ANIM.variations rolls some of them).
+  latticeHex: { brightnessMin: 0.12, brightnessMax: 1.3,
+                emissiveMin:   0.0,  emissiveMax: 1.5,
                 pulseSpeed:    0.55, speedVariance: 0.6,
-                colorAtMin: '#1A0800', colorAtMax: '#FFB040',
+                relief: 1.0, bias: 2.0,
+                colorAtMin: '#120500', colorAtMax: '#FF7A1E',
                 // Long-form evolution on top of the per-hex pulse so the
                 // wall changes across long viewings while keeping its
                 // look + feel. All three layers are stutter-free by
@@ -202,6 +216,13 @@ export const ANIM = {
   // per-mesh speed assignments are sampled at load (reload to resample);
   // `enabled`, `speedMin`, `speedMax` are read live but changing speed at
   // runtime causes a small jump since `rotation.z = phase + speed*t`.
+  // Gold rosette tiles (modes 2 + 8), both live:
+  //   relief - 0..1 shading from each tile's own centre (bright hub, dark
+  //            tips, lit from the upper left) so the tiles read as carved
+  //   glow   - self-light, so the rosettes stay bright now that the orange
+  //            star glow no longer floods them
+  rosette: { relief: 1.0, glow: 0.32 },
+
   patternRotation: {
     enabled:         true,
     rosetteFraction: 0.35,  // share of rosettes that rotate
@@ -388,16 +409,31 @@ export const ANIM = {
       // hexLattice FIRST: entering flowers mode opens on the petal
       // honeycomb, so the show's hexagons→flowers cut reads as the wall
       // continuing — then it blooms into the rose and onward.
-      sequence: ['hexLattice', 'rose', 'phyllotaxis', 'mandala', 'starburst'],
+      // 2026-11: 'rose' (the big rosettes) left the cycle and every
+      // petalScale came down ~30 % — the look reads best as a field of
+      // SMALL shapes. Add 'rose' back to the list to restore it.
+      sequence: ['hexLattice', 'phyllotaxis', 'mandala', 'starburst'],
+      // true = the order is reshuffled every pass through the list.
+      shuffle:  true,
       dwell:    9.0,
       transit:  4.5,
-      phyllotaxis: { radiusFactor: 0.70, petalScale: 0.50,
+      phyllotaxis: { radiusFactor: 0.70, petalScale: 0.34,
                      tilt: 0.55, spinSpeed: 0.06 },
       mandala:     { rings: 5, innerFactor: 0.16, outerFactor: 0.72,
-                     petalScale: 0.52, spinSpeed: 0.12 },
+                     petalScale: 0.36, spinSpeed: 0.12 },
       starburst:   { spokes: 18, innerFactor: 0.10, outerFactor: 0.78,
-                     petalScale: 0.55, spinSpeed: -0.03 },
-      hexLattice:  { petalScaleCap: 1.0 },
+                     petalScale: 0.38, spinSpeed: -0.03 },
+      hexLattice:  { petalScaleCap: 0.8 },
+      // GENERATIVE knobs (all live). Rolled on every entry to the mode
+      // by ANIM.variations.flowers, then they keep drifting on their own.
+      //   divergence      — offset (radians) from the golden angle in the
+      //                     sunflower swirl. Tiny changes re-form every
+      //                     spiral arm: 0 = classic sunflower.
+      //   divergenceDrift — how far it wanders by itself over time
+      //   burstTwist      — spiral twist of the starburst spokes (radians
+      //                     at the rim); 0 = straight rays
+      //   ringBreath      — mandala rings breathe in and out (fraction)
+      gen: { divergence: 0.0, divergenceDrift: 0.0015, burstTwist: 0.0, ringBreath: 0.07 },
     },
 
     // Large 3D hexagonal prism centred on the logo — a neutral canvas
@@ -450,8 +486,21 @@ export const ANIM = {
       //                       radius is clamped to.
       //   gridDominoTrigger — sec between adjacent flip starts on the
       //                       morph wall's spiral domino wave.
-      gridRadiusFactor:   0.16,
-      gridDominoTrigger:  0.10,
+      gridRadiusFactor:   0.115,  // was 0.16 - small tiles read better
+      gridDominoTrigger:  0.06,
+      // Depth pass (hexagons + visual sequence only; flowers untouched):
+      //   bevel     - front cap radius as a fraction of the back (load-only).
+      //               < 1 slopes the side walls so each tile shows a lit rim.
+      //   seqScale  - tile scale of the big wall in Visual Sequence; < 1
+      //               opens black seams between the tiles (live).
+      //   starLight - tiles are lit by the star: near / far brightness
+      //               at the star / at radius x maxR away, warm pushes
+      //               the near tiles from red toward orange (all live).
+      //   backShade - brightness of a tile's back while it flips (hex mode)
+      bevel:     0.8,
+      backShade: 0.45,
+      seqScale:  0.86,
+      starLight: { enabled: true, near: 1.9, far: 0.22, radius: 0.85, warm: 1.4 },
       // Per-hex organic scatter (same wave shape, but each tile flips on
       // its own clock and breaks ranks from the strict spatial sort so
       // the wave reads as ragged bursts instead of a clean left-to-right
@@ -497,7 +546,7 @@ export const ANIM = {
       //                   of the (max-min) range.
       sizeEvolve: {
         enabled:     true,
-        min:         0.45,
+        min:         0.6,   // was 0.45 - at the small end the wall thinned to dots
         max:         0.97,
         rate:        0.06,
         regionality: 0.55,
@@ -547,7 +596,8 @@ export const ANIM = {
       colorDrift: {
         enabled:       true,
         cycleDuration: 18.0,    // seconds for one full base→deep→base loop
-        deepColor:     '#5C0A04', // deep oxblood-red at the cycle's far end
+        deepColor:     '#8A1707', // oxblood-red at the cycle's far end (was
+                                  // #5C0A04 - the whole wall sank to black)
       },
       // Long-form evolution on top of the existing color drift, domino,
       // and size/shape morphing — gives the wall surprising-but-coherent
@@ -622,7 +672,7 @@ export const ANIM = {
                               // continuous Droste dive with periodic holds
                               // (the original infinite-loop behaviour, governed
                               // by holdDuration / holdFadeOut below).
-    loopStaticDur: 60.0,      // oneShot only. Seconds the canonical rest
+    loopStaticDur: 20.0,      // (was 60 - a minute of nothing) oneShot only. Seconds the canonical rest
                               // pattern stays static after fade-in completes
                               // before the intro re-triggers. 0 → park
                               // forever (no loop). Increase for longer
@@ -653,7 +703,7 @@ export const ANIM = {
                               // cover the originals' displacement so the
                               // silhouette edge is never visible during
                               // the focal-grow / push-out transition.
-    triggerDelay:  60.0,      // seconds in pattern mode before intro
+    triggerDelay:  12.0,      // (was 60) seconds in pattern mode before intro
                               // starts (initial settle — viewer reads the
                               // canonical pattern first so the dive lands
                               // as a clear transition, not a startle).
@@ -911,6 +961,9 @@ export const ANIM = {
       stagger:       1.5,   // phase offset between adjacent radial rings, seconds
       triggerDelay: 10.0,   // seconds after load before the cycle kicks in
       phaseJitter:   1.0,   // random per-tile phase offset at load, seconds (< stagger keeps wave)
+      entryLead:     8.5,   // playAll only: the pattern starts flowing back in this
+                            // many seconds before the overlay window closes (no
+                            // empty frame between the flowers and the pattern).
       gap:           0.5,   // pause at center, seconds — used when playAll: false.
                             // When playAll: true the effective gap is auto-
                             // computed so the all-at-center window equals
@@ -1327,7 +1380,7 @@ export const ANIM = {
     //                     panel-quadrant centroid and yOffset is added
     //                     to that centroid's Y.
     lanterns: {
-      enabled:        true,
+      enabled:        false,
       // Hexagonal wedge frame (set 'arch' for the original pointed-arch
       // shape). The hex frame reads as a stretched pointy-top hexagonal
       // alcove with `radial` = vertical extent, `width` = horizontal.
@@ -1638,8 +1691,17 @@ export const ANIM = {
       roughnessVar: 0.15,
       lightColor:   '#C8862F',
       darkColor:    '#6E4416',
-      glowColor:    '#FF7A1E',
+      glowColor:    '#FF8A2A',
       glowStrength: 2.0,
+      // Hearth falloff — the fire lights the wall from the star opening
+      // outward (stone near the flame is hot, the outer wall sinks into
+      // shadow). All live.
+      //   amount    0 = off (uniform glow, the old look) .. 1 = full
+      //   radius    falloff radius around the fire column, mesh units
+      //   far       albedo multiplier far from the fire (the shadow floor)
+      //   glowNear  internal-glow gain right at the fire
+      //   glowFar   internal-glow gain far from it
+      hearth: { amount: 1.0, radius: 24, far: 0.45, glowNear: 1.6, glowFar: 0.06 },
     },
   },
 
@@ -1674,7 +1736,7 @@ export const ANIM = {
     // Vertical taper toward the vanishing point. Higher = flame narrows
     // faster as it rises. Low values keep the bell area bright; high
     // values squeeze brightness into the bottom point.
-    taperPower: 0.85,
+    taperPower: 0.60,
 
     // Color stops along the height (0=bottom, 1=at vanishing point).
     // These are the *static* fallback values used when colorDrift is
@@ -1729,11 +1791,11 @@ export const ANIM = {
     // Domain-warped fbm parameters. The model's mesh-local coords run
     // ~80x80 units across the cutout, so noiseScale needs to be small
     // enough that the noise doesn't tile too tightly inside the body.
-    noiseScale:   0.08,   // larger = finer detail
+    noiseScale:   0.095,   // larger = finer detail
     noiseSpeed:   3.5,    // mesh-units/sec the noise scrolls upward
-    warpStrength: 2.4,    // how strongly the noise self-warps
-    threshLow:    0.05,   // raw-noise threshold band — anything below
-    threshHigh:   0.32,   // threshLow is invisible, threshHigh fully bright.
+    warpStrength: 2.7,    // how strongly the noise self-warps
+    threshLow:    0.13,   // raw-noise threshold band — anything below
+    threshHigh:   0.56,   // threshLow is invisible, threshHigh fully bright.
                           // The vertical taper is applied as a final
                           // alpha multiplier AFTER this threshold so the
                           // bottom of the flame stays uniformly visible
@@ -1761,12 +1823,12 @@ export const ANIM = {
     // Widened (was 0.14 / 0.005): at those values the whole fire read as
     // a thin needle on the wall; the star bay is wide enough for a broad
     // tongue that still tapers to a point.
-    bodyHalfWidthBase: 0.30,
-    bodyHalfWidthTop:  0.03,
+    bodyHalfWidthBase: 0.50,
+    bodyHalfWidthTop:  0.07,
     columnWobble:      0.05,
-    widthNoiseAmt:     0.30,
+    widthNoiseAmt:     0.45,
     widthNoiseFreq:    0.14,
-    columnEdgeSoft:    0.45,
+    columnEdgeSoft:    0.65,
 
     // Bottom fade — height fraction over which the flame ramps in from
     // invisible (at the polygon's bottom Y) to full intensity. The main
@@ -1775,7 +1837,7 @@ export const ANIM = {
     // it draws ON TOP of the orange at its column rather than adding
     // (which would blow the overlap to white) — so we don't need a
     // wide bottom fade on the orange to "make room" for blue any more.
-    bottomFadeFrac: 0.04,
+    bottomFadeFrac: 0.10,
 
     // Rounded bottom — radius (as a t-fraction) of the half-circle dome
     // that shapes the flame's lower edge. 0 = flat horizontal bottom;
@@ -1794,7 +1856,7 @@ export const ANIM = {
     //                ~5 % width at the waist). 0 disables.
     //   waistWidth — Gaussian half-width of the pinch (in t units).
     waistY:     0.22,
-    waistAmt:   0.30,      // softer pinch (was 0.55) - keeps the base a body
+    waistAmt:   0.15,      // softer pinch (was 0.55) - keeps the base a body
     waistWidth: 0.18,
 
     // Second narrow waist higher up — independent Gaussian pinch used
@@ -1805,7 +1867,7 @@ export const ANIM = {
     // pinch depth needed. Set `waist2Amt: 0` to disable this second
     // pinch entirely.
     waist2Y:     0.62,
-    waist2Amt:   0.45,     // was 0.68
+    waist2Amt:   0.25,     // was 0.68
     waist2Width: 0.18,   // wider Gaussian so the tail thins the visible
                          // middle of the body (~t=0.5) while the peak
                          // pinch stays at t=0.62 to keep the column off
@@ -1829,7 +1891,7 @@ export const ANIM = {
     movement: {
       enabled:       true,
       cycleDuration: 38,
-      minScale:      0.10,
+      minScale:      0.45,
     },
 
     // Branching — a slow noise gates whether the flame splits into two
@@ -1869,14 +1931,14 @@ export const ANIM = {
     // cutout's vertical extent. Positive shifts everything UP. Use this
     // to nudge the flame's resting position within the cutout without
     // changing the cutout geometry or the t-mapping shape.
-    yOffsetFrac: 0.06,
+    yOffsetFrac: 0.0,
 
     // Overall multiplier applied to the flame body. With additive
     // blending values >1 saturate after ACES tonemapping, giving the
     // bright saturated-yellow core characteristic of real flame. Kept
     // moderate so the hot core stays visibly amber/orange instead of
     // blowing out to a flat white.
-    brightness: 2.8,
+    brightness: 3.0,
     opacity:    1.0,
 
     // Multiplier applied to all base-scene warm lights (key, innerGlow,
@@ -2013,19 +2075,19 @@ export const ANIM = {
       inset:     0.1,
       pulse: {
         enabled:   true,
-        rate:      0.22,
+        rate:      0.12,
         duration:  7.5,
         width:     0.08,
         color:     '#FFE8B0',
-        intensity: 3.2,
+        intensity: 1.3,
       },
       ignite: {
         enabled:   true,
-        rate:      0.10,
+        rate:      0.04,
         duration:  5.5,
         maxSpread: 0.55,
         color:     '#FF8830',
-        intensity: 2.4,
+        intensity: 0.6,
       },
     },
 
@@ -2068,7 +2130,7 @@ export const ANIM = {
       duration:  2.4,    // each flare's life, seconds (envelope)
       intensity: 0.55,   // peak amount the flare colour overrides base
       yMax:      0.50,   // flares only show below this height fraction
-      palette: ['#3DB7FF', '#41E0B8', '#A668FF', '#5BFF7E', '#7AC0FF'],
+      palette: ['#FFE9B0', '#FFD070', '#FFB48A', '#FFF2D0', '#FF9A5A'],   // warm (was blue/green/violet: tinted the whole wall)
     },
 
     // Sparks rising from the flame.
@@ -2143,15 +2205,16 @@ export const ANIM = {
       // light-to-face vector and stays unlit (FrontSide rendering only
       // illuminates the camera-facing side, not the back, so the front
       // face's outer surface is unaffected by lights placed behind it).
-      zOffsetFromFront: -2.0,
+      zOffsetFromFront: 16.0,
       // Calmed (user: "flashing wayyyy too much"): narrow band around a
       // warm steady glow instead of the old 55–190 strobe, slower sine,
       // and jitter nearly off so the per-frame stochastic noise reads as
       // a faint shimmer rather than a flicker. Flare boost trimmed from
       // 220 so chromatic flares warm the room instead of blowing it out.
-      intensityMin: 95,
-      intensityMax: 150,
-      flareIntensityBoost: 55,
+      intensityMin: 8,
+      intensityMax: 13,
+      flareIntensityBoost: 4,
+      flareTint: 0.12,          // how far a flare drags the light colour off amber (1 = old)
       flickerSpeed:  1.1,
       flickerJitter: 0.12,
       color:        '#FF7A22',   // fallback for stack entries that omit color
@@ -2165,16 +2228,16 @@ export const ANIM = {
       stack: [
         // Hot base — yellow-amber, full intensity, no phase shift.
         { yFraction: 0.15, intensityScale: 1.00,
-          color: '#FFB840', phaseOffset: 0.0 },
+          color: '#FF9A38', phaseOffset: 0.0 },
         // Mid-low — saturated orange.
         { yFraction: 0.40, intensityScale: 0.85,
           color: '#FF8A20', phaseOffset: 0.7 },
         // Mid-high — red-orange.
         { yFraction: 0.65, intensityScale: 0.70,
-          color: '#E04A18', phaseOffset: 1.4 },
+          color: '#F0641C', phaseOffset: 1.4 },
         // Tip — deep red, dimmest. Reaches the top of the arch.
         { yFraction: 0.85, intensityScale: 0.55,
-          color: '#A4220F', phaseOffset: 2.1 },
+          color: '#C83C14', phaseOffset: 2.1 },
       ],
     },
 
@@ -2196,7 +2259,7 @@ export const ANIM = {
     //                    the cutout's half-width). Smaller = thinner.
     //   colorBottom / colorMid / colorTop — saturated blue palette.
     secondary: {
-      enabled:           true,
+      enabled:           false,
       heightFraction:    0.22,   // was 0.33 - a base core, not a column
       // Animate the small flame's top Y over time. Two beating sines
       // give a non-repeating-feeling drift; the heightFrac that
@@ -2291,7 +2354,7 @@ export const ANIM = {
     //   outline.soft   — edge smoothness; small values give a harder /
     //                    sharper outline. 0.04 reads as a crisp ring.
     tertiary: {
-      enabled:     true,
+      enabled:     false,
       // Vertical gradient — deep red at the base, purple bridge in the
       // middle, vibrant blue at the tip.
       colorBottom: '#B81A0E',
@@ -2403,7 +2466,7 @@ export const ANIM = {
       width:          2.1,
       spacing:        2.7,
       tipGildEvery:   2,
-      tipEmissive:    3.0,
+      tipEmissive:    2.9,
       lengthJitter:   0.2,
     },
     // Ember-flicker emissive tint on the brick rim — same domain-warped
@@ -2595,6 +2658,8 @@ export const ANIM = {
     inDur:  0.6,      // seconds fading back in
     wipeDur: 0.9,     // total wipe cover+reveal time
     feather: 1.5,     // wipe edge softness in world units
+    // Morph lengths in seconds (src/show/morph.js).
+    morph: { fade: 2.6, dissolve: 2.8, iris: 2.8, vortex: 3.6, zoom: 2.4, melt: 3.4, pour: 4.2 },
   },
 
   // -----------------------------------------------------------------------
@@ -2624,60 +2689,189 @@ export const ANIM = {
   },
 
   // -----------------------------------------------------------------------
+  // CONSTELLATIONS (key 7, viewMode 'flameOnly') — a deep night sky seen
+  // through the logo, with star figures that trace themselves.
+  // src/effects/constellation/constellation.js. All live.
+  //   figures        how many figures share the sky at once (0..3)
+  //   figureScale    size multiplier for the figures
+  //   margin         clearance kept from the frame and the star, mesh units
+  //   traceSpeed     how fast a line travels, mesh units / s
+  //   holdMin/Max    seconds a finished figure stays
+  //   restMin/Max    seconds of empty lobe before the next figure
+  //   lineWidth      px;  lineBrightness  settled line level
+  //   lineColor      cool white, so the figures part from the gold frame
+  //   starSize       px sprite of a bright figure star;  starGap  the gap
+  //                  each line leaves around a star, mesh units
+  //   skyBrightness / nebula   the star field and the dust
+  //   seed / bandAngle / bandWidth / drift / driftAngle
+  //                  the sky itself: which stars, where the dense band
+  //                  lies, how fast and which way the layers slide
+  //                  (re-rolled on every visit by ANIM.variations)
+  //   autoPulse      stellar pulse by itself roughly every half minute
+  //   cometLevel     brightness of the edge-light comets in this mode
+  //   frameGlow      emissive of the gilded frame in this mode
+  // -----------------------------------------------------------------------
+  constellation: {
+    figures:        2,
+    figureScale:    1.0,
+    margin:         5.0,
+    traceSpeed:     9,
+    holdMin:        12,
+    holdMax:        19,
+    restMin:        0.8,
+    restMax:        2.5,
+    lineWidth:      1.8,
+    lineBrightness: 0.85,
+    lineColor:      '#BFD4FF',
+    starSize:       36,
+    starGap:        1.15,
+    starBrightness: 1.0,
+    skyBrightness:  1.0,
+    nebula:         1.5,
+    seed:           7,
+    bandAngle:      0.6,
+    bandWidth:      0.2,
+    drift:          1.0,
+    driftAngle:     0.4,
+    autoPulse:      true,
+    pulseDuration:  4.5,
+    pulseWidth:     5.0,
+    cometLevel:     0.32,
+    frameGlow:      0.8,    // gilded frame emissive in this mode (1 = old)
+    frameLip:       0.84,   // gilded lip emissive (1 = old; lower = less bloom haze over the sky)
+    // Story beats: the sky is open for firstDelay seconds (twinkle +
+    // shooting stars), then the first figure is always firstFigure.
+    firstFigure:    'Ursa Major',   // the Big Dipper; '' = random
+    firstDelay:     7,
+    // Shooting stars. first = seconds before the first one; then one
+    // every min..max seconds. Trigger 'stellar.meteor' {count} sends some now.
+    meteor: { enabled: true, first: 2.5, min: 3.5, max: 8, brightness: 1.0 },
+    // Vortex ('stellar.vortex'): the sky turns about the star and sinks
+    // into it. spin = rad/s at mid radius once up to speed; ramp = seconds
+    // to get there; exposure = streak length in seconds of travel; pull =
+    // how fast the stars fall inward; linger = fade time (s) of this sky
+    // once the Depth Portal has taken over.
+    vortex: { spin: 0.9, ramp: 4, exposure: 0.22, streakMax: 0.42, pull: 0.035, linger: 1.8 },
+  },
+
+  // -----------------------------------------------------------------------
   // THE SHOW (key 0) — the curated full sequence. Keys: S play/pause,
   // N next. Remote: {"type":"show","action":...}. Cue `at` counts
   // seconds from the end of the step's transition-in; `every` re-fires
   // on a period. autoStartInProjection makes ?proj=1 boots start it;
   // manual mode keys (1-8) pause it; 0 restarts it from the top.
   //
-  // Each step's `transition` is the seam INTO that step, chosen per
-  // visual pair:
-  //   → moltenGold      'wipe'      gold disc swallows everything back
-  //   → flameOnly       'burst'     same starfield continues, comets
-  //                                 ignite the frame — no blink
-  //   → fireplaceTwo    'dip'       dark-to-dark blink into the void
-  //   → fireplaceOne    'wipe'      the rushing corridor (portal.rush
-  //                                 cue fires 4s before) wipes to fire
-  //   → hexagons        'edgeFlash' ember comet flash hands fire to wall
-  //   → flowers         'cut'       flowers open on the petal honeycomb
-  //                                 (hexLattice first in sequence) — the
-  //                                 wall reads as continuing, then blooms
-  //   → fractalPattern  'dip'       petals settle into the rosette panel
-  //   → visualSequence  'cut'       same panel family, cascade on arrival
+  // THE STORY. One arc, and it closes on itself:
+  //   GOLD      the gold logo melts and runs down ...
+  //   SKY       ... and uncovers the night sky. Stars twinkle, shooting
+  //             stars cross, the Big Dipper draws itself, more figures.
+  //   VORTEX    a ring of light closes on the star; the sky starts to
+  //             turn, the stars stretch into spiral streaks and become
+  //             the flow field of the Depth Portal.
+  //   DESCENT   the flow rushes in and we fall through the star: the
+  //             Star Dive, logo inside logo, molten veins.
+  //   EARTH     the molten rock cools into contour lines (strata), the
+  //             lines crack into shards, the shards set into the hex wall.
+  //   BLOOM     the wall opens into flowers.
+  //   FIRE      the hearth lights from the star.
+  //   GOLD      liquid gold pours down over the fire, and we are back
+  //             at the start.
+  //
+  // Each step's `transition` is the seam INTO that step. All are morphs
+  // (src/show/morph.js): the old look is warped / dissolved over the new
+  // one, with no blink to black.
+  //   → moltenGold      'pour'      liquid gold runs down over the fire
+  //   → flameOnly       'fade'      sky to sky
+  //   → fireplaceTwo    'fade'      short; the turning sky ('stellar.vortex'
+  //                                 cue) stays live under it
+  //   → starDive        'zoom'      rush through the star
+  //   → strata          'dissolve'  veins cool into contour lines
+  //   → shards          'iris'      cracks spread out from the star
+  //   → hexagons        'dissolve'  shards set into the wall
+  //   → flowers         'fade'      the wall is the first flower lattice
+  //   → fireplaceOne    'iris'      the hearth lights from the star
+  // Keys 2 (rosette), 8 (classic composite) and W (mercury) are not in
+  // the story; they stay on their keys.
   // -----------------------------------------------------------------------
   show: {
     autoStart: false,
     autoStartInProjection: true,
-    defaultTransition: 'dip',
+    defaultTransition: 'dissolve',
     pauseOnManualInput: true,
     playlist: [
-      // 1. Gold emblem opening — the full golden logo particlizes
-      //    downward to reveal the stars (the molten cycle resets to
-      //    holdTop on every entry; needs no cues). Dwell ends a few
-      //    seconds into the starry rest so step 2 inherits the sky.
-      { mode: 'moltenGold',     dwell: 26, transition: 'wipe' },
-      // 2. Constellations emerge in that same sky.
-      { mode: 'flameOnly',      dwell: 55, transition: 'burst',
-        cues: [ { at: 24, trigger: 'stellar.pulse', every: 20 } ] },
-      // 3. The sky collapses into the outline corridor; the rush-out cue
-      //    accelerates the conveyor INTO the next seam.
-      { mode: 'fireplaceTwo',   dwell: 40, transition: 'dip',
-        cues: [ { at: 36, trigger: 'portal.rush' } ] },
-      // 4. Warm fire; the mode-5 choreographer owns all motion here.
-      { mode: 'fireplaceOne',   dwell: 55, transition: 'wipe' },
-      // 5. Fire hands off to the living hex wall.
-      { mode: 'hexagons',       dwell: 40, transition: 'edgeFlash' },
-      // 6. Dwell 70 ≈ one full pass through all five petal patterns.
-      { mode: 'flowers',        dwell: 70, transition: 'cut' },
-      // 7. Rosette panel + fractal dives.
-      { mode: 'fractalPattern', dwell: 45, transition: 'dip',
-        cues: [ { at: 8, trigger: 'fractal.zoom', every: 18 } ] },
-      // 8. The classic composite, then the gold wipe swallows it all
-      //    back to step 1.
-      { mode: 'visualSequence', dwell: 50, transition: 'cut',
-        cues: [ { at: 2,  trigger: 'cascade.now' },
-                { at: 30, trigger: 'arch.cascade' } ] },
+      // GOLD — full golden logo, then it drains in drips and uncovers
+      // the stars (the molten cycle resets to holdTop on every entry).
+      { mode: 'moltenGold',     dwell: 25, transition: 'pour' },
+      // SKY — open sky first (twinkle, shooting stars), then the Big
+      // Dipper, then more figures. A burst of shooting stars mid-way;
+      // the closing ring of light leads into the vortex.
+      { mode: 'flameOnly',      dwell: 48, transition: 'fade',
+        cues: [ { at: 3,  trigger: 'stellar.meteor', args: { count: 2 } },
+                { at: 26, trigger: 'stellar.meteor', args: { count: 3 } },
+                { at: 37, trigger: 'stellar.pulse' },
+                { at: 42, trigger: 'stellar.vortex' } ] },
+      // VORTEX — the sky is already turning; it stays alive under the
+      // short fade and its streaks sink into the portal's flow lines.
+      // The rush-out cue accelerates the corridor into the fall.
+      { mode: 'fireplaceTwo',   dwell: 36, transition: 'fade', transitionDur: 1.6,
+        cues: [ { at: 32, trigger: 'portal.rush' } ] },
+      // DESCENT — the endless fall through logo-inside-logo.
+      { mode: 'starDive',       dwell: 48, transition: 'zoom',
+        cues: [ { at: 24, trigger: 'dive.rush' }, { at: 44, trigger: 'dive.rush' } ] },
+      // EARTH — contour lines, then shards, then the hex wall.
+      { mode: 'strata',         dwell: 30, transition: 'dissolve',
+        cues: [ { at: 14, trigger: 'look.pulse' } ] },
+      { mode: 'shards',         dwell: 28, transition: 'iris',
+        cues: [ { at: 12, trigger: 'look.pulse' } ] },
+      { mode: 'hexagons',       dwell: 34, transition: 'dissolve' },
+      // BLOOM — a field of small shapes, no gate, no star glow.
+      //   Dwell 54 = one pass through its four arrangements.
+      { mode: 'flowers',        dwell: 54, transition: 'fade' },
+      // FIRE — the hearth; the mode-5 choreographer owns the motion.
+      //   Then gold pours down over it and the story starts again.
+      { mode: 'fireplaceOne',   dwell: 44, transition: 'iris' },
     ],
+  },
+
+  // LAYERS — a different visual on each wood layer (layers.html).
+  // That page plays THE SHOW as always (the "story"). In the middle of
+  // each look, the upper wood layers change to two other looks (the
+  // "accents"), from the centre outward. Then they go back, and the
+  // story changes to its next look with its normal transition.
+  // Keys on that page: L = layers on/off, O = wood lines on/off,
+  // J = mix now / stop. Code: src/layers/director.js.
+  layers: {
+    enabled: true,
+    woodLines: true,        // draw the step edges of the wood. A preview: turn it off on the real wood (key O)
+    mixStart: 0.22,         // the mix starts at this part of the look's time ...
+    mixStartMin: 6,         // ... but not before this many seconds
+    mixEndBefore: 6.5,      // the layers start to go back this many seconds before the look ends
+    warmUp: 4,              // the accents start this many seconds before they show (their start is hidden)
+    fade: 2.2,              // seconds for one layer to change
+    manualCycle: 32,        // THE SHOW paused: seconds for one cycle (one visual -> mix -> one visual)
+    // Which slot is on which wood layer in a mix.
+    //   0 = story, 1 = accent 1, 2 = accent 2
+    // Layers, bottom to top: base plate, plate, line layer, plate, line layer.
+    // The story steps use these patterns in turn.
+    patterns: [
+      [0, 1, 2, 2, 1],
+      [0, 0, 1, 2, 1],
+      [0, 1, 1, 2, 2],
+      [0, 2, 1, 1, 2],
+    ],
+    // The two accents for each story look.
+    accents: {
+      default:      ['moltenGold', 'strata'],
+      moltenGold:   ['strata', 'fireplaceOne'],
+      flameOnly:    ['moltenGold', 'shards'],
+      fireplaceTwo: ['strata', 'moltenGold'],
+      starDive:     ['shards', 'moltenGold'],
+      strata:       ['moltenGold', 'flameOnly'],
+      shards:       ['fireplaceOne', 'strata'],
+      hexagons:     ['moltenGold', 'strata'],
+      flowers:      ['strata', 'moltenGold'],
+      fireplaceOne: ['moltenGold', 'flameOnly'],
+    },
   },
 
   // Remote control. wsUrl e.g. '127.0.0.1:9980' (TouchDesigner WebSocket
@@ -2685,7 +2879,7 @@ export const ANIM = {
   control: { wsUrl: null },
 
   // Built-in corner-pin warp (pipeline B — projector geometry without
-  // TouchDesigner). 'W' opens the drag/nudge editor; corners persist in
+  // TouchDesigner). 'M' opens the drag/nudge editor; corners persist in
   // localStorage per output resolution. Requires post.enabled (the warp
   // is the composer's final pass). Remote: {"type":"warp", ...}.
   warp: { enabled: false, corners: null },
@@ -2713,12 +2907,48 @@ export const ANIM = {
     // the star centre (patternFadeCenter), so the tunnel converges into it.
     twistDeg: 1.2,
     wobble: { ampDeg: 1.5, period: 16 },
+    // Parallax drift of the vanishing point (fraction of the logo size).
+    sway: { amount: 0.06, periodX: 19, periodY: 27 },
     // Corridor fills are translucent depth-haze; rims carry the shape.
     // innerRimScale dims the star-cutout outlines relative to the outer
     // A outline (user: "make the inner star less bright").
     opacity: { head: 0.45, tail: 0.12 },
-    rim: { enabled: true, color: '#FFD070', intensity: 4.5, innerRimScale: 0.35 },
-    rush: { duration: 4, speedMul: 6, brightMul: 1.8 },
+    // linewidth is in output pixels (fat lines — 1 px vanished on the
+    // projector); far copies thin out automatically.
+    // intensity 4.5 suited the old hairlines; fat lines at that level
+    // clip to white, so it sits lower and the palette colour reads.
+    rim: { enabled: true, color: '#FFD070', intensity: 1.5, innerRimScale: 0.35, linewidth: 2.4 },
+    // brightMul / starBright / flowBright = how much the rims, the star
+    // outline and the flow ribbons swell in a rush. Kept low: a hot rush
+    // makes a bloom halo that lights the wall around the logo.
+    rush: { duration: 4, speedMul: 6, brightMul: 1.15, starBright: 0.2, flowBright: 0.1 },
+    // Front star outline — the star cutout drawn full-size and always
+    // visible; the particle flow pours out of it.
+    starOutline: { enabled: true, linewidth: 3.2, intensity: 1.35, breathe: 0.18, period: 9 },
+    // STAR FLOW — particle ribbons streaming from the outlines into the
+    // vanishing point on smooth drifting curves (starFlow.js). Key F /
+    // trigger 'portal.flow' toggles it; a portal rush (Space) surges it.
+    //   count        — ribbons at HIGH quality (Q scales it down)
+    //   trail        — points per ribbon;  trailSeconds — ribbon length in time
+    //   pull         — recession rate toward the vanishing point (1/s)
+    //   swirl        — whirl around the vanishing point (rad/s)
+    //   curl         — strength of the smooth bend field (the "elegance":
+    //                  ribbons curve, braid and reverse)
+    //   curlFreq     — field detail (higher = tighter curls)
+    //   curlDrift    — how fast the field itself evolves
+    //   starShare    — fraction spawning on the star + stem edges (rest
+    //                  on the outer A outline)
+    //   followPalette— 0..1 how much ribbon heads follow the corridor colour
+    flow: {
+      enabled: true,
+      count: 1100, trail: 28, trailSeconds: 1.1,
+      life: [5, 9],
+      pull: 0.3, swirl: 0.35, curl: 0.55, curlFreq: 3.2, curlDrift: 0.11,
+      starShare: 0.72,
+      linewidth: 1.6, intensity: 2.2,
+      color: '#FFE2A8', tailColor: '#FF5A14', followPalette: 0.55,
+      rushSpeedMul: 3.2,
+    },
     // Slow autonomous evolution — the corridor drifts between color
     // moods and its motion breathes, on layered incommensurate sine
     // clocks so the combination never visibly repeats.
@@ -2733,6 +2963,185 @@ export const ANIM = {
       speedWander: 0.45,
       twistWander: 1.0,
     },
+  },
+
+  // -----------------------------------------------------------------------
+  // LOOKS — per-mode trims. Research note (Lemercier / AntiVJ, ISAM):
+  // strong mapped work is mostly black, with few bold elements and light
+  // that fits the object. So the orange star glow and the gilded gate
+  // are now per-look choices instead of always-on.
+  //   innerGlow  — multiplier on the orange point light inside the star
+  //   frontLight — multiplier on the front fill light
+  //   gate       — false hides the gilded outer gate frame in that mode
+  // -----------------------------------------------------------------------
+  looks: {
+    flowers:        { innerGlow: 0.0,  frontLight: 0.6, gate: false },
+    starDive:       { gate: false },
+    flameOnly:      { innerGlow: 0.2 },
+    mercury: { gate: false }, strata: { gate: false }, shards: { gate: false },
+    //   body       - multiplier on the gold body's brightness (1 = as is)
+    //   galaxy     - multiplier on the warm nebula inside the star
+    //   embers     - false hides the ember stream (it leaks specks of
+    //                light outside the silhouette, above the arch)
+    hexagons:       { innerGlow: 0.2,  body: 0.1, galaxy: 0.5, gate: false, embers: false, rearLight: 0.0 },
+    fractalPattern: { innerGlow: 0.25, body: 0.1, galaxy: 0.5, gate: false, embers: false, rearLight: 0.0 },
+    visualSequence: { innerGlow: 0.25, body: 0.1, galaxy: 0.5, gate: false, embers: false, rearLight: 0.0 },
+    // moltenGold: darker sky behind the gold; the two pattern point lights
+    // left a stray grey glint on the bare logo (upper right) — off here.
+    moltenGold:     { innerGlow: 0.28, frontLight: 0.0, rearLight: 0.0 },
+  },
+
+  // -----------------------------------------------------------------------
+  // VARIATIONS — generative looks. Every time a mode is entered, each row
+  // [ANIM path, min, max] is rolled to a random value in its range, so no
+  // two visits look the same. Only live-read numeric knobs belong here.
+  // enabled:false freezes every look at its config value.
+  // -----------------------------------------------------------------------
+  variations: {
+    enabled: true,
+    flowers: [
+      ['overlay.flowerPatterns.gen.divergence', -0.010, 0.010],
+      ['overlay.flowerPatterns.gen.burstTwist', -1.4, 1.4],
+      ['overlay.flowerPatterns.gen.ringBreath',  0.03, 0.12],
+      ['galaxy.timeScale', 0.7, 1.3],
+    ],
+    fireplaceTwo: [
+      ['recede.twistDeg', 0.3, 2.4],
+      ['recede.flow.curl', 0.3, 0.85],
+      ['recede.flow.swirl', 0.12, 0.55],
+      ['recede.flow.curlFreq', 2.2, 4.6],
+      ['recede.flow.pull', 0.24, 0.38],
+      ['recede.sway.amount', 0.03, 0.09],
+    ],
+    starDive: [
+      ['dive.ratio', 0.42, 0.58],
+      ['dive.secondsPerLevel', 7, 12],
+      ['dive.fog', 0.2, 0.36],
+      ['dive.sway.amount', 0.04, 0.09],
+      ['dive.veins', 0.35, 0.8],
+      ['dive.seed', 0, 100],
+    ],
+    mercury: [ ['shaderLooks.mercury.a', 0, 1], ['shaderLooks.mercury.b', 0.2, 1], ['shaderLooks.mercury.c', 0, 1], ['shaderLooks.mercury.seed', 0, 100] ],
+    strata:  [ ['shaderLooks.strata.a', 0, 1],  ['shaderLooks.strata.b', 0, 1],    ['shaderLooks.strata.c', 0, 1],  ['shaderLooks.strata.seed', 0, 100] ],
+    shards:  [ ['shaderLooks.shards.a', 0, 1],  ['shaderLooks.shards.b', 0, 1],    ['shaderLooks.shards.c', 0, 1],  ['shaderLooks.shards.seed', 0, 100] ],
+    // Hexagons: how the tiles swell, how many break into other shapes, how
+    // fast the wall drifts between ember and oxblood, how far the star's
+    // light reaches.
+    hexagons: [
+      ['galaxy.timeScale', 0.7, 1.4],
+      ['overlay.brickWall.sizeEvolve.rate',        0.04, 0.09],
+      ['overlay.brickWall.sizeEvolve.regionality', 0.30, 0.80],
+      ['overlay.brickWall.sizeEvolve.wobble',      0.35, 0.70],
+      ['overlay.brickWall.shapeMorph.rate',        0.5,  1.6],
+      ['overlay.brickWall.shapeMorph.maxAltFraction', 0.06, 0.22],
+      ['overlay.brickWall.colorDrift.cycleDuration', 14, 26],
+      ['overlay.brickWall.hexDominoPause',         3.0,  7.0],
+      ['overlay.brickWall.starLight.radius',       0.70, 1.00],
+      ['overlay.brickWall.starLight.warm',         0.8,  1.8],
+    ],
+    // Fractal pattern: which way the zoom spirals and how fast it falls,
+    // how many hexes are lit at once and how big the hot patches are.
+    fractalPattern: [
+      ['galaxy.timeScale', 0.7, 1.4],
+      ['fractalZoom.droLayerRotation', -0.20, 0.20],
+      ['fractalZoom.droStepDuration',   2.8,  4.4],
+      ['fractalZoom.loopStaticDur',    16,   26],
+      ['latticeHex.bias',               1.6,  2.8],
+      ['latticeHex.pulseSpeed',         0.40, 0.80],
+      ['latticeHex.emissiveMax',        1.3,  1.7],
+      ['latticeHex.evolution.noiseScale', 0.06, 0.16],
+      ['rosette.glow',                  0.25, 0.4],
+    ],
+    // Visual sequence: the same lattice rolls, plus the big wall's seams
+    // and star light.
+    visualSequence: [
+      ['galaxy.timeScale', 0.7, 1.4],
+      ['latticeHex.bias',               1.6,  2.8],
+      ['latticeHex.pulseSpeed',         0.40, 0.80],
+      ['latticeHex.emissiveMax',        1.3,  1.7],
+      ['latticeHex.evolution.noiseScale', 0.06, 0.16],
+      ['rosette.glow',                  0.25, 0.4],
+      ['overlay.brickWall.seqScale',    0.78, 0.92],
+      ['overlay.brickWall.hexDominoPause', 3.0, 7.0],
+      ['overlay.brickWall.starLight.radius', 0.70, 1.00],
+      ['overlay.brickWall.starLight.warm',   0.8,  1.8],
+    ],
+    fireplaceOne: [
+      ['arch.amber.hearth.radius', 19, 30],
+      ['arch.amber.hearth.far', 0.34, 0.55],
+      ['arch.amber.mottleScale', 0.26, 0.48],
+      ['arch.amber.veinStrength', 0.35, 0.8],
+      ['flame.bodyHalfWidthBase', 0.42, 0.60],
+      ['flame.noiseScale', 0.08, 0.11],
+      ['flame.warpStrength', 2.2, 3.1],
+      ['flame.noiseSpeed', 2.8, 4.4],
+      ['flame.columnWobble', 0.03, 0.08],
+      ['galaxy.timeScale', 0.7, 1.3],
+    ],
+    flameOnly: [
+      ['constellation.seed', 0, 100],
+      ['constellation.bandAngle', -1.4, 1.4],
+      ['constellation.bandWidth', 0.14, 0.28],
+      ['constellation.drift', 0.6, 1.6],
+      ['constellation.driftAngle', 0, 6.283],
+      ['constellation.nebula', 1.0, 2.0],
+      ['constellation.figureScale', 0.88, 1.1],
+      ['constellation.traceSpeed', 7, 12],
+      ['galaxy.timeScale', 0.6, 1.5],
+    ],
+    moltenGold:     [ ['galaxy.timeScale', 0.7, 1.3] ],
+  },
+
+  // -----------------------------------------------------------------------
+  // SHADER LOOKS (keys W / R / T) — src/effects/looks/shaderLooks.js.
+  // Each look has three knobs (0..1) and a seed; ANIM.variations rolls
+  // them on every entry. gain = overall brightness of that look.
+  //   mercury (W): a = ripple fineness  b = surface chop     c = flow speed
+  //   strata  (R): a = terrace density  b = contour bend     c = speed
+  //   shards  (T): a = shard size       b = facet tilt       c = crack glow
+  // Space sends a pulse of light ('look.pulse').
+  // -----------------------------------------------------------------------
+  shaderLooks: {
+    mercury: { a: 0.5, b: 0.6, c: 0.4, seed: 0, gain: 1.0 },
+    strata:  { a: 0.5, b: 0.5, c: 0.4, seed: 0, gain: 1.0 },
+    shards:  { a: 0.5, b: 0.5, c: 0.5, seed: 0, gain: 1.0 },
+    lightPeriod: 29,      // seconds for the light to circle
+    sway: 0.06,           // eye drift (parallax) as a fraction of the logo
+    gold: '#FFC56A', ember: '#FF4A12', deep: '#5A0A12', cool: '#3A5C8C',
+  },
+
+  // -----------------------------------------------------------------------
+  // STAR DIVE (key Q, viewMode 'starDive') — continuous fractal zoom. The
+  // logo is nested inside its own star, endlessly; the view falls forward
+  // through copy after copy. src/effects/starDive/starDive.js.
+  //   ratio           — size of each copy relative to the one in front
+  //   secondsPerLevel — time to fall through one copy (lower = faster)
+  //   speedWander     — ±fraction the speed breathes
+  //   sway.amount     — eye drift as a fraction of the logo size: the
+  //                     parallax that makes the copies read as real depth
+  //   twistDeg        — max twist per copy (oscillates over twistPeriod s)
+  //   liquid          — edge wobble of the deep copies (0 = rigid)
+  //   bevel / shadow  — edge roll-off width / drop-shadow reach
+  //   fog             — darkening per copy of depth
+  //   rush            — Space / 'dive.rush': speed x speedMul for duration s
+  //   gold/ember/deep/cool — the palette (highlights, fire, shadow red,
+  //                     cold fill light)
+  // -----------------------------------------------------------------------
+  dive: {
+    ratio: 0.5,
+    secondsPerLevel: 9,
+    speedWander: 0.3,
+    sway: { amount: 0.07, periodX: 23, periodY: 31 },
+    twistDeg: 0, twistPeriod: 41,       // 0 = copies stay square to the logo (clean)
+    liquid: 0.005,
+    veins: 0.6,                         // strength of the gold veins (0 = plain dark slabs)
+    seed: 0,                            // shifts every copy's vein pattern + material
+    bevel: 0.055, shadow: 0.07, fog: 0.3,
+    lightPeriod: 37,
+    gain: 1.0,
+    sdfSize: 288,
+    rush: { duration: 4, speedMul: 4 },
+    gold: '#FFC56A', ember: '#FF4A12', deep: '#5A0A12', cool: '#3A5C8C',
   },
 
   // -----------------------------------------------------------------------
@@ -2769,7 +3178,7 @@ export const ANIM = {
     // fully golden logo, holds, then the surface particlizes downward
     // to reveal the starry sky, rests, refills. All sin-eased. Manual
     // triggers interrupt; the cycle re-seats itself after.
-    cycle: { enabled: true, rise: 20, holdTop: 7, drain: 15, holdBottom: 9 },
+    cycle: { enabled: true, rise: 20, holdTop: 7, drain: 15, holdBottom: 6 },
     fillTop: 1.0,
     drainTo: 0.02,
     idle: { min: 0.35, max: 0.75, period: 40 },   // used when cycle.enabled=false
@@ -2783,6 +3192,15 @@ export const ANIM = {
     // drainBurst multiplies emission while the surface descends — the
     // "particlize" dissolve that reveals the sky.
     sparks: { count: 90, size: 0.055, sizeJitter: 0.6, wander: 0.35, rate: 1.0, drainBurst: 2.5 },
+    // Viscous front. While the surface falls it leaves beads that run
+    // down on thinning threads; while it climbs, tendrils creep ahead and
+    // the gold wets the walls first. All lengths are multipliers (1 = as
+    // authored); speedRef = fill/sec at which the effect is at full
+    // strength; ease = seconds to blend in/out. bevel = rim roundness.
+    drip: { dropLength: 1.0, fingerLength: 1.0, cling: 1.0, bevel: 1.0, speedRef: 0.022, ease: 1.1 },
+    // How far (mesh units) the surface parks below the feet / above the
+    // crown at rest, so empty is pure sky and full is the whole logo.
+    level: { below: 12, above: 8 },
   },
 };
 

@@ -21,6 +21,53 @@ function buildRingShape(outer, inner) {
   return shape;
 }
 
+// Flat band of constant width along the INSIDE of a CCW loop, at height z.
+// One quad per edge (pushed inward) plus a fan at every reflex corner, so
+// there is no offset polygon to compute: it cannot self-intersect, however
+// spiky the loop is. Quads overlap at convex corners and inside thin
+// spikes; they share one plane, one normal and one material, so the
+// overlap does not show. Where a spike is thinner than 2 x width the band
+// pokes out of the far side: the shape mask (src/core/shapeMask.js) trims
+// that.
+function buildBandGeometry(loop, width, z) {
+  const pos = [];
+  const n = loop.length;
+  const tri = (ax, ay, bx, by, cx, cy) => pos.push(ax, ay, z, bx, by, z, cx, cy, z);
+  const normals = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const a = loop[i], b = loop[(i + 1) % n];
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const nx = -dy / len, ny = dx / len;          // inward for a CCW loop
+    normals[i] = { x: nx, y: ny };
+    const ax1 = a.x + nx * width, ay1 = a.y + ny * width;
+    const bx1 = b.x + nx * width, by1 = b.y + ny * width;
+    tri(a.x, a.y, b.x, b.y, bx1, by1);
+    tri(a.x, a.y, bx1, by1, ax1, ay1);
+  }
+  for (let i = 0; i < n; i++) {
+    const n1 = normals[(i + n - 1) % n], n2 = normals[i];
+    const turn = n1.x * n2.y - n1.y * n2.x;       // < 0 = reflex corner
+    if (turn >= -1e-6) continue;
+    const b = loop[i];
+    const a0 = Math.atan2(n1.y, n1.x);
+    const dA = Math.atan2(turn, n1.x * n2.x + n1.y * n2.y);   // negative
+    const steps = Math.max(1, Math.ceil(Math.abs(dA) / 0.35));
+    for (let k = 0; k < steps; k++) {
+      const t0 = a0 + dA * (k / steps), t1 = a0 + dA * ((k + 1) / steps);
+      tri(b.x, b.y,
+          b.x + Math.cos(t1) * width, b.y + Math.sin(t1) * width,
+          b.x + Math.cos(t0) * width, b.y + Math.sin(t0) * width);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  const nrm = new Float32Array(pos.length);
+  for (let i = 2; i < nrm.length; i += 3) nrm[i] = 1;
+  geo.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
+  return geo;
+}
+
 // Build a solid (no-hole) Shape whose outline is: outerArc forward, then
 // innerArc reversed. Both arcs are walked CCW and share a y-level at their
 // endpoints, so the resulting outline is a closed ring with two flat feet.
@@ -80,6 +127,10 @@ export function createGateFrame({
   // { color, intensity }; null/intensity 0 keeps the legacy shared-mat
   // behaviour (lips render with the body material).
   gild = null,
+  // true = flat band frame (buildBandGeometry) for outlines that the
+  // offset-polygon build cannot handle: SVG shapes with spikes and thin
+  // necks. Same materials and userData, no inner lip, no bosses.
+  robust = false,
 } = {}) {
   const group = new THREE.Group();
 
@@ -136,6 +187,15 @@ export function createGateFrame({
       })
     : mat;
   if (gildOn) patchGradient(lipMat);
+
+  if (robust) {
+    group.add(new THREE.Mesh(buildBandGeometry(hull, frameWidth, frameDepth), mat));
+    group.add(new THREE.Mesh(buildBandGeometry(hull, lipWidth, frameDepth + lipDepth), lipMat));
+    group.userData.frameMaterial = mat;
+    group.userData.lipMaterial   = lipMat;
+    group.userData.gradUniforms  = gradUniforms;
+    return group;
+  }
 
   const inner = innerOffsetter(hull, frameWidth);
   const innerLipOuter = innerOffsetter(hull, frameWidth - lipWidth);

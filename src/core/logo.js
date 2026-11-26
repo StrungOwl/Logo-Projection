@@ -15,6 +15,7 @@ import { hexToRgb } from '../util/color.js';
 import { applyGradientTint } from '../shaders/gradient-tint.js';
 import { createGalaxyMaterial } from '../shaders/galaxy-backdrop.js';
 import { resolveSurface, buildScreenModel, screenOptions } from './surface.js';
+import { loadShapeModel } from './shape.js';
 
 // Extension-aware loader — picks GLTFLoader for .glb/.gltf, OBJLoader for
 // .obj. Hands back a single Object3D root so callers don't care about the
@@ -193,6 +194,10 @@ function convexHull2D(pts) {
 // the procedural full-frame slab from src/core/surface.js. Both go
 // through finishModel() so every downstream layer sees the same bundle.
 export function loadLogo() {
+  // SVG shape (shapes/<name>.svg) - see src/core/shape.js.
+  if (resolveSurface() === 'shape') {
+    return loadShapeModel().then(finishModel);
+  }
   if (resolveSurface() === 'screen') {
     const opts = screenOptions();
     console.log(`[surface] full-screen slab - aspect ${opts.aspect.toFixed(3)}, hole '${opts.hole}'`);
@@ -276,6 +281,9 @@ function finishModel(model) {
       // region (see surface.js) since there is no inner cutout to trace.
       if (logoMesh.userData.flameCutout) meta.flameCutout = logoMesh.userData.flameCutout;
       meta.isScreenSurface = !!logoMesh.userData.isScreenSurface;
+      // SVG shape surface: exact outline data for the mask + calibration.
+      meta.isShapeSurface = !!logoMesh.userData.isShapeSurface;
+      meta.shape = logoMesh.userData.shape || null;
       const galaxyMat = attachGalaxyPlate(logoMesh, meta);
 
       // Final scale + vertical placement. Must happen AFTER silhouette
@@ -318,7 +326,11 @@ function computeSilhouetteMeta(logoMesh) {
   // hundreds of vertices instead of thousands. Tolerance is tied to the
   // model's bbox so the same code adapts across model sizes.
   const rawSilhouette = extractFrontSilhouette(logoMesh.geometry, maxZ);
-  const simplifyTol = Math.max(bb.max.x - bb.min.x, bb.max.y - bb.min.y) * 0.0025;
+  // An SVG shape arrives already simplified to its point budget
+  // (src/core/shape.js) - only collinear points are dropped here.
+  const simplifyTol = logoMesh.userData.isShapeSurface
+    ? 1e-4
+    : Math.max(bb.max.x - bb.min.x, bb.max.y - bb.min.y) * 0.0025;
   const silhouette = rawSilhouette.map(loop => simplifyLoopRDP(loop, simplifyTol));
 
   // Hull centroid (average of hull vertices).
@@ -360,18 +372,27 @@ function computeSilhouetteMeta(logoMesh) {
       ix += mx; iy += my; ic++;
     }
   }
-  const innerCenterX = ic ? ix / ic : cx;
-  const innerCenterY = ic ? iy / ic : cy;
+  // A shape surface knows where its opening is - no need to search.
+  const fc = logoMesh.userData.fadeCenter;
+  const innerCenterX = fc ? fc.x : (ic ? ix / ic : cx);
+  const innerCenterY = fc ? fc.y : (ic ? iy / ic : cy);
   // Panel is positioned at (cx, cy), so panel-local = mesh-local - (cx, cy).
   const patternFadeCenter = [innerCenterX - cx, innerCenterY - cy];
 
-  return { hull, silhouette, cx, cy, maxR, maxZ, hullMinY, hullMaxY, halfExtent, bbox: bb, patternFadeCenter };
+  // Footprint: the area that the backdrop plate, the wipe and the morph
+  // mask cover. The logo uses its convex hull (that also covers the star
+  // bay). An SVG shape can be far from convex (spikes, deep notches), so
+  // it uses its own outline: the hull would put light outside the shape.
+  const footprint = (logoMesh.userData.isShapeSurface && silhouette[0]) ? silhouette[0] : hull;
+
+  return { hull, footprint, silhouette, cx, cy, maxR, maxZ, hullMinY, hullMaxY, halfExtent, bbox: bb, patternFadeCenter };
 }
 
 // Flat silhouette plate holding the galaxy shader, parented just behind
 // the front face. Halo scale = 1.0 matches the logo silhouette exactly.
 function attachGalaxyPlate(logoMesh, meta) {
-  const { hull, cx, cy, maxR, maxZ, hullMinY, hullMaxY } = meta;
+  const { cx, cy, maxR, maxZ, hullMinY, hullMaxY } = meta;
+  const hull = meta.footprint || meta.hull;
   if (hull.length < 3) return null;
 
   const shape = new THREE.Shape();

@@ -23,6 +23,8 @@ import { createGateRim }         from './_shared/gateRim.js';
 import { clipPolygonBelowY, clipPolygonLeftOfX, clipPolygonRightOfX } from '../util/polygon.js';
 import { createFireplace }       from './fireplaceTwo/outerArch.js';
 import { createRecede }          from './fireplaceTwo/recede.js';
+import { createStarDive }        from './starDive/starDive.js';
+import { createShaderLooks }     from './looks/shaderLooks.js';
 import { createFractalZoom }     from './fractalPattern/fractalZoom.js';
 import { createConstellation }   from './constellation/constellation.js';
 import { createMolten }          from './moltenGold/molten.js';
@@ -143,7 +145,16 @@ export function addEffects(logoMesh, meta, renderer) {
     pulseColorB:        hexToRgb(ANIM.latticeHex.colorAtMax),
     evolution:          ANIM.latticeHex.evolution,
   });
-  const updateLatticeEvolution = underlay.userData.updateEvolution;
+  // Runs every frame: lattice evolution + the live rosette look
+  // (ANIM.rosette.relief / .glow -> the gold tile shader).
+  const tileLook = panel.userData.fadeGradUniforms && panel.userData.fadeGradUniforms.uTileLook;
+  const updateLatticeEvolution = (t) => {
+    underlay.userData.updateEvolution(t);
+    if (tileLook) {
+      const rc = ANIM.rosette || {};
+      tileLook.value.set(rc.relief ?? 1, rc.glow ?? 0);
+    }
+  };
   underlay.name = 'lattice-underlay';
   underlay.position.set(cx, cy, maxZ + 0.005);
   logoMesh.add(underlay);
@@ -169,6 +180,8 @@ export function addEffects(logoMesh, meta, renderer) {
     gradientBright: hexToRgb(COLORS.gateFrame.gradientBright),
     bottomCutY: null,
     gild: COLORS.gateFrame.gild,
+    // SVG shapes: spikes and thin necks break the offset-polygon frame.
+    robust: !!meta.isShapeSurface,
   });
   gate.name = 'gate-frame';
   gate.position.set(cx, cy, maxZ + 0.45);
@@ -177,9 +190,11 @@ export function addEffects(logoMesh, meta, renderer) {
   // Gate-frame rim — buildFlameRim ribbon along the gate frame's inner
   // aperture, only shown in flameOnly mode (key 7). Built + driven in
   // _shared/gateRim.js; both handles are null when disabled in config.
-  const { gateRimGroup, updateGateRim } = createGateRim({
-    logoMesh, gateOutline, gateFrameWidth, cx, cy, maxZ,
-  });
+  // SVG shapes have no rim ribbon: it needs an inset of the outline, and
+  // the inset of a spiky outline crosses itself.
+  const { gateRimGroup, updateGateRim } = meta.isShapeSurface
+    ? { gateRimGroup: null, updateGateRim: null }
+    : createGateRim({ logoMesh, gateOutline, gateFrameWidth, cx, cy, maxZ });
 
   // Spark systems — gravity pulls each spark toward patternFadeCenter,
   // with a per-frame snap to whatever stroke vertex is closest. That
@@ -276,6 +291,7 @@ export function addEffects(logoMesh, meta, renderer) {
     silhouettePolygons,
     hullMaxR: maxR,
     pivot: patternFadeCenter,
+    renderer,
   });
   // Sits just behind the logo's front face so the frontmost copy is
   // tucked into the cutout-stack rather than floating in front of the
@@ -285,12 +301,28 @@ export function addEffects(logoMesh, meta, renderer) {
   logoMesh.add(recede.group);
 
   // ---------------------------------------------------------------------
+  // Star Dive — key Z, viewMode 'starDive'. Continuous fractal zoom: the
+  // logo nested inside its own star, forever. Same placement as the
+  // portal (just behind the front face).
+  // ---------------------------------------------------------------------
+  const starDive = createStarDive({ silhouettePolygons, pivot: patternFadeCenter });
+  starDive.group.position.set(cx, cy, maxZ - 1.5);
+  starDive.group.visible = false;
+  logoMesh.add(starDive.group);
+
+  // Shader looks — keys W / R / T (mercury, strata, shards).
+  // Same placement; they reuse Star Dive's signed-distance texture.
+  const shaderLooks = createShaderLooks({ sdf: starDive.sdf, pivot: patternFadeCenter });
+  shaderLooks.group.position.set(cx, cy, maxZ - 1.5);
+  logoMesh.add(shaderLooks.group);
+
+  // ---------------------------------------------------------------------
   // Molten Gold — mode 1 (key 1, viewMode 'moltenGold'). Liquid-gold fill
   // inside the silhouette. meta coords are mesh-local so the group
   // parents straight onto the logo mesh with no centroid offset (same
   // convention as the calibration patterns). Gated in src/main.js.
   // ---------------------------------------------------------------------
-  const molten = createMolten({ logoMesh, meta, renderer });
+  const molten = createMolten({ logoMesh, meta, renderer, sdf: starDive.sdf, sdfOffset: [cx, cy] });
   molten.group.visible = false;
   logoMesh.add(molten.group);
 
@@ -522,7 +554,11 @@ export function addEffects(logoMesh, meta, renderer) {
 
     const exitStart  = restDur;
     const gapStart   = restDur + exDur;
-    const entryStart = restDur + exDur + gapDur;
+    // entryLead (playAll only): tiles start flowing back in this many
+    // seconds BEFORE the overlay window closes, so the returning pattern
+    // overlaps the dissolving overlay instead of leaving an empty frame.
+    const entryLead  = playAllOn ? Math.min(Math.max(tcfg.entryLead || 0, 0), gapDur) : 0;
+    const entryStart = restDur + exDur + gapDur - entryLead;
 
     for (let i = 0; i < cascadeMeshes.length; i++) {
       const m    = cascadeMeshes[i];
@@ -570,7 +606,7 @@ export function addEffects(logoMesh, meta, renderer) {
       } else {
         // Entry: outer ring → base, ease-in-out cubic. Tile stays beyond
         // the hull at entry start (clipped) and settles into place.
-        const u = (phase - entryStart) / enDur;
+        const u = Math.min(1, (phase - entryStart) / enDur);
         const e = u < 0.5 ? 4 * u * u * u : 1 - Math.pow(-2 * u + 2, 3) / 2;
         const outerX = fcx + outerRing * rayX;
         const outerY = fcy + outerRing * rayY;
@@ -645,6 +681,13 @@ export function addEffects(logoMesh, meta, renderer) {
            recedeGroup:  recede.group,
            updateRecede: recede.update,
            triggerPortalRush: recede.triggerRush,
+           togglePortalFlow:  recede.toggleFlow,
+           starDiveGroup:   starDive.group,
+           updateStarDive:  starDive.update,
+           triggerDiveRush: starDive.triggerRush,
+           reverseDive:     starDive.reverse,
+           updateShaderLooks: shaderLooks.update,
+           pulseShaderLook:   shaderLooks.pulse,
            moltenGroup:    molten.group,
            updateMolten:   molten.update,
            moltenTriggers: molten.triggers,
@@ -664,6 +707,9 @@ export function addEffects(logoMesh, meta, renderer) {
            updateConstellation:   constellation.update,
            setConstellationOpacity: constellation.setOpacity,
            triggerStellarPulse:   constellation.triggerPulse,
+           triggerStellarMeteor:  constellation.triggerMeteor,
+           triggerStellarVortex:  constellation.triggerVortex,
+           constellationVortexLevel: constellation.vortexLevel,
            getHearthFlameOpacity: constellation.getFlameOpacity,
            // Mesh-local silhouette polygons (logoMesh sits at world origin
            // so these double as world-XY for downstream consumers like

@@ -7,6 +7,9 @@
 // plate, every effect), so all nine modes render onto a flat wall or
 // screen with no mapping onto the physical A.
 //
+// (A third surface, an SVG outline, lives in src/core/shape.js:
+//  index.html?shape=<name>. See shapes/README.md.)
+//
 // Select it with any of:
 //   fullscreen.html                 (sets window.__SURFACE = 'screen')
 //   index.html?surface=screen       (URL param — wins over config)
@@ -25,11 +28,15 @@ import { MODEL } from '../config.js';
 // Resolve which surface to build. Priority: URL param → window flag
 // (fullscreen.html) → MODEL.surface → 'logo'.
 export function resolveSurface() {
-  if (typeof window === 'undefined') return MODEL.surface || 'logo';
+  if (typeof window === 'undefined') return MODEL.shape ? 'shape' : (MODEL.surface || 'logo');
   const params = new URLSearchParams(window.location.search);
+  // An SVG shape (src/core/shape.js) is its own surface: ?shape=<name>.
+  if (params.get('shape')) return 'shape';
   const fromUrl = params.get('surface');
   if (fromUrl === 'screen' || fromUrl === 'logo') return fromUrl;
+  if (window.__SHAPE) return 'shape';
   if (window.__SURFACE === 'screen') return 'screen';
+  if (MODEL.shape) return 'shape';
   return MODEL.surface || 'logo';
 }
 

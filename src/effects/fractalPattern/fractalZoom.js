@@ -168,11 +168,16 @@ export function createFractalZoom({
           )
           .replace(
             RADIAL_FADE_ALPHA_STROKE,
-            `gl_FragColor.a *= _a * uMaxOpacity * _twinkle * (1.0 - smoothstep(uCloneScaleFadeStart, uCloneScaleFadeEnd, uCloneScale));`
+            `gl_FragColor.a *= _a * uMaxOpacity * _twinkle * (1.0 - smoothstep(uCloneScaleFadeStart, uCloneScaleFadeEnd, uCloneScale));
+             gl_FragColor.rgb *= mix(vec3(0.45, 0.2, 0.13), vec3(2.4, 2.0, 1.5), smoothstep(0.12, 0.85, uCloneScale));`
           )
           .replace(
             RADIAL_FADE_ALPHA_BODY,
-            `gl_FragColor.a *= _a * uMaxOpacity * (1.0 - smoothstep(uCloneScaleFadeStart, uCloneScaleFadeEnd, uCloneScale));`
+            // Depth fog: copies deep in the zoom (small scale) sink to a dim
+            // ember red, the copy arriving at full size is bright gold - the
+            // nested layers separate in depth instead of reading as one sheet.
+            `gl_FragColor.a *= _a * uMaxOpacity * (1.0 - smoothstep(uCloneScaleFadeStart, uCloneScaleFadeEnd, uCloneScale));
+             gl_FragColor.rgb *= mix(vec3(0.45, 0.2, 0.13), vec3(2.4, 2.0, 1.5), smoothstep(0.12, 0.85, uCloneScale));`
           );
       });
       // Force the cached compiled program to be discarded so our wrapper

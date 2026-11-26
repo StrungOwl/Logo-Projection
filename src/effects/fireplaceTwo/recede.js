@@ -28,6 +28,25 @@ import { hexToRgb } from '../../util/color.js';
 import { applyLogoStarry } from '../../shaders/logo-starry.js';
 import { applyGradientTint } from '../../shaders/gradient-tint.js';
 import { buildSilhouetteShape } from '../../util/geometry.js';
+import { LineSegments2 }        from 'three/addons/lines/LineSegments2.js';
+import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js';
+import { LineMaterial }         from 'three/addons/lines/LineMaterial.js';
+import { createStarFlow, segmentsFacingPoint } from './starFlow.js';
+
+// Closed polygon loop → fat-line segment geometry (LineBasicMaterial is
+// always 1 px, which vanishes on a projector; LineSegments2 honours a
+// pixel linewidth).
+function loopToFatGeometry(loop, z) {
+  const n = loop.length;
+  const arr = new Float32Array(n * 6);
+  for (let i = 0; i < n; i++) {
+    const a = loop[i], b = loop[(i + 1) % n];
+    arr.set([a.x, a.y, z, b.x, b.y, z], i * 6);
+  }
+  const g = new LineSegmentsGeometry();
+  g.setPositions(arr);
+  return g;
+}
 
 export function createRecede({
   silhouettePolygons,
@@ -37,12 +56,13 @@ export function createRecede({
   // converges into the star cutout instead of the hull centroid (which
   // sat above and right of the star and skewed the whole stack).
   pivot = [0, 0],
+  renderer = null,
 }) {
   const group = new THREE.Group();
   group.name = 'recede';
 
   if (!silhouettePolygons || !silhouettePolygons.length) {
-    return { group, update: () => {}, triggerRush: () => {} };
+    return { group, update: () => {}, triggerRush: () => {}, toggleFlow: () => false };
   }
 
   const cfg = () => ANIM.recede || {};
@@ -88,9 +108,26 @@ export function createRecede({
   const rimBaseColor = new THREE.Color(rimCfg.color || '#FFD070');
   const rimIntensity = rimCfg.intensity ?? 4.5;
   const innerScale   = rimCfg.innerRimScale ?? 0.35;
-  const rimGeos = silhouettePolygons.map(loop =>
-    new THREE.BufferGeometry().setFromPoints(
-      loop.map(p => new THREE.Vector3(p.x, p.y, 0.02))));
+  const rimGeos = silhouettePolygons.map(loop => loopToFatGeometry(loop, 0.02));
+  const rimWidth = rimCfg.linewidth ?? 2.4;
+  // Every fat-line material needs the live output resolution.
+  const fatMats = [];
+  const resSize = new THREE.Vector2();
+  function makeFatMat(color) {
+    const m = new LineMaterial({
+      color, linewidth: rimWidth, transparent: true, opacity: 1,
+      depthWrite: false,
+    });
+    fatMats.push(m);
+    return m;
+  }
+  function syncFatResolution() {
+    if (renderer) renderer.getSize(resSize);
+    else resSize.set(window.innerWidth, window.innerHeight);
+    if (Math.abs(resSize.x - fatMats[0].resolution.x) < 0.5 &&
+        Math.abs(resSize.y - fatMats[0].resolution.y) < 0.5) return;
+    for (const m of fatMats) m.resolution.set(resSize.x, resSize.y);
+  }
 
   // Autonomous evolution: the rim color wanders across a palette on two
   // incommensurate sine clocks (never visibly repeats), and conveyor
@@ -133,22 +170,74 @@ export function createRecede({
     const mesh = new THREE.Mesh(sharedGeometry, mat);
     group.add(mesh);
 
-    const rimMatOuter = new THREE.LineBasicMaterial({
-      color: rimBaseColor.clone().multiplyScalar(rimIntensity),
-      transparent: true, opacity: 1, depthWrite: false,
-    });
-    const rimMatInner = new THREE.LineBasicMaterial({
-      color: rimBaseColor.clone().multiplyScalar(rimIntensity * innerScale),
-      transparent: true, opacity: 1, depthWrite: false,
-    });
+    const rimMatOuter = makeFatMat(rimBaseColor.clone().multiplyScalar(rimIntensity));
+    const rimMatInner = makeFatMat(rimBaseColor.clone().multiplyScalar(rimIntensity * innerScale));
     const rims = rimGeos.map((g, li) =>
-      new THREE.LineLoop(g, li === 0 ? rimMatOuter : rimMatInner));
+      new LineSegments2(g, li === 0 ? rimMatOuter : rimMatInner));
     rims.forEach(r => mesh.add(r));
 
     copies.push({ mesh, mat, rimMatOuter, rimMatInner, offset: k * zStep });
   }
 
   const px = pivot[0] || 0, py = pivot[1] || 0;
+
+  // FRONT STAR OUTLINE — the star cutout drawn full-size, always visible,
+  // in front of the corridor. It is the "frozen outline" the particle
+  // flow pours out of (FLOW_NOTES vision). Conveyor (portal) mode only.
+  const starCfg0 = c0.starOutline || {};
+  const starMat = makeFatMat(rimBaseColor.clone());
+  starMat.blending = THREE.AdditiveBlending;
+  starMat.depthTest = false;
+  const starOutline = new THREE.Group();
+  starOutline.name = 'portalStarOutline';
+  let outerMat = null;
+  const starGeos = rimGeos.slice(1);          // separate hole loops (slab surface)
+  {
+    // On the logo the star is a notch in the ONE outline: keep only the
+    // edges that face the vanishing point (the star and its stem).
+    const facing = segmentsFacingPoint(outer, px, py);
+    const pts = [];
+    for (let i = 0; i < outer.length; i++) {
+      if (!facing[i]) continue;
+      const a = outer[i], b = outer[(i + 1) % outer.length];
+      pts.push(a.x, a.y, 0.03, b.x, b.y, 0.03);
+    }
+    if (pts.length) {
+      const g = new LineSegmentsGeometry();
+      g.setPositions(new Float32Array(pts));
+      starGeos.push(g);
+    }
+    // The rest of the outline (the outer A), drawn fainter, so the
+    // ribbons that start on it are visibly held by the logo's edge.
+    const rest = [];
+    for (let i = 0; i < outer.length; i++) {
+      if (facing[i]) continue;
+      const a = outer[i], b = outer[(i + 1) % outer.length];
+      rest.push(a.x, a.y, 0.03, b.x, b.y, 0.03);
+    }
+    if (rest.length) {
+      const g = new LineSegmentsGeometry();
+      g.setPositions(new Float32Array(rest));
+      outerMat = makeFatMat(rimBaseColor.clone());
+      outerMat.blending = THREE.AdditiveBlending;
+      outerMat.depthTest = false;
+      const l = new LineSegments2(g, outerMat);
+      l.renderOrder = -0.01;
+      starOutline.add(l);
+    }
+  }
+  for (const g of starGeos) {
+    const l = new LineSegments2(g, starMat);
+    l.renderOrder = -0.01;
+    starOutline.add(l);
+  }
+  group.add(starOutline);
+
+  // PARTICLE FLOW — ribbons streaming from the outlines into the
+  // vanishing point (src/effects/fireplaceTwo/starFlow.js).
+  const flow = createStarFlow({ silhouettePolygons, pivot, renderer });
+  group.add(flow.group);
+  const flowEnv = { rush: 0, color: null };
 
   // Conveyor phase — copies move toward the viewer (depth decreases).
   let phase = 0;
@@ -182,7 +271,14 @@ export function createRecede({
   function update(t, dt = 0.016) {
     if (!group.visible) return;
     const c = cfg();
-    if (!c.conveyor || c.conveyor.enabled === false) { placeStatic(t); return; }
+    syncFatResolution();
+    if (!c.conveyor || c.conveyor.enabled === false) {
+      starOutline.visible = false;
+      flow.group.visible = false;
+      placeStatic(t);
+      return;
+    }
+    flow.group.visible = true;
 
     const rush = c.rush || {};
     const rushing = t < rushUntil;
@@ -218,6 +314,35 @@ export function createRecede({
     // infinite tunnel of glowing A-outlines. The legacy static stack
     // stays cutout-sized (it coexists with the visible body).
     const headScale = c.headScale ?? 0.86;
+    // Parallax: the vanishing point drifts on a slow Lissajous, and each
+    // copy follows in proportion to its depth — the front copy stays on
+    // the physical outline, the far end wanders. Reads as a real tunnel
+    // seen by a moving eye rather than flat nested rings.
+    const sw = c.sway || {};
+    const swayAmt = (sw.amount ?? 0.06) * outerR;
+    const swayX = swayAmt * Math.sin(t * (2 * Math.PI / (sw.periodX ?? 19)));
+    const swayY = swayAmt * 0.7 * Math.sin(t * (2 * Math.PI / (sw.periodY ?? 27)) + 0.9);
+    const liveWidth = c.rim?.linewidth ?? rimWidth;
+
+    // Front star outline: follows the palette wander, breathes slowly,
+    // flares on a rush.
+    const so = c.starOutline || {};
+    starOutline.visible = so.enabled !== false && starGeos.length > 0;
+    if (starOutline.visible) {
+      const breathe = 1 + (so.breathe ?? 0.18) * Math.sin(t * (2 * Math.PI / (so.period ?? 9)));
+      starMat.color.copy(evoCol || rimBaseColor)
+        .multiplyScalar((so.intensity ?? 1.35) * breathe * (1 + rushEnv * (rush.starBright ?? 0.8)));
+      starMat.linewidth = (so.linewidth ?? 3.2) * (1 + rushEnv * 0.35);
+      if (outerMat) {
+        outerMat.color.copy(evoCol || rimBaseColor)
+          .multiplyScalar((so.intensity ?? 1.35) * (so.outerScale ?? 0.45) * (1 + rushEnv * (rush.starBright ?? 0.8)));
+        outerMat.linewidth = (so.linewidth ?? 3.2) * 0.7;
+      }
+    }
+    flowEnv.rush = rushEnv;
+    flowEnv.bright = rush.flowBright ?? 0.9;
+    flowEnv.color = evoCol;
+    flow.update(t, dt, flowEnv);
 
     for (let k = 0; k < copies.length; k++) {
       const cp = copies[k];
@@ -232,9 +357,10 @@ export function createRecede({
       // polygon origin so the shared geometry needs no rebuild).
       const cr = Math.cos(rot), sr = Math.sin(rot);
       cp.mesh.scale.set(s, s, 1);
+      const par = Math.max(0, 1 - s / headScale);
       cp.mesh.position.set(
-        px - s * (cr * px - sr * py),
-        py - s * (sr * px + cr * py),
+        px - s * (cr * px - sr * py) + swayX * par,
+        py - s * (sr * px + cr * py) + swayY * par,
         -d);
       cp.mesh.rotation.z = rot;
       // Envelope hides the wrap: fade out approaching the front (d→0),
@@ -249,6 +375,10 @@ export function createRecede({
       const rimO = rimOn ? Math.min(1, env * (1 - u * 0.75) * brightMul) : 0;
       cp.rimMatOuter.opacity = rimO;
       cp.rimMatInner.opacity = rimO;
+      // Far outlines thin out with depth so the tunnel keeps perspective.
+      const lw = liveWidth * (1 - 0.62 * u) * (1 + rushEnv * 0.3);
+      cp.rimMatOuter.linewidth = lw;
+      cp.rimMatInner.linewidth = lw;
       if (evoCol) {
         cp.rimMatOuter.color.copy(evoCol).multiplyScalar(liveIntensity);
         cp.rimMatInner.color.copy(evoCol).multiplyScalar(liveIntensity * liveInner);
@@ -262,5 +392,5 @@ export function createRecede({
     }
   }
 
-  return { group, update, triggerRush };
+  return { group, update, triggerRush, toggleFlow: flow.toggle };
 }

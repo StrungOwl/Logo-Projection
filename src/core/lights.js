@@ -69,6 +69,9 @@ export function createLights(scene) {
 // the flame's own light stack are excluded — the flame stays the
 // steady bright anchor in the centre while everything else breathes
 // around it.
+// Eased per-look multipliers (see ANIM.looks).
+let lookGlow = 1, lookFront = 1, lookRear = 1;
+
 export function updateLights(lights, t, scene) {
   const fireplaceMode = ANIM.viewMode === 'fireplaceOne' || ANIM.viewMode === 'fireplaceTwo';
 
@@ -123,12 +126,18 @@ export function updateLights(lights, t, scene) {
   // innerGlow + frontPatternLight ride the env breath too, so the trough
   // can fall below the constant point-light floor and the flame becomes
   // the only visibly-lit element during the dark hold.
+  // Per-look light trims (ANIM.looks): each mode can dial the orange
+  // star glow and the front fill up or down. Eased so a mode change
+  // glides instead of popping.
+  const look = (ANIM.looks && ANIM.looks[ANIM.viewMode]) || {};
+  lookGlow  += ((look.innerGlow  ?? 1) - lookGlow)  * 0.06;
+  lookFront += ((look.frontLight ?? 1) - lookFront) * 0.06;
   const ig = ANIM.innerGlow;
-  lights.innerGlow.intensity = (ig.intensityMin + (ig.intensityMax - ig.intensityMin) * warm) * envDim;
+  lights.innerGlow.intensity = (ig.intensityMin + (ig.intensityMax - ig.intensityMin) * warm) * envDim * lookGlow;
   lights.innerGlow.color.set(ig.color);
 
   const fp = ANIM.frontPatternLight;
-  lights.frontPatternLight.intensity = (fp.intensityMin + (fp.intensityMax - fp.intensityMin) * warm) * envDim;
+  lights.frontPatternLight.intensity = (fp.intensityMin + (fp.intensityMax - fp.intensityMin) * warm) * envDim * lookFront;
   lights.frontPatternLight.color.set(fp.color);
 
   const rl = ANIM.rimLight;
@@ -138,7 +147,8 @@ export function updateLights(lights, t, scene) {
 
   lights.ambientLight.intensity    = ANIM.ambientIntensity * envDim;
   lights.fillLight.intensity       = ANIM.fillIntensity * envDim;
-  lights.rearPatternLight.intensity = ANIM.rearPatternIntensity * pointDim;
+  lookRear += ((look.rearLight ?? 1) - lookRear) * 0.06;
+  lights.rearPatternLight.intensity = ANIM.rearPatternIntensity * pointDim * lookRear;
   lights.rearPatternLight.color.set(ANIM.rearPatternColor);
 
   // Scale the PMREM env reflection that every MeshStandardMaterial picks

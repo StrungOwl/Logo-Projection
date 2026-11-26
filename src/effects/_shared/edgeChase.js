@@ -54,18 +54,20 @@ function buildLoopRibbon(loop, thickness, z, closeLoop) {
   const closing = Math.hypot(loop[0].x - loop[N - 1].x, loop[0].y - loop[N - 1].y);
   const perimeter = arcLen[N - 1] + closing;
 
-  // Half-thickness inward + half outward so the streak straddles the edge.
+  // The whole ribbon sits INSIDE the edge (outer vertex on the outline,
+  // inner one a full thickness in): on the physical logo anything past
+  // the outline lands on the wall.
   const positions  = new Float32Array(N * 2 * 3);
   const aArc       = new Float32Array(N * 2);
   const aSide      = new Float32Array(N * 2);
   for (let i = 0; i < N; i++) {
     const v = loop[i], n = normals[i];
     const inIdx = i * 2, outIdx = i * 2 + 1;
-    positions[inIdx * 3]     = v.x - n.x * thickness * 0.5;
-    positions[inIdx * 3 + 1] = v.y - n.y * thickness * 0.5;
+    positions[inIdx * 3]     = v.x - n.x * thickness;
+    positions[inIdx * 3 + 1] = v.y - n.y * thickness;
     positions[inIdx * 3 + 2] = z;
-    positions[outIdx * 3]     = v.x + n.x * thickness * 0.5;
-    positions[outIdx * 3 + 1] = v.y + n.y * thickness * 0.5;
+    positions[outIdx * 3]     = v.x;
+    positions[outIdx * 3 + 1] = v.y;
     positions[outIdx * 3 + 2] = z;
     const a = arcLen[i] / perimeter;
     aArc[inIdx] = a; aArc[outIdx] = a;

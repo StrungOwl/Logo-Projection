@@ -13,7 +13,7 @@ mkdirSync(OUT, { recursive: true });
 
 const browser = await chromium.launch({
   headless: true,
-  executablePath: 'C:/Users/root/AppData/Local/ms-playwright/chromium-1208/chrome-win64/chrome.exe',
+  executablePath: process.env.CHROME || 'C:/Users/root/AppData/Local/ms-playwright/chromium-1208/chrome-win64/chrome.exe',
 });
 const page = await browser.newContext({ viewport: { width: 1280, height: 800 } }).then(c => c.newPage());
 

@@ -136,6 +136,12 @@ export function createPipeline({ renderer, scene, camera, ctx }) {
   // the composer path (ANIM.post.enabled) — documented limitation.
   let warpPass = null;
   let warpWasEnabled = false;
+  // Morph transition pass (src/show/morph.js) — after OutputPass, before
+  // the warp. Disabled except while a transition runs.
+  let morphPass = null;
+  // Shape mask (src/core/shapeMask.js) - after the morph, before the
+  // warp: it trims finished pixels to the exact SVG outline.
+  let maskPass = null;
 
   function buildComposer() {
     disposeComposer();
@@ -157,6 +163,8 @@ export function createPipeline({ renderer, scene, camera, ctx }) {
     bloomPass = new UnrealBloomPass(size.clone(), b.strength ?? 0.35, b.radius ?? 0.5, b.threshold ?? 1.0);
     composer.addPass(bloomPass);
     composer.addPass(new OutputPass());
+    if (morphPass) composer.addPass(morphPass);
+    if (maskPass) composer.addPass(maskPass);
     if (warpPass) composer.addPass(warpPass);
     builtSamples = samples;
     applyBloomScale();
@@ -218,9 +226,22 @@ export function createPipeline({ renderer, scene, camera, ctx }) {
 
     setEnvelopeSource(fn) { envelopeFn = fn; },
 
+    // Register before the first post-enabled frame, like the morph pass.
+    setMaskPass(pass) {
+      maskPass = pass;
+      if (composer) buildComposer();
+    },
+
     setWarpPass(pass) {
       warpPass = pass;
       if (composer) composer.addPass(pass);
+    },
+
+    // Must be registered before the first post-enabled frame (the lazy
+    // composer build), so it lands in front of the warp pass.
+    setMorphPass(pass) {
+      morphPass = pass;
+      if (composer) buildComposer();
     },
 
     enterProjection(w, h) {

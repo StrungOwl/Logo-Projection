@@ -52,7 +52,7 @@ Switch with the digit keys (each goes through a dip-to-black transition).
 | `calibration.js` | Mapping patterns: silhouette fill/outline (world-space) + grid/checker/corners (screen-space). |
 | `control.js` | Remote-control dispatcher — one JSON protocol over WebSocket (TouchDesigner), BroadcastChannel (`control.html`), `window.__control`. |
 | `ws-client.js` | Forever-reconnecting WebSocket client (TD is the server). |
-| `warp.js` | Built-in corner-pin homography warp + drag/nudge editor (`W`). |
+| `warp.js` | Built-in corner-pin homography warp + drag/nudge editor (`M`). |
 | `export.js` | Deterministic 4K/1080p PNG+MP4 export (Shift+E / Shift+D). |
 | `scene.js` | Scene/camera/renderer + the procedural studio environment (gradient sphere + softboxes → streaked metal reflections). |
 | `lights.js` | The breathing light rig + fireplace envelope. |
@@ -64,6 +64,7 @@ Switch with the digit keys (each goes through a dip-to-black transition).
 |---|---|
 | `triggers.js` | Named trigger registry (`cascade.now`, `molten.fill`, `portal.rush`, …) shared by keyboard, playlist, remote, devtools (`window.__triggers`). |
 | `transitions.js` | Mode-change envelopes: `dip` (exposure to black and back), `wipe` (silhouette disc from the pattern center), `edgeFlash` (dip + comet burst), `cut`. |
+| `morph.js` | Seamless morph transitions (`fade`, `dissolve`, `iris`, `vortex`, `zoom`, `melt`, `pour`): a snapshot of the old look is warped / dissolved over the new live look by a post pass, masked to the logo outline. |
 | `sequencer.js` | The auto-show: walks `ANIM.show.playlist` (mode, dwell, cues), pauses on manual input. Keys `S`/`N`. |
 
 ## Surfaces

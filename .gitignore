@@ -22,3 +22,10 @@ HighResOutput/
 # OS / editor
 .DS_Store
 Thumbs.db
+
+# TouchDesigner — auto-increment saves, backups, crash files
+touchdesigner/*.[0-9]*.toe
+touchdesigner/Backup/
+touchdesigner/CrashAutoSave*
+touchdesigner/logs/
+touchdesigner/TDImportCache/

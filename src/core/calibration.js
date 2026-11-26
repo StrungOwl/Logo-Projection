@@ -33,10 +33,17 @@ export function createCalibration({ scene, logoMesh, meta }) {
 
   const zFill = meta.maxZ + 0.6;
 
+  // What to line up on the real object. The logo: its silhouette. An SVG
+  // shape: the EXACT outline and the real small holes of the SVG (not the
+  // simplified outline, and not the star, which is only light).
+  const calLoops = meta.shape
+    ? [meta.shape.exactOuter, ...meta.shape.exactHoles.map(h => h.slice().reverse())]
+    : meta.silhouette;
+
   // Fill: white silhouette plate (outer loop + cutout holes). Overbright
   // color so it still lands ≥ 0.99 after ACES once the composer arrives.
   const fillMesh = new THREE.Mesh(
-    new THREE.ShapeGeometry(buildSilhouetteShape(meta.silhouette)),
+    new THREE.ShapeGeometry(buildSilhouetteShape(calLoops)),
     new THREE.MeshBasicMaterial({ color: new THREE.Color(4, 4, 4) }),
   );
   fillMesh.position.z = zFill;
@@ -45,7 +52,7 @@ export function createCalibration({ scene, logoMesh, meta }) {
   // Outline: one line loop per silhouette loop (outer + each cutout).
   const outlineGroup = new THREE.Group();
   const lineMat = new THREE.LineBasicMaterial({ color: new THREE.Color(4, 4, 4) });
-  for (const loop of meta.silhouette) {
+  for (const loop of calLoops) {
     const pts = loop.map(p => new THREE.Vector3(p.x, p.y, zFill));
     outlineGroup.add(new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(pts), lineMat));
   }

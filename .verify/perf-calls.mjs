@@ -1,5 +1,5 @@
 import { chromium } from 'playwright';
-const browser = await chromium.launch({ headless: true, executablePath: 'C:/Users/root/AppData/Local/ms-playwright/chromium-1208/chrome-win64/chrome.exe' });
+const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROME || 'C:/Users/root/AppData/Local/ms-playwright/chromium-1208/chrome-win64/chrome.exe' });
 const page = await browser.newPage();
 await page.addInitScript(() => { window.__PROBE_PAUSED = true; });
 await page.goto('http://127.0.0.1:5501/index.html', { waitUntil: 'domcontentloaded' });

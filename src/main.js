@@ -14,8 +14,11 @@ import { createWarp } from './core/warp.js';
 import { toggleInfoOverlay } from './core/infoOverlay.js';
 import { loadLogo } from './core/logo.js';
 import { applyScreenDefaults } from './core/surface.js';
+import { applyShapeDefaults, nextShapeUrl } from './core/shape.js';
+import { createShapeMask } from './core/shapeMask.js';
 import { addEffects } from './effects/effects.js';
 import { addOverlay } from './effects/flowers/starFans.js';
+import { SHADER_LOOK_MODES } from './effects/looks/shaderLooks.js';
 import { addParticles, updateParticles } from './effects/_shared/streams.js';
 import { toggleDominoes, updateDominoes } from './effects/fireplaceTwo/dominoAnim.js';
 import { tickShimmer } from './shaders/gold-shimmer.js';
@@ -106,12 +109,18 @@ let calibration  = null;   // built once the logo (and its silhouette) loads
 const warp = createWarp({ renderer });
 pipeline.setWarpPass(warp.pass);
 
+// Output mask for SVG shapes (src/core/shapeMask.js): keeps the light
+// inside the exact outline. Off (no cost) until a shape attaches itself.
+const shapeMask = createShapeMask({ camera });
+pipeline.setMaskPass(shapeMask.pass);
+
 // Show system: transition manager owns viewMode flips (dip/wipe/edgeFlash
 // envelopes); the sequencer walks ANIM.show.playlist through it; the
 // control dispatcher feeds both from TouchDesigner (WebSocket), the
 // control.html panel (BroadcastChannel), and window.__control.
-const transitions = createTransitionManager({ renderer });
+const transitions = createTransitionManager({ renderer, camera });
 pipeline.setEnvelopeSource(transitions.envelope);
+if (transitions.morphPass) pipeline.setMorphPass(transitions.morphPass);
 const sequencer = createSequencer({ transitions, getTime: () => clock.elapsedTime });
 const controlDeps = {
   getTime: () => clock.elapsedTime,
@@ -172,10 +181,11 @@ let lastEnvIntensity = NaN;
 // restore them on exit. Per-frame emissive pulse driven by
 // smoothedFlameEnv lives in tick() (see flame envelope block below).
 let gateFrameBase = null;
+let gateLipBase = null, gateLipLevel = 0;   // gilded lip emissive (constellation trim)
 const FIRE_GRAD_DARK   = [0.55, 0.04, 0.00];   // deep ember red
 const FIRE_GRAD_BRIGHT = [1.00, 0.55, 0.12];   // hot yellow-orange tip
 const FIRE_BASE_HEX    = 0x331100;             // dark molten diffuse
-const FIRE_EMISSIVE    = 0xFF5510;             // glowing fire emissive
+const FIRE_EMISSIVE    = 0xFF741A;             // glowing fire emissive
 function applyGateFrameTint(flameOn) {
   const g = ctx.gateFrameGroup;
   if (!g || !g.userData) return;
@@ -210,6 +220,25 @@ loadLogo().then((logo) => {
   ctx.galaxyMat     = logo.galaxyMat;
   ctx.logoMaterials = logo.logoMaterials;
   if (logo.meta.isScreenSurface) applyScreenDefaults(ANIM);
+  // SVG shape: per-shape ANIM values first (some are read at build time).
+  if (logo.meta.isShapeSurface) applyShapeDefaults(ANIM, logo.meta.shape);
+  // The glow light sits in the opening. On a shape the opening is not
+  // always at the origin (an outline that is not symmetric).
+  if (logo.meta.isShapeSurface && logo.meta.shape.center) {
+    const c = logo.meta.shape.center;
+    logo.logoMesh.updateWorldMatrix(true, false);
+    const p = logo.logoMesh.localToWorld(new THREE.Vector3(c.x, c.y, 0));
+    // A little below the centre of the opening, and never below its edge.
+    let drop = 1.0;
+    const hole = logo.meta.shape.hole;
+    if (hole?.length) {
+      const minY = Math.min(...hole.map(q => q.y));
+      const low = logo.logoMesh.localToWorld(new THREE.Vector3(c.x, minY, 0));
+      drop = Math.min(1.0, (p.y - low.y) * 0.35);
+    }
+    lights.innerGlow.position.x = p.x;
+    lights.innerGlow.position.y = p.y - drop;
+  }
 
   // Inject the starry-night shader patch onto every logo material so
   // they can emit a twinkling starfield (gated by uStarryBlend, lerped
@@ -245,6 +274,9 @@ loadLogo().then((logo) => {
   ctx.updateConstellation     = patternResult.updateConstellation;
   ctx.setConstellationOpacity = patternResult.setConstellationOpacity;
   ctx.triggerStellarPulse     = patternResult.triggerStellarPulse;
+  ctx.triggerStellarMeteor    = patternResult.triggerStellarMeteor;
+  ctx.triggerStellarVortex    = patternResult.triggerStellarVortex;
+  ctx.constellationVortexLevel = patternResult.constellationVortexLevel;
   ctx.hearthFlameGroup        = patternResult.hearthFlameGroup;
   ctx.updateHearthFlame       = patternResult.updateHearthFlame;
   ctx.hearthFlameLights       = patternResult.hearthFlameLights || [];
@@ -256,6 +288,13 @@ loadLogo().then((logo) => {
   ctx.getMoltenFill      = patternResult.getMoltenFill;
   ctx.edgeChase          = patternResult.edgeChase;
   ctx.triggerPortalRush  = patternResult.triggerPortalRush;
+  ctx.togglePortalFlow   = patternResult.togglePortalFlow;
+  ctx.starDiveGroup      = patternResult.starDiveGroup;
+  ctx.updateStarDive     = patternResult.updateStarDive;
+  ctx.triggerDiveRush    = patternResult.triggerDiveRush;
+  ctx.reverseDive        = patternResult.reverseDive;
+  ctx.updateShaderLooks  = patternResult.updateShaderLooks;
+  ctx.pulseShaderLook    = patternResult.pulseShaderLook;
 
   // cascadeState is passed in so the overlay can sync its brick↔petals
   // morph to the cascade's all-at-center window when ANIM.timings.playAll
@@ -284,6 +323,8 @@ loadLogo().then((logo) => {
   controlDeps.calibration = calibration;
   projection.setLogo(logo.logoMesh);
   scene.add(transitions.attachWipe(logo.logoMesh, logo.meta));
+  transitions.attachMorph(logo.logoMesh, logo.meta);
+  if (logo.meta.isShapeSurface) shapeMask.attach(logo.logoMesh, logo.meta);
 
   // Trigger registry — every control surface (keyboard, playlist cues,
   // TouchDesigner, control.html, window.__triggers) fires these by name.
@@ -294,9 +335,15 @@ loadLogo().then((logo) => {
   registerTrigger('domino.off',    (t) => setDominoes(false, t));
   registerTrigger('domino.toggle', (t) => { dominoesOn = toggleDominoes(scene, t); });
   registerTrigger('stellar.pulse', ()  => ctx.triggerStellarPulse?.());
+  registerTrigger('stellar.vortex', ()  => ctx.triggerStellarVortex?.());
+  registerTrigger('stellar.meteor', (t, a) => ctx.triggerStellarMeteor?.(a && a.count ? a.count : 1));
   registerTrigger('quality.cycle', ()  => cycleQuality(pipeline));
   registerTrigger('edge.burst',    (t) => ctx.edgeChase?.burst(t));
   registerTrigger('portal.rush',   (t) => ctx.triggerPortalRush?.(t));
+  registerTrigger('dive.rush',     (t) => ctx.triggerDiveRush?.(t));
+  registerTrigger('dive.reverse',  ()  => ctx.reverseDive?.());
+  registerTrigger('look.pulse',    ()  => ctx.pulseShaderLook?.());
+  registerTrigger('portal.flow',   (t, a) => ctx.togglePortalFlow?.(a && typeof a.on === 'boolean' ? a.on : undefined));
   registerTrigger('molten.fill',     (t, a) => ctx.moltenTriggers?.fill(t, a));
   registerTrigger('molten.drain',    (t, a) => ctx.moltenTriggers?.drain(t, a));
   registerTrigger('molten.surge',    (t, a) => ctx.moltenTriggers?.surge(t, a));
@@ -317,7 +364,30 @@ loadLogo().then((logo) => {
 // deterministic export loop. `t` is absolute seconds, `dt` is the step
 // size for stateful systems (sparks) — the live loop passes real delta;
 // the export loop passes a fixed 1/fps.
-export function tick(t, dt) {
+export // Roll the per-entry variation table for a mode. Each row is
+// [dotted ANIM path, min, max]; the value must already exist in ANIM
+// (rows that do not resolve are skipped, never created).
+let lastVariedMode = null;
+// Eased per-look body brightness trim (ANIM.looks.<mode>.body).
+let lookBody = 1;
+// Eased per-look nebula trim (ANIM.looks.<mode>.galaxy) - dims the warm
+// plate inside the star; the black starry sky variant is left alone.
+let lookGalaxy = 1;
+function rollVariations(mode) {
+  const table = ANIM.variations && ANIM.variations.enabled !== false
+    ? ANIM.variations[mode] : null;
+  if (!Array.isArray(table)) return;
+  for (const [path, min, max] of table) {
+    const keys = path.split('.');
+    let node = ANIM;
+    for (let i = 0; i < keys.length - 1 && node; i++) node = node[keys[i]];
+    const leaf = keys[keys.length - 1];
+    if (!node || typeof node[leaf] !== 'number') continue;
+    node[leaf] = min + (max - min) * Math.random();
+  }
+}
+
+function tick(t, dt) {
   // Show system first: transitions may flip ANIM.viewMode at a blackpoint
   // this frame (the gating below then reacts immediately); the sequencer
   // schedules those flips + fires playlist cues.
@@ -353,10 +423,13 @@ export function tick(t, dt) {
     let galaxyMul = 1 - galaxyFadeOut;
     // Portal mode: pure black void — the galaxy (both nebula and starry
     // variants) goes fully dark so only the corridor outlines exist.
-    if (ANIM.viewMode === 'fireplaceTwo' && !(ANIM.recede?.conveyor?.enabled === false)) {
+    if ((ANIM.viewMode === 'fireplaceTwo' && !(ANIM.recede?.conveyor?.enabled === false))
+        || ANIM.viewMode === 'starDive' || SHADER_LOOK_MODES.includes(ANIM.viewMode)) {
       galaxyMul = 0;
     }
-    ctx.galaxyMat.uniforms.uBrightness.value = targetBright * pulseMul * galaxyMul;
+    lookGalaxy += ((((ANIM.looks && ANIM.looks[ANIM.viewMode]) || {}).galaxy ?? 1) - lookGalaxy) * 0.06;
+    ctx.galaxyMat.uniforms.uBrightness.value = targetBright * pulseMul * galaxyMul
+      * (lookGalaxy + (1 - lookGalaxy) * galStarry);
   }
 
   // Skip stream physics in fireplace modes — the streams emit from the
@@ -383,6 +456,13 @@ export function tick(t, dt) {
   // `ANIM.patterns.enabled === false` is the legacy kill switch — when
   // off, panel + lattice stay hidden regardless of view mode.
   const mode = ANIM.viewMode || 'visualSequence';
+  // GENERATIVE LOOKS: every time a mode is entered, roll its variation
+  // table (ANIM.variations) — each visit gets its own speeds, curls,
+  // spirals and depths, inside ranges that are known to look good.
+  if (mode !== lastVariedMode) {
+    lastVariedMode = mode;
+    rollVariations(mode);
+  }
   const legacyPatterns = !(ANIM.patterns && ANIM.patterns.enabled === false);
   const showPanel     = legacyPatterns && (mode === 'visualSequence' || mode === 'fractalPattern');
   const showLattice   = legacyPatterns && (mode === 'visualSequence' || mode === 'fractalPattern');
@@ -392,6 +472,8 @@ export function tick(t, dt) {
   const showRecede    = (mode === 'fireplaceTwo');
   const showFlameOnly = (mode === 'flameOnly');
   const showMolten    = (mode === 'moltenGold');
+  const showDive      = (mode === 'starDive');
+  const showShaderLook = SHADER_LOOK_MODES.includes(mode);
   // Lerp logoStarryBlend toward 1 in flameOnly mode AND fireplaceTwo mode
   // (the receding-logo effect wants the same shimmering body), 0 elsewhere.
   // Slow fadeSpeed gives a few-second cross-fade between the galaxy plate
@@ -415,14 +497,18 @@ export function tick(t, dt) {
   // constellation mode where the gate frame is recolored fiery.
   // Portal (conveyor) mode owns the whole frame: body black, flame off,
   // full-size corridor. Legacy static recede keeps the old flame + body.
-  const portalActive = showRecede && !(ANIM.recede?.conveyor?.enabled === false);
+  // Star Dive owns the frame the same way (black body, no depth writes),
+  // but keeps the gilded gate frame as the fixed 'window' it falls through.
+  const corridorActive = showRecede && !(ANIM.recede?.conveyor?.enabled === false);
+  const portalActive = corridorActive || showDive || showShaderLook;
   const showFlame    = showFireplace
-    || (showRecede && (!portalActive || ANIM.recede?.flameEnabled === true));
-  const fireLikeMode = showFlame || showFlameOnly || showMolten || showRecede;
+    || (showRecede && (!corridorActive || ANIM.recede?.flameEnabled === true));
+  const fireLikeMode = showFlame || showFlameOnly || showMolten || showRecede || showDive || showShaderLook;
   if (ctx.panelGroup)   ctx.panelGroup.visible   = showPanel;
   if (ctx.latticeGroup) ctx.latticeGroup.visible = showLattice;
   if (ctx.archGroup)    ctx.archGroup.visible    = showFireplace;
   if (ctx.recedeGroup)  ctx.recedeGroup.visible  = showRecede;
+  if (ctx.starDiveGroup) ctx.starDiveGroup.visible = showDive;
   if (ctx.flameGroup)   ctx.flameGroup.visible   = showFlame;
   if (ctx.gateRimGroup) ctx.gateRimGroup.visible = showFlameOnly;
   if (ctx.moltenGroup)  ctx.moltenGroup.visible  = showMolten;
@@ -430,10 +516,10 @@ export function tick(t, dt) {
   // live through burst decay in any mode (edgeFlash transitions), then
   // hides itself once every comet has faded.
   if (ctx.edgeChase) {
-    ctx.edgeChase.setIdleEnabled(showFlameOnly || showMolten);
+    ctx.edgeChase.setIdleEnabled(showFlameOnly);   // molten: no comets — they read as stray glints on the gold's edge
     ctx.edgeChase.setMaster(showMolten && ctx.getMoltenFill
       ? 0.35 + 0.65 * ctx.getMoltenFill()
-      : 1);
+      : (showFlameOnly ? (ANIM.constellation?.cometLevel ?? 1) : 1));
   }
   // fireplaceOne still wants the outer brick fireplace; fireplaceTwo doesn't.
   if (ctx.fireplaceGroup) ctx.fireplaceGroup.visible = showFireplace;
@@ -445,7 +531,8 @@ export function tick(t, dt) {
     // Portal and molten modes drop the frame entirely — the corridor's
     // receding outlines / the liquid surface ARE the structure there,
     // and the static gilded ring fought them.
-    ctx.gateFrameGroup.visible = !portalActive && !showMolten
+    ctx.gateFrameGroup.visible = !corridorActive && !showMolten && !showShaderLook
+      && !(ANIM.looks && ANIM.looks[mode] && ANIM.looks[mode].gate === false)
       && !(showFireplace && ANIM.arch && ANIM.arch.hideGateFrame);
   }
   // Three.js checks light.visible directly when collecting scene lights —
@@ -463,7 +550,10 @@ export function tick(t, dt) {
   // the flame body in the same negative-space region.
   if (ctx.particleMats) {
     const showParticles = !fireLikeMode;
-    if (ctx.particleMats.emberPoints) ctx.particleMats.emberPoints.visible = showParticles;
+    // The ember stream drifts to an attractor BEHIND the logo and shows as
+    // faint specks outside the silhouette; looks can opt out (embers:false).
+    const lookEmbers = !(ANIM.looks && ANIM.looks[mode] && ANIM.looks[mode].embers === false);
+    if (ctx.particleMats.emberPoints) ctx.particleMats.emberPoints.visible = showParticles && lookEmbers;
     if (ctx.particleMats.whitePoints) ctx.particleMats.whitePoints.visible = showParticles;
   }
   // Strip the scene-wide PMREM env cubemap in fireplace modes so
@@ -497,6 +587,8 @@ export function tick(t, dt) {
   // under it — disappears and only the alignment patterns render.
   if (ctx.logoModel) ctx.logoModel.visible = mode !== 'calibration';
   if (calibration)   calibration.update(renderer, mode === 'calibration');
+  // The mask must not cut the full-frame calibration patterns.
+  shapeMask.setSuspended(mode === 'calibration');
 
   // Portal mode: the body must not merely go black — its depth writes
   // would still occlude the full-size corridor behind it. Dropping
@@ -544,7 +636,10 @@ export function tick(t, dt) {
     // (~15%) instead — "the emblem being filled" — so the liquid surface
     // reads against a barely-there vessel rather than a void.
     const blackBody = showFlameOnly || portalActive;
-    const effectiveFactor = blackBody ? 0 : (showMolten ? factor * 0.15 : factor);
+    // Per-look body trim: pattern modes sink the gold body toward black so
+    // the tiles in front of it carry the picture (default 1 = unchanged).
+    lookBody += ((((ANIM.looks && ANIM.looks[mode]) || {}).body ?? 1) - lookBody) * 0.06;
+    const effectiveFactor = blackBody ? 0 : (showMolten ? factor * 0.15 : factor * lookBody);
     if (Math.abs(effectiveFactor - lastBrightness) > 1e-4 || envI !== lastEnvIntensity) {
       if (blackBody) ctx.baseColorScratch.setRGB(0, 0, 0);
       else           ctx.baseColorScratch.set(COLORS.logo.base).multiplyScalar(effectiveFactor);
@@ -597,6 +692,8 @@ export function tick(t, dt) {
   if (ctx.updateArch)       ctx.updateArch(t, dt);
   if (ctx.updateFireplace)  ctx.updateFireplace(t, dt);
   if (ctx.updateRecede)     ctx.updateRecede(t, dt);
+  if (ctx.updateStarDive)   ctx.updateStarDive(t, dt);
+  if (ctx.updateShaderLooks) ctx.updateShaderLooks(t, dt, mode);
   // Drive the gold-shimmer sparkle phase. Cheap — one uniform write —
   // and a no-op on materials the shader patch wasn't applied to.
   tickShimmer(t);
@@ -644,7 +741,24 @@ export function tick(t, dt) {
   // once on mode entry by applyGateFrameTint.
   if (showFlameOnly && ctx.gateFrameGroup && ctx.gateFrameGroup.userData) {
     const mat = ctx.gateFrameGroup.userData.frameMaterial;
-    if (mat) mat.emissiveIntensity = 0.45 + 0.6 * smoothedFlameEnv;
+    // The frame dims as the sky starts to turn (stellar.vortex), so the
+    // spinning stars carry the hand-off to the portal.
+    const vx = 1 - 0.8 * (ctx.constellationVortexLevel?.() ?? 0);
+    if (mat) mat.emissiveIntensity = (0.45 + 0.6 * smoothedFlameEnv) * (ANIM.constellation?.frameGlow ?? 1) * vx;
+  }
+  // Constellations: ease the gilded lip's emissive down so its bloom does
+  // not lift the night sky (or spill outside the silhouette); every other
+  // mode keeps the authored value.
+  {
+    const lip = ctx.gateFrameGroup?.userData?.lipMaterial;
+    if (lip && lip !== ctx.gateFrameGroup.userData.frameMaterial) {
+      if (gateLipBase === null) gateLipBase = gateLipLevel = lip.emissiveIntensity;
+      const target = gateLipBase * (showFlameOnly
+        ? (ANIM.constellation?.frameLip ?? 1) * (1 - 0.8 * (ctx.constellationVortexLevel?.() ?? 0)) : 1);
+      gateLipLevel += (target - gateLipLevel) * (1 - Math.exp(-dt / 0.5));
+      if (Math.abs(target - gateLipLevel) < 1e-3) gateLipLevel = target;
+      lip.emissiveIntensity = gateLipLevel;
+    }
   }
 
   // Constellation overlay (key 7 only) — fade in after CONSTELLATION_DELAY
@@ -656,7 +770,10 @@ export function tick(t, dt) {
   const cTarget = showFlameOnly
     ? Math.max(0, Math.min(1, (flameOnlyElapsed - CONSTELLATION_DELAY) / CONSTELLATION_FADE_DUR))
     : 0;
-  const cBlend = 1 - Math.exp(-dt / 0.4);
+  // A spinning sky (stellar.vortex) stays alive a few seconds into the
+  // Depth Portal, so its star streaks sink into the portal's flow lines.
+  const skyLingers = !showFlameOnly && showRecede && (ctx.constellationVortexLevel?.() ?? 0) > 0;
+  const cBlend = 1 - Math.exp(-dt / (skyLingers ? (ANIM.constellation?.vortex?.linger ?? 1.8) : 0.4));
   constellationOpacity += (cTarget - constellationOpacity) * cBlend;
   if (ctx.constellationGroup) {
     const visible = constellationOpacity > 0.002;
@@ -869,6 +986,9 @@ if (typeof window !== 'undefined') {
   window.startExport1080p = () => runExport({ width: 1920, height: 1080 });
   window.__ctx = ctx;  // debug handle
   window.__pipeline = pipeline;
+  window.__shapeMask = shapeMask;
+  window.__transitions = transitions;
+  window.__sequencer = sequencer;
   // Devtools trigger surface: __triggers.fire('cascade.now'), .list().
   window.__triggers = {
     fire: (name, args) => fireTrigger(name, clock.elapsedTime, args),
@@ -878,6 +998,12 @@ if (typeof window !== 'undefined') {
   // rAF loop idles, and a probe can step the scene manually via
   // __tick(t, dt) + __renderer.render(...) for reproducible screenshots.
   window.__tick = tick;
+  // LAYERS (?layers=1): this page is the "story" of a layered show. It
+  // tells TouchDesigner when the upper wood layers change to the accent
+  // looks (src/layers/planner.js, touchdesigner/logo_layers.py).
+  if (new URLSearchParams(window.location.search).get('layers') === '1') {
+    import('./layers/planner.js').then(m => m.startLayerPlanner({ ANIM, sequencer, sendEvent: control.sendEvent }));
+  }
   window.addEventListener('keydown', (e) => {
     // Spacebar — fire the cascade sequence now (skip rest, begin exit
     // immediately). Auto-loop continues from this new phase. In arch
@@ -885,6 +1011,25 @@ if (typeof window !== 'undefined') {
     // the arch on demand.
     if (e.code === 'Space' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
       let handled = false;
+      // Shader looks (W/E/R/T): Space sends a pulse of light.
+      if (SHADER_LOOK_MODES.includes(ANIM.viewMode) && ctx.pulseShaderLook) {
+        ctx.pulseShaderLook();
+        e.preventDefault();
+        return;
+      }
+      // Star Dive: Space is the rush — the fall accelerates.
+      if (ANIM.viewMode === 'starDive' && ctx.triggerDiveRush) {
+        ctx.triggerDiveRush(clock.elapsedTime);
+        e.preventDefault();
+        return;
+      }
+      // Depth Portal: Space is the rush — the corridor accelerates and
+      // the particle flow surges.
+      if (ANIM.viewMode === 'fireplaceTwo' && ctx.triggerPortalRush) {
+        ctx.triggerPortalRush(clock.elapsedTime);
+        e.preventDefault();
+        return;
+      }
       // Pattern mode (with fractal zoom enabled) gets its own trigger that
       // resets the loop to start a fresh zoom-in immediately. In every
       // other mode, fall through to the radial cascade trigger.
@@ -913,6 +1058,49 @@ if (typeof window !== 'undefined') {
       console.log(`[dominoes] ${dominoesOn ? 'on' : 'off'}`);
       return;
     }
+    // The warp editor owns R / Tab / arrows while it is open (a key sent
+    // from TouchDesigner lands on window itself, where the editor's
+    // stopPropagation cannot shield this handler).
+    if (warp.isEditing() && (e.code === 'KeyR' || e.code === 'Tab' || e.code.startsWith('Arrow'))) return;
+    // Letter-row looks: Q = STAR DIVE (continuous fractal zoom),
+    // W / R / T = the shader looks (E is free). 'x' reverses the dive.
+    const lookByKey = { KeyQ: 'starDive', KeyW: 'mercury', KeyR: 'strata', KeyT: 'shards' };
+    if (lookByKey[e.code] && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      sequencer.notifyManualInput();
+      transitions.requestMode(lookByKey[e.code]);
+      control.sendState();
+      return;
+    }
+    if (e.code === 'KeyX' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      if (ctx.reverseDive) console.log(`[dive] ${ctx.reverseDive() > 0 ? 'falling in' : 'rising out'}`);
+      return;
+    }
+    // 'f' — toggle the Depth Portal's particle flow (fades in / out).
+    if (e.code === 'KeyF' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      const on = ctx.togglePortalFlow ? ctx.togglePortalFlow() : false;
+      console.log(`[portal] flow ${on ? 'on' : 'off'}`);
+      return;
+    }
+    // 'g' — next SVG shape (shapes/shapes.js order, then the logo). The
+    // page reloads on the new shape; the other URL parameters are kept.
+    if (e.code === 'KeyG' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      window.location.href = nextShapeUrl();
+      return;
+    }
+    // 'h' — SVG shapes: mask outline -> small holes dark -> off.
+    if (e.code === 'KeyH' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      if (shapeMask.ready()) {
+        const order = ['outline', 'holes', 'off'];
+        const m = shapeMask.setMode(order[(order.indexOf(shapeMask.getMode()) + 1) % order.length]);
+        console.log(`[shape] mask: ${m}`);
+      }
+      return;
+    }
     // 'i' — toggle the on-screen controls card.
     if (e.code === 'KeyI' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
       e.preventDefault();
@@ -920,7 +1108,7 @@ if (typeof window !== 'undefined') {
       return;
     }
     // 'w' — toggle the corner-pin warp calibration editor.
-    if (e.code === 'KeyW' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    if (e.code === 'KeyM' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
       e.preventDefault();
       console.log(`[warp] editor ${warp.toggleEditor() ? 'on' : 'off'}`);
       return;
@@ -951,7 +1139,7 @@ if (typeof window !== 'undefined') {
     // Default is HIGH (identical to original visuals on every device).
     // Lowering opts the user into a smaller particle / spark / pixel-ratio
     // budget so the scene runs smoother on weaker hardware.
-    if (e.code === 'KeyQ' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    if (e.code === 'KeyK' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
       e.preventDefault();
       cycleQuality(pipeline);
       return;

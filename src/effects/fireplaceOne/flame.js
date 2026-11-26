@@ -24,6 +24,7 @@ import * as THREE from 'three';
 import { ANIM } from '../../config.js';
 import { hexToRgb } from '../../util/color.js';
 import { insetPolygon } from '../../util/polygon.js';
+import { setAmberHearth } from '../../shaders/amber-stone.js';
 
 // Merge a secondary-flame override block onto the main-flame cfg. Top-
 // level fields override directly. Nested blocks (shimmer, flares) are
@@ -1546,9 +1547,19 @@ export function createFlame({
   const pulseColorVec  = new THREE.Vector3();
   const igniteColorVec = new THREE.Vector3();
 
+  const hearthA = new THREE.Vector3(), hearthB = new THREE.Vector3(), hearthC = new THREE.Vector3();
   function update(t, dt) {
     // Body shader time
     body.uniforms.uTime.value = t;
+
+    // Hearth falloff for the amber bricks: publish the fire column in
+    // world space (inner-star flame only, not the hearth variant).
+    if (!cfgOverride) {
+      hearthA.set(vpX, minY, maxZ); group.localToWorld(hearthA);
+      hearthB.set(vpX, vpY, maxZ);  group.localToWorld(hearthB);
+      hearthC.set(vpX + 1, minY, maxZ); group.localToWorld(hearthC);
+      setAmberHearth(hearthA.x, hearthA.y, hearthB.y - hearthA.y, hearthC.distanceTo(hearthA));
+    }
 
     // Hot-swap the Y nudge so devtools edits to ANIM.flame.yOffsetFrac
     // take effect immediately.
@@ -1802,8 +1813,11 @@ export function createFlame({
         const baseC = lt.userData.baseColor;
         if (flareEnv > 0.001) {
           lerpedLightColor.copy(baseC);
-          lerpedLightColor.lerp(coolLightColor, flareEnv * 0.5);
-          lerpedLightColor.lerp(flareLightColor, flareEnv * 0.7);
+          // flareTint (0..1) scales how far a chromatic flare drags the
+          // light colour off amber; 1 = the old full swing.
+          const ft = lc.flareTint ?? 1;
+          lerpedLightColor.lerp(coolLightColor, flareEnv * 0.5 * ft);
+          lerpedLightColor.lerp(flareLightColor, flareEnv * 0.7 * ft);
           lt.color.copy(lerpedLightColor);
         } else {
           lt.color.copy(baseC);
